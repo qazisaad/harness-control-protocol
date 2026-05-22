@@ -1,0 +1,24 @@
+{
+  "name": "@hcp-runner/runner",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "hcp-runner": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "check": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@hcp-runner/protocol": "0.0.0"
+  }
+}

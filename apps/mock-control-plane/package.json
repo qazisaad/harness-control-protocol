@@ -1,0 +1,16 @@
+{
+  "name": "@hcp-runner/mock-control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "check": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@hcp-runner/protocol": "0.0.0"
+  }
+}

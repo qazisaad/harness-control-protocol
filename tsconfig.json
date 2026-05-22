@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/hcp-protocol" },
+    { "path": "./packages/hcp-runner" },
+    { "path": "./apps/mock-control-plane" }
+  ]
+}
+
