@@ -76,30 +76,42 @@ test("accepts host hello with heartbeat settings", async () => {
   }
 });
 
-test("acknowledges heartbeat and capabilities updates", async () => {
+test("records heartbeat and capabilities updates", async () => {
   const server: MockControlPlaneServer = await startMockControlPlane({ port: 0 });
   const socket: WebSocket = await openClient(server);
 
   try {
-    socket.send(JSON.stringify(makeEnvelope("host.heartbeat", { runner_id: "runner-test", sequence: 1 })));
-    const heartbeatAck: ReceivedEnvelope = await nextEnvelope(socket);
-    assert.equal(heartbeatAck.type, "ack");
-    assert.equal(heartbeatAck.payload.received_message_id, "host.heartbeat-message");
-    assert.equal(heartbeatAck.payload.status, "ack");
+    socket.send(
+      JSON.stringify(
+        makeEnvelope("host.heartbeat", {
+          host_id: "host-test",
+          status: "online",
+          active_sessions: 1,
+        }),
+      ),
+    );
+    await waitForState(() => server.state.lastHeartbeatAt !== undefined);
     assert.equal(typeof server.state.lastHeartbeatAt, "string");
 
     socket.send(
       JSON.stringify(
         makeEnvelope("host.capabilities.updated", {
           providers: [],
+          local_capabilities: [
+            {
+              id: "filesystem",
+              status: "available",
+              scopes: ["workspace_read"],
+              approval_required: false,
+            },
+          ],
           workspaces: [{ id: "workspace-test", path: "/tmp/workspace-test" }],
         }),
       ),
     );
-    const capabilitiesAck: ReceivedEnvelope = await nextEnvelope(socket);
-    assert.equal(capabilitiesAck.type, "ack");
-    assert.equal(capabilitiesAck.payload.received_message_id, "host.capabilities.updated-message");
+    await waitForState(() => server.state.latestCapabilities !== undefined);
     assert.deepEqual(server.state.latestCapabilities?.providers, []);
+    assert.equal(server.state.latestCapabilities?.local_capabilities[0]?.id, "filesystem");
     assert.equal(server.state.latestCapabilities?.workspaces[0]?.id, "workspace-test");
   } finally {
     await closeClient(socket);
@@ -114,12 +126,12 @@ test("nacks unsupported messages", async () => {
   try {
     socket.send(
       JSON.stringify(
-        makeEnvelope("session.start", {
+        makeEnvelope("harness.session.start", {
           session_id: "session-1",
+          workspace_id: "workspace-test",
           provider_instance_id: "provider-1",
           driver_kind: "mock",
           cwd: "/tmp/workspace-test",
-          runtime_mode: "approval_required",
           sandbox_mode: "workspace_write",
           approval_policy: "ask",
           continue_session: false,
@@ -129,8 +141,7 @@ test("nacks unsupported messages", async () => {
       ),
     );
     const nack: ReceivedEnvelope = await nextEnvelope(socket);
-    assert.equal(nack.type, "nack");
-    assert.equal(nack.payload.status, "nack");
+    assert.equal(nack.type, "hcp.command.nack");
     assert.equal((nack.payload.error as Record<string, unknown>).code, "unsupported_message_type");
   } finally {
     await closeClient(socket);
@@ -145,11 +156,63 @@ test("nacks protocol-invalid heartbeat payloads", async () => {
   try {
     socket.send(JSON.stringify(makeEnvelope("host.heartbeat", {})));
     const nack: ReceivedEnvelope = await nextEnvelope(socket);
-    assert.equal(nack.type, "nack");
-    assert.equal(nack.payload.status, "nack");
+    assert.equal(nack.type, "hcp.command.nack");
     assert.equal((nack.payload.error as Record<string, unknown>).code, "invalid_message");
   } finally {
     await closeClient(socket);
     await server.close();
   }
 });
+
+test("dispatches harness commands to a connected runner", async () => {
+  const server: MockControlPlaneServer = await startMockControlPlane({ port: 0 });
+  const socket: WebSocket = await openClient(server);
+
+  try {
+    socket.send(
+      JSON.stringify(
+        makeEnvelope("host.hello", {
+          runner_id: "runner-test",
+          host_id: "host-test",
+          runner_version: "0.0.0-test",
+          supported_protocol_versions: [HCP_VERSION],
+          capabilities: ["providers", "workspaces"],
+        }),
+      ),
+    );
+    await nextEnvelope(socket);
+
+    const commandId: string = server.sendSessionStart({
+      session_id: "session-1",
+      workspace_id: "workspace-test",
+      provider_instance_id: "provider-1",
+      driver_kind: "mock",
+      cwd: "/tmp/workspace-test",
+      sandbox_mode: "workspace_write",
+      approval_policy: "ask",
+      continue_session: false,
+      model_selection: { model: "mock-model" },
+      mcp_servers: [],
+    });
+    const command: ReceivedEnvelope = await nextEnvelope(socket);
+
+    assert.equal(command.id, commandId);
+    assert.equal(command.type, "harness.session.start");
+    assert.equal(command.payload.session_id, "session-1");
+  } finally {
+    await closeClient(socket);
+    await server.close();
+  }
+});
+
+async function waitForState(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error("Timed out waiting for mock control plane state.");
+}

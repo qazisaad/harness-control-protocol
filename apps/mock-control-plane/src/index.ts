@@ -11,7 +11,13 @@ import {
   type HcpHostAcceptedPayload,
   type HcpHostCapabilitiesUpdatedPayload,
   type HcpHostHelloPayload,
+  type HcpHarnessEventPayload,
   type HcpMessage,
+  type HcpNackPayload,
+  type HcpSessionStartPayload,
+  type HcpSessionStopPayload,
+  type HcpTurnCancelPayload,
+  type HcpTurnSendPayload,
 } from "@hcp-runner/protocol";
 
 const DEFAULT_PORT = 8787;
@@ -19,8 +25,19 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
 const DEFAULT_PORT_SEARCH_LIMIT = 12;
 
-type KnownIncomingType = "host.hello" | "host.heartbeat" | "host.capabilities.updated";
-type KnownOutgoingType = "host.accepted" | "ack" | "nack";
+type KnownIncomingType =
+  | "host.hello"
+  | "host.heartbeat"
+  | "host.capabilities.updated"
+  | "hcp.command.ack"
+  | "hcp.command.nack"
+  | "harness.event";
+type MockControlPlaneCommandType =
+  | "harness.session.start"
+  | "harness.turn.send"
+  | "harness.turn.cancel"
+  | "harness.session.stop";
+type KnownOutgoingType = "host.accepted" | "host.rejected" | "hcp.command.nack" | MockControlPlaneCommandType;
 
 type IncomingEnvelope = Extract<HcpMessage, { type: KnownIncomingType }>;
 
@@ -36,6 +53,9 @@ export type MockControlPlaneState = {
   acceptedHostId?: string;
   lastHeartbeatAt?: string;
   latestCapabilities?: HcpHostCapabilitiesUpdatedPayload;
+  commandAcks: HcpAckPayload[];
+  commandNacks: HcpNackPayload[];
+  events: HcpHarnessEventPayload[];
   receivedMessageCount: number;
 };
 
@@ -44,6 +64,10 @@ export type MockControlPlaneServer = {
   port: number;
   url: string;
   state: MockControlPlaneState;
+  sendSessionStart: (payload: HcpSessionStartPayload) => string;
+  sendTurn: (payload: HcpTurnSendPayload) => string;
+  cancelTurn: (payload: HcpTurnCancelPayload) => string;
+  stopSession: (payload: HcpSessionStopPayload) => string;
   close: () => Promise<void>;
 };
 
@@ -87,7 +111,14 @@ function validateEnvelope(raw: unknown): ValidationResult<IncomingEnvelope> {
     };
   }
 
-  if (envelope.type !== "host.hello" && envelope.type !== "host.heartbeat" && envelope.type !== "host.capabilities.updated") {
+  if (
+    envelope.type !== "host.hello" &&
+    envelope.type !== "host.heartbeat" &&
+    envelope.type !== "host.capabilities.updated" &&
+    envelope.type !== "hcp.command.ack" &&
+    envelope.type !== "hcp.command.nack" &&
+    envelope.type !== "harness.event"
+  ) {
     return {
       ok: false,
       error: validationError("unsupported_message_type", "Message type is not supported by the mock control plane.", {
@@ -116,23 +147,16 @@ function sendEnvelope<TType extends KnownOutgoingType, TPayload>(
   socket: WebSocket,
   type: TType,
   payload: TPayload,
-): void {
-  socket.send(JSON.stringify(makeEnvelope(type, payload)));
+): string {
+  const envelope: HcpEnvelope<TType, TPayload> = makeEnvelope(type, payload);
+  socket.send(JSON.stringify(envelope));
+  return envelope.id;
 }
 
-function sendAck(socket: WebSocket, receivedMessageId: string): void {
-  const payload: HcpAckPayload = {
-    received_message_id: receivedMessageId,
-    status: "ack",
-  };
-
-  sendEnvelope(socket, "ack", payload);
-}
-
-function sendNack(socket: WebSocket, receivedMessageId: string, error: HcpError): void {
-  sendEnvelope(socket, "nack", {
-    received_message_id: receivedMessageId,
-    status: "nack",
+function sendNack(socket: WebSocket, commandId: string, error: HcpError): void {
+  sendEnvelope(socket, "hcp.command.nack", {
+    command_id: commandId,
+    rejected_at: new Date().toISOString(),
     error,
   });
 }
@@ -186,13 +210,26 @@ function handleMessage(
 
   if (envelope.type === "host.heartbeat") {
     state.lastHeartbeatAt = new Date().toISOString();
-    sendAck(socket, envelope.id);
+    return;
+  }
+
+  if (envelope.type === "hcp.command.ack") {
+    state.commandAcks.push(envelope.payload);
+    return;
+  }
+
+  if (envelope.type === "hcp.command.nack") {
+    state.commandNacks.push(envelope.payload);
+    return;
+  }
+
+  if (envelope.type === "harness.event") {
+    state.events.push(envelope.payload);
     return;
   }
 
   const capabilitiesPayload: HcpHostCapabilitiesUpdatedPayload = envelope.payload;
   state.latestCapabilities = capabilitiesPayload;
-  sendAck(socket, envelope.id);
 }
 
 function listen(server: HttpServer, host: string, port: number): Promise<number> {
@@ -232,22 +269,49 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
   const searchFallbackPorts = options.searchFallbackPorts ?? options.port === undefined;
   const heartbeatIntervalSeconds = options.heartbeatIntervalSeconds ?? DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
   const state: MockControlPlaneState = {
+    commandAcks: [],
+    commandNacks: [],
+    events: [],
     receivedMessageCount: 0,
   };
   const httpServer = createServer();
   const webSocketServer = new WebSocketServer({ server: httpServer });
+  let activeSocket: WebSocket | undefined;
 
   webSocketServer.on("connection", (socket: WebSocket) => {
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      sendEnvelope(socket, "host.rejected", {
+        reason: "A runner is already connected to this mock control plane.",
+        supported_protocol_versions: [HCP_VERSION],
+      });
+      socket.close(1008, "duplicate runner connection");
+      return;
+    }
+
+    activeSocket = socket;
+    socket.on("close", () => {
+      if (activeSocket === socket) {
+        activeSocket = undefined;
+      }
+    });
     socket.on("message", (data: WebSocket.RawData) => handleMessage(socket, state, heartbeatIntervalSeconds, data));
   });
 
   const boundPort: number = await listenWithFallback(httpServer, host, port, searchFallbackPorts);
+  const sendCommand = <TType extends MockControlPlaneCommandType, TPayload>(type: TType, payload: TPayload): string => {
+    const socket: WebSocket = requireActiveSocket(activeSocket);
+    return sendEnvelope(socket, type, payload);
+  };
 
   return {
     host,
     port: boundPort,
     url: `ws://${host}:${boundPort}`,
     state,
+    sendSessionStart: (payload: HcpSessionStartPayload): string => sendCommand("harness.session.start", payload),
+    sendTurn: (payload: HcpTurnSendPayload): string => sendCommand("harness.turn.send", payload),
+    cancelTurn: (payload: HcpTurnCancelPayload): string => sendCommand("harness.turn.cancel", payload),
+    stopSession: (payload: HcpSessionStopPayload): string => sendCommand("harness.session.stop", payload),
     close: async () => {
       await new Promise<void>((resolve, reject) => {
         webSocketServer.close((socketError?: Error) => {
@@ -268,6 +332,14 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
       });
     },
   };
+}
+
+function requireActiveSocket(socket: WebSocket | undefined): WebSocket {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    throw new Error("No runner is connected to the mock control plane.");
+  }
+
+  return socket;
 }
 
 function parsePort(value: string | undefined): number | undefined {

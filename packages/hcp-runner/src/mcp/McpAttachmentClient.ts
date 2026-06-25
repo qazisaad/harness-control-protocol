@@ -1,3 +1,5 @@
+import { createHash, createHmac, randomUUID } from "node:crypto";
+
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -13,6 +15,7 @@ export type McpAttachmentEvent = {
 export type McpAttachmentEventSink = (event: McpAttachmentEvent) => void | Promise<void>;
 
 export type McpToolCallArguments = Record<string, unknown>;
+type FetchLike = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => ReturnType<typeof fetch>;
 
 export type McpToolDescriptor = {
   name: string;
@@ -45,6 +48,40 @@ export class McpAttachmentExpiredError extends Error {
   }
 }
 
+export class McpProofBindingError extends Error {
+  constructor(readonly attachmentName: string, message: string) {
+    super(message);
+    this.name = "McpProofBindingError";
+  }
+}
+
+export type McpProofContext = {
+  session_id: string;
+  host_id: string;
+  provider_instance_id: string;
+  workspace_id: string;
+  server_id?: string;
+  turn_id?: string;
+};
+
+export type McpProofSigningInput = {
+  key_id: string;
+  method: string;
+  url: string;
+  body_hash: string;
+  lease_id: string;
+  session_id: string;
+  host_id: string;
+  provider_instance_id: string;
+  workspace_id: string;
+  server_id: string;
+  turn_id?: string;
+  timestamp: string;
+  nonce: string;
+};
+
+export type McpProofSigner = (input: McpProofSigningInput) => string;
+
 type SdkToolClient = {
   connect(transport: unknown): Promise<void>;
   listTools(): Promise<{ tools: Tool[] }>;
@@ -56,13 +93,15 @@ type SdkToolCallResult = Awaited<ReturnType<Client["callTool"]>>;
 
 type McpSdkFactory = {
   createClient(): SdkToolClient;
-  createStreamableHttpTransport(attachment: McpServerAttachment): unknown;
+  createStreamableHttpTransport(attachment: McpServerAttachment, options: { fetch: FetchLike }): unknown;
 };
 
 export type McpAttachmentClientOptions = {
   eventSink?: McpAttachmentEventSink;
   sdkFactory?: McpSdkFactory;
   now?: () => Date;
+  proofContext?: McpProofContext;
+  proofSigner?: McpProofSigner;
 };
 
 export class McpAttachmentClient {
@@ -71,6 +110,9 @@ export class McpAttachmentClient {
   private readonly eventSink: McpAttachmentEventSink | undefined;
   private readonly sdkFactory: McpSdkFactory;
   private readonly now: () => Date;
+  private readonly proofContext: McpProofContext | undefined;
+  private readonly proofSigner: McpProofSigner;
+  private readonly hasProofSigner: boolean;
   private client: SdkToolClient | undefined;
   private connected = false;
 
@@ -83,6 +125,9 @@ export class McpAttachmentClient {
     this.eventSink = options.eventSink;
     this.sdkFactory = options.sdkFactory ?? defaultMcpSdkFactory;
     this.now = options.now ?? (() => new Date());
+    this.proofContext = options.proofContext;
+    this.proofSigner = options.proofSigner ?? missingProofSigner;
+    this.hasProofSigner = options.proofSigner !== undefined;
   }
 
   async connect(): Promise<void> {
@@ -91,6 +136,7 @@ export class McpAttachmentClient {
     }
 
     this.assertNotExpired();
+    this.assertProofBindingConfigured();
 
     if (this.attachment.transport !== "streamable_http") {
       throw new Error(`Unsupported MCP attachment transport: ${this.attachment.transport}`);
@@ -105,7 +151,9 @@ export class McpAttachmentClient {
     });
 
     const client: SdkToolClient = this.sdkFactory.createClient();
-    const transport: unknown = this.sdkFactory.createStreamableHttpTransport(this.attachment);
+    const transport: unknown = this.sdkFactory.createStreamableHttpTransport(this.attachment, {
+      fetch: this.createProofFetch(),
+    });
     await client.connect(transport);
     this.client = client;
     this.connected = true;
@@ -232,20 +280,167 @@ export class McpAttachmentClient {
     void this.close();
     throw new McpAttachmentExpiredError(this.attachment.name);
   }
+
+  private assertProofBindingConfigured(): void {
+    if (this.attachment.proof_of_possession.scheme !== "runner_signed_request") {
+      throw new McpProofBindingError(
+        this.attachment.name,
+        `Unsupported MCP proof scheme: ${this.attachment.proof_of_possession.scheme}`,
+      );
+    }
+
+    if (!this.proofContext) {
+      throw new McpProofBindingError(
+        this.attachment.name,
+        `MCP attachment "${this.attachment.name}" requires runner proof context.`,
+      );
+    }
+
+    if (!this.hasProofSigner) {
+      throw new McpProofBindingError(
+        this.attachment.name,
+        `MCP attachment "${this.attachment.name}" requires a runner proof signer.`,
+      );
+    }
+  }
+
+  private createProofFetch(): FetchLike {
+    const attachment: McpServerAttachment = this.attachment;
+    const proofContext: McpProofContext | undefined = this.proofContext;
+    if (!proofContext) {
+      throw new McpProofBindingError(attachment.name, `MCP attachment "${attachment.name}" requires runner proof context.`);
+    }
+
+    return async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
+      const method: string = init?.method ?? (input instanceof Request ? input.method : "GET");
+      const url: string = requestUrl(input);
+      const bodyHash: string = hashRequestBody(init?.body);
+      const timestamp: string = this.now().toISOString();
+      const nonce: string = randomUUID();
+      const signingInput: McpProofSigningInput = {
+        key_id: attachment.proof_of_possession.key_id,
+        method: method.toUpperCase(),
+        url,
+        body_hash: bodyHash,
+        lease_id: attachment.lease_id,
+        session_id: proofContext.session_id,
+        host_id: proofContext.host_id,
+        provider_instance_id: proofContext.provider_instance_id,
+        workspace_id: proofContext.workspace_id,
+        server_id: proofContext.server_id ?? attachment.name,
+        ...(proofContext.turn_id ? { turn_id: proofContext.turn_id } : {}),
+        timestamp,
+        nonce,
+      };
+      const signature: string = this.proofSigner(signingInput);
+      const headers: Headers = new Headers(init?.headers);
+
+      headers.set("x-hcp-proof-key-id", signingInput.key_id);
+      headers.set("x-hcp-lease-id", signingInput.lease_id);
+      headers.set("x-hcp-session-id", signingInput.session_id);
+      headers.set("x-hcp-host-id", signingInput.host_id);
+      headers.set("x-hcp-provider-instance-id", signingInput.provider_instance_id);
+      headers.set("x-hcp-workspace-id", signingInput.workspace_id);
+      headers.set("x-hcp-mcp-server-id", signingInput.server_id);
+      headers.set("x-hcp-proof-timestamp", signingInput.timestamp);
+      headers.set("x-hcp-proof-nonce", signingInput.nonce);
+      headers.set("x-hcp-proof-body-sha256", signingInput.body_hash);
+      headers.set("x-hcp-proof-signature", signature);
+      if (signingInput.turn_id) {
+        headers.set("x-hcp-turn-id", signingInput.turn_id);
+      }
+
+      for (const requiredHeader of attachment.proof_of_possession.required_headers) {
+        if (!headers.has(requiredHeader)) {
+          throw new McpProofBindingError(
+            attachment.name,
+            `Required MCP proof header '${requiredHeader}' was not produced.`,
+          );
+        }
+      }
+
+      return fetch(input, {
+        ...init,
+        headers,
+      });
+    };
+  }
 }
 
 const defaultMcpSdkFactory: McpSdkFactory = {
   createClient(): SdkToolClient {
     return new Client({ name: "hcp-runner", version: "0.0.0" });
   },
-  createStreamableHttpTransport(attachment: McpServerAttachment): unknown {
-    if (!attachment.headers) {
-      return new StreamableHTTPClientTransport(new URL(attachment.url));
-    }
-
-    return new StreamableHTTPClientTransport(new URL(attachment.url), { requestInit: { headers: attachment.headers } });
+  createStreamableHttpTransport(attachment: McpServerAttachment, options: { fetch: FetchLike }): unknown {
+    return new StreamableHTTPClientTransport(new URL(attachment.url), {
+      requestInit: { headers: attachment.headers },
+      fetch: options.fetch,
+    });
   },
 };
+
+function missingProofSigner(): string {
+  throw new Error("MCP proof signer is not configured.");
+}
+
+export function createDevelopmentHmacProofSigner(secret: string): McpProofSigner {
+  return (input: McpProofSigningInput): string => defaultProofSigner(input, secret);
+}
+
+function defaultProofSigner(input: McpProofSigningInput, secret: string): string {
+  return `hmac-sha256:${createHmac("sha256", secret).update(canonicalProofString(input)).digest("base64url")}`;
+}
+
+function canonicalProofString(input: McpProofSigningInput): string {
+  return [
+    input.method,
+    input.url,
+    input.body_hash,
+    input.lease_id,
+    input.session_id,
+    input.host_id,
+    input.provider_instance_id,
+    input.workspace_id,
+    input.server_id,
+    input.turn_id ?? "",
+    input.timestamp,
+    input.nonce,
+  ].join("\n");
+}
+
+function requestUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.toString();
+  }
+  return input.url;
+}
+
+function hashRequestBody(body: BodyInit | null | undefined): string {
+  if (body === undefined || body === null) {
+    return sha256("");
+  }
+  if (typeof body === "string") {
+    return sha256(body);
+  }
+  if (body instanceof URLSearchParams) {
+    return sha256(body.toString());
+  }
+  if (body instanceof ArrayBuffer) {
+    return sha256(Buffer.from(body));
+  }
+  if (ArrayBuffer.isView(body)) {
+    return sha256(Buffer.from(body.buffer, body.byteOffset, body.byteLength));
+  }
+
+  return sha256("[streaming-body]");
+}
+
+function sha256(value: string | Buffer): string {
+  return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
+}
 
 function toMcpToolDescriptor(tool: Tool): McpToolDescriptor {
   return {

@@ -35,7 +35,33 @@ test("requires a config path for run", async () => {
   }
 });
 
-test("pair reports that the flow is not implemented", async () => {
+test("pair prints a mock runner config", async () => {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (message?: unknown) => {
+    lines.push(String(message));
+  };
+
+  try {
+    const exitCode: number = await main([
+      "pair",
+      "http://127.0.0.1:8787",
+      "--runner-id",
+      "runner-test",
+      "--host-id",
+      "host-test",
+    ]);
+    assert.equal(exitCode, 0);
+    const config = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;
+    assert.equal(config.runner_id, "runner-test");
+    assert.equal(config.host_id, "host-test");
+    assert.equal(config.control_plane_url, "ws://127.0.0.1:8787/");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test("pair rejects missing control plane urls", async () => {
   const lines: string[] = [];
   const originalError = console.error;
   console.error = (message?: unknown) => {
@@ -43,9 +69,25 @@ test("pair reports that the flow is not implemented", async () => {
   };
 
   try {
-    const exitCode: number = await main(["pair", "ws://127.0.0.1:8787"]);
+    const exitCode: number = await main(["pair"]);
     assert.equal(exitCode, 1);
-    assert.equal(lines[0], "Pairing is not implemented yet for ws://127.0.0.1:8787.");
+    assert.equal(lines[0], "Missing control plane URL.");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("pair rejects invalid control plane urls without throwing", async () => {
+  const lines: string[] = [];
+  const originalError = console.error;
+  console.error = (message?: unknown) => {
+    lines.push(String(message));
+  };
+
+  try {
+    const exitCode: number = await main(["pair", "not-a-url"]);
+    assert.equal(exitCode, 1);
+    assert.match(lines[0] ?? "", /Invalid URL|URL/);
   } finally {
     console.error = originalError;
   }

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { createServer, type Server as HttpServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
 
@@ -14,39 +17,70 @@ import {
 import { RunnerConnection } from "./runner-connection.js";
 import type { RunnerConfig } from "../config/index.js";
 
-const configBase: Omit<RunnerConfig, "control_plane_url"> = {
-  runner_id: "runner-test",
-  workspaces: [{ id: "repo", path: "/tmp/repo" }],
-  provider_instances: [
-    {
-      id: "mock-provider",
-      driver_kind: "mock",
-      enabled: true,
-      launch_args: [],
-      env: {},
-      models: [],
-      hidden_models: [],
-      model_order: [],
-      favorite_models: [],
-    },
-  ],
+type TestWorkspace = {
+  root: string;
+  project: string;
+  cleanup(): Promise<void>;
 };
 
-const sessionStartPayload: HcpSessionStartPayload = {
-  session_id: "session-1",
-  provider_instance_id: "mock-provider",
-  driver_kind: "mock",
-  cwd: "/tmp/repo/project",
-  runtime_mode: "approval_required",
-  sandbox_mode: "workspace_write",
-  approval_policy: "ask",
-  continue_session: false,
-  model_selection: { model: "mock-model" },
-  mcp_servers: [],
-};
+async function createWorkspace(): Promise<TestWorkspace> {
+  const root: string = await mkdtemp(join(tmpdir(), "hcp-runner-connection-"));
+  const project: string = join(root, "project");
+  await mkdir(project);
+  return {
+    root,
+    project,
+    cleanup: async (): Promise<void> => {
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function createConfigBase(workspaceRoot: string): Omit<RunnerConfig, "control_plane_url"> {
+  return {
+    runner_id: "runner-test",
+    workspaces: [{ id: "repo", path: workspaceRoot }],
+    local_capabilities: [
+      { id: "filesystem", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
+      { id: "git", status: "available", scopes: ["workspace_read"], approval_required: false },
+      { id: "shell", status: "available", scopes: ["workspace"], approval_required: true },
+    ],
+    provider_instances: [
+      {
+        id: "mock-provider",
+        driver_kind: "mock",
+        enabled: true,
+        launch_args: [],
+        env: {},
+        models: [],
+        hidden_models: [],
+        model_order: [],
+        favorite_models: [],
+        local_capabilities: ["filesystem", "git", "shell"],
+      },
+    ],
+  };
+}
+
+function createSessionStartPayload(cwd: string): HcpSessionStartPayload {
+  return {
+    session_id: "session-1",
+    workspace_id: "repo",
+    provider_instance_id: "mock-provider",
+    driver_kind: "mock",
+    cwd,
+    sandbox_mode: "workspace_write",
+    approval_policy: "ask",
+    continue_session: false,
+    model_selection: { model: "mock-model" },
+    mcp_servers: [],
+  };
+}
 
 describe("RunnerConnection", () => {
-  it("handles accepted, session.start, and turn.send with events and acks", async () => {
+  it("handles accepted, harness.session.start, and harness.turn.send with events and command acks", async () => {
+    const workspace = await createWorkspace();
+    const sessionStartPayload: HcpSessionStartPayload = createSessionStartPayload(workspace.project);
     const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
       await waitForMessage(messages, "host.hello");
       socket.send(
@@ -57,9 +91,10 @@ describe("RunnerConnection", () => {
           }),
         ),
       );
-      const sessionStart = createHcpEnvelope("session.start", sessionStartPayload);
+      const sessionStart = createHcpEnvelope("harness.session.start", sessionStartPayload);
       socket.send(JSON.stringify(sessionStart));
-      const turnSend = createHcpEnvelope("turn.send", {
+      await waitForAck(messages, sessionStart.id);
+      const turnSend = createHcpEnvelope("harness.turn.send", {
         session_id: "session-1",
         turn_id: "turn-1",
         input: "hello",
@@ -67,40 +102,45 @@ describe("RunnerConnection", () => {
       socket.send(JSON.stringify(turnSend));
     });
     const connection = new RunnerConnection({
-      config: { ...configBase, control_plane_url: server.url },
+      config: { ...createConfigBase(workspace.root), control_plane_url: server.url },
       runnerVersion: "0.0.0-test",
     });
 
     try {
       await connection.connect();
       const ack = await waitForAckCount(server.messages, 2);
+      await waitForEventCount(server.messages, 5);
       const events = server.messages.filter((message) => message.type === "harness.event");
 
-      assert.equal(ack.payload.status, "ack");
+      assert.equal(ack.payload.duplicate, false);
       assert.deepEqual(
         events.map((event) => event.payload.event_type),
-        ["session.started", "session.configured", "turn.started", "turn.completed"],
+        ["session.started", "workspace.preflight.completed", "session.configured", "turn.started", "turn.completed"],
       );
     } finally {
       await connection.close();
       await server.close();
+      await workspace.cleanup();
     }
   });
 
   it("nacks invalid messages and invalid session starts", async () => {
+    const workspace = await createWorkspace();
+    const outside = await createWorkspace();
+    const sessionStartPayload: HcpSessionStartPayload = createSessionStartPayload(workspace.project);
     const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
       await waitForMessage(messages, "host.hello");
-      socket.send(JSON.stringify({ id: "bad-message", type: "turn.send", version: HCP_VERSION, sent_at: new Date().toISOString(), payload: {} }));
+      socket.send(JSON.stringify({ id: "bad-message", type: "harness.turn.send", version: HCP_VERSION, sent_at: new Date().toISOString(), payload: {} }));
       await waitForNack(messages, "bad-message");
-      const sessionStart = createHcpEnvelope("session.start", {
+      const sessionStart = createHcpEnvelope("harness.session.start", {
         ...sessionStartPayload,
         session_id: "session-bad",
-        cwd: "/tmp/not-allowed",
+        cwd: outside.root,
       });
       socket.send(JSON.stringify(sessionStart));
     });
     const connection = new RunnerConnection({
-      config: { ...configBase, control_plane_url: server.url },
+      config: { ...createConfigBase(workspace.root), control_plane_url: server.url },
       runnerVersion: "0.0.0-test",
     });
 
@@ -111,6 +151,130 @@ describe("RunnerConnection", () => {
     } finally {
       await connection.close();
       await server.close();
+      await workspace.cleanup();
+      await outside.cleanup();
+    }
+  });
+
+  it("acknowledges duplicate commands and nacks payload mismatches", async () => {
+    const workspace = await createWorkspace();
+    const changedProject = join(workspace.root, "changed");
+    await mkdir(changedProject);
+    const sessionStartPayload: HcpSessionStartPayload = createSessionStartPayload(workspace.project);
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+          }),
+        ),
+      );
+
+      const command = createHcpEnvelope("harness.session.start", sessionStartPayload);
+      socket.send(JSON.stringify(command));
+      await waitForAck(messages, command.id);
+      socket.send(JSON.stringify(command));
+      await waitForDuplicateAck(messages, command.id);
+      socket.send(
+        JSON.stringify({
+          ...command,
+          payload: {
+            ...sessionStartPayload,
+            cwd: changedProject,
+          },
+        }),
+      );
+    });
+    const connection = new RunnerConnection({
+      config: { ...createConfigBase(workspace.root), control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+    });
+
+    try {
+      await connection.connect();
+      const mismatch = await waitForNackCode(server.messages, "duplicate_command_payload_mismatch");
+      assert.equal(mismatch.payload.command_id.startsWith("message-"), false);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+    }
+  });
+
+  it("replays nacks for duplicate rejected commands instead of executing later", async () => {
+    const workspace = await createWorkspace();
+    const outside = await createWorkspace();
+    const badPayload: HcpSessionStartPayload = createSessionStartPayload(outside.root);
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+          }),
+        ),
+      );
+
+      const command = createHcpEnvelope("harness.session.start", badPayload);
+      socket.send(JSON.stringify(command));
+      await waitForNack(messages, command.id);
+      socket.send(JSON.stringify(command));
+    });
+    const connection = new RunnerConnection({
+      config: { ...createConfigBase(workspace.root), control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+    });
+
+    try {
+      await connection.connect();
+      await waitForNackCount(server.messages, "workspace_not_allowed", 2);
+      assert.equal(server.messages.some((message) => message.type === "harness.event"), false);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+      await outside.cleanup();
+    }
+  });
+
+  it("reconnects and sends host hello after a dropped socket", async () => {
+    const workspace = await createWorkspace();
+    let connectionCount = 0;
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      connectionCount += 1;
+      if (connectionCount === 1) {
+        await waitForMessageCount(messages, "host.hello", 1);
+        socket.close();
+        return;
+      }
+
+      await waitForMessageCount(messages, "host.hello", 2);
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+          }),
+        ),
+      );
+    });
+    const connection = new RunnerConnection({
+      config: { ...createConfigBase(workspace.root), control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+      reconnect: { initialDelayMs: 10, maxDelayMs: 10 },
+    });
+
+    try {
+      await connection.connect();
+      await waitForMessageCount(server.messages, "host.hello", 2);
+      assert.equal(connectionCount, 2);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
     }
   });
 });
@@ -174,35 +338,75 @@ async function waitForMessage<TType extends HcpMessage["type"]>(
   return waitFor(messages, (message): message is Extract<HcpMessage, { type: TType }> => message.type === type);
 }
 
+async function waitForMessageCount<TType extends HcpMessage["type"]>(
+  messages: HcpMessage[],
+  type: TType,
+  count: number,
+): Promise<void> {
+  await waitFor(
+    messages,
+    (message): message is Extract<HcpMessage, { type: TType }> =>
+      message.type === type && messages.filter((candidate) => candidate.type === type).length >= count,
+  );
+}
+
 async function waitForAck(messages: HcpMessage[], receivedMessageId: string) {
   return waitFor(
     messages,
-    (message): message is Extract<HcpMessage, { type: "ack" }> =>
-      message.type === "ack" && message.payload.received_message_id === receivedMessageId,
+    (message): message is Extract<HcpMessage, { type: "hcp.command.ack" }> =>
+      message.type === "hcp.command.ack" && message.payload.command_id === receivedMessageId,
   );
 }
 
 async function waitForAckCount(messages: HcpMessage[], count: number) {
   return waitFor(
     messages,
-    (message): message is Extract<HcpMessage, { type: "ack" }> =>
-      message.type === "ack" && messages.filter((candidate) => candidate.type === "ack").length >= count,
+    (message): message is Extract<HcpMessage, { type: "hcp.command.ack" }> =>
+      message.type === "hcp.command.ack" &&
+      messages.filter((candidate) => candidate.type === "hcp.command.ack").length >= count,
+  );
+}
+
+async function waitForDuplicateAck(messages: HcpMessage[], commandId: string) {
+  return waitFor(
+    messages,
+    (message): message is Extract<HcpMessage, { type: "hcp.command.ack" }> =>
+      message.type === "hcp.command.ack" && message.payload.command_id === commandId && message.payload.duplicate,
+  );
+}
+
+async function waitForEventCount(messages: HcpMessage[], count: number) {
+  return waitFor(
+    messages,
+    (message): message is Extract<HcpMessage, { type: "harness.event" }> =>
+      message.type === "harness.event" &&
+      messages.filter((candidate) => candidate.type === "harness.event").length >= count,
   );
 }
 
 async function waitForNack(messages: HcpMessage[], receivedIdPrefix: string) {
   return waitFor(
     messages,
-    (message): message is Extract<HcpMessage, { type: "nack" }> =>
-      message.type === "nack" && message.payload.received_message_id.startsWith(receivedIdPrefix),
+    (message): message is Extract<HcpMessage, { type: "hcp.command.nack" }> =>
+      message.type === "hcp.command.nack" && message.payload.command_id.startsWith(receivedIdPrefix),
   );
 }
 
 async function waitForNackCode(messages: HcpMessage[], code: string) {
   return waitFor(
     messages,
-    (message): message is Extract<HcpMessage, { type: "nack" }> =>
-      message.type === "nack" && message.payload.error.code === code,
+    (message): message is Extract<HcpMessage, { type: "hcp.command.nack" }> =>
+      message.type === "hcp.command.nack" && message.payload.error.code === code,
+  );
+}
+
+async function waitForNackCount(messages: HcpMessage[], code: string, count: number) {
+  return waitFor(
+    messages,
+    (message): message is Extract<HcpMessage, { type: "hcp.command.nack" }> =>
+      message.type === "hcp.command.nack" &&
+      messages.filter((candidate) => candidate.type === "hcp.command.nack" && candidate.payload.error.code === code)
+        .length >= count,
   );
 }
 

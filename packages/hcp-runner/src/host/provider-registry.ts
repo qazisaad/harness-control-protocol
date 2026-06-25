@@ -9,6 +9,7 @@ import type { ProviderInstanceConfig, RunnerConfig } from "../config/index.js";
 
 export type ProviderRegistrySnapshot = {
   providers: HarnessProviderSnapshot[];
+  local_capabilities: HcpHostCapabilitiesUpdatedPayload["local_capabilities"];
   workspaces: HcpHostCapabilitiesUpdatedPayload["workspaces"];
 };
 
@@ -47,6 +48,13 @@ export class ProviderInstanceRegistry {
       providers: this.#config.provider_instances.map((provider: ProviderInstanceConfig) =>
         this.#snapshotProvider(provider, now),
       ),
+      local_capabilities: this.#config.local_capabilities.map((capability) => ({
+        id: capability.id,
+        status: capability.status,
+        scopes: capability.scopes,
+        approval_required: capability.approval_required,
+        ...(capability.message ? { message: capability.message } : {}),
+      })),
       workspaces: this.#config.workspaces.map((workspace) => ({
         id: workspace.id,
         path: workspace.path,
@@ -96,6 +104,7 @@ export class ProviderInstanceRegistry {
         status: "unknown",
       },
       models: provider.models.length > 0 ? normalizeHarnessModels(provider.models) : driver?.models ?? [],
+      local_capabilities: provider.local_capabilities,
     };
 
     if (provider.hidden_models.length > 0) {

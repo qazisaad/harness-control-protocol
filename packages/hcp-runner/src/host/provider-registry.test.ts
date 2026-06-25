@@ -8,6 +8,11 @@ const config: RunnerConfig = {
   runner_id: "runner-local",
   control_plane_url: "ws://localhost:8787/hcp",
   workspaces: [{ id: "workspace-main", path: "/tmp/workspace" }],
+  local_capabilities: [
+    { id: "filesystem", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
+    { id: "git", status: "available", scopes: ["workspace_read"], approval_required: false },
+    { id: "shell", status: "available", scopes: ["workspace"], approval_required: true },
+  ],
   provider_instances: [
     {
       id: "provider-ready",
@@ -19,6 +24,7 @@ const config: RunnerConfig = {
       hidden_models: [],
       model_order: [],
       favorite_models: [],
+      local_capabilities: ["filesystem", "git", "shell"],
     },
     {
       id: "provider-unknown",
@@ -30,6 +36,7 @@ const config: RunnerConfig = {
       hidden_models: [],
       model_order: [],
       favorite_models: [],
+      local_capabilities: ["filesystem"],
     },
     {
       id: "provider-disabled",
@@ -41,6 +48,7 @@ const config: RunnerConfig = {
       hidden_models: [],
       model_order: [],
       favorite_models: [],
+      local_capabilities: ["filesystem"],
     },
   ],
 };
@@ -63,9 +71,11 @@ describe("ProviderInstanceRegistry", () => {
     assert.equal(snapshot.providers[0]?.availability, "available");
     assert.equal(snapshot.providers[0]?.version, "1.2.3");
     assert.equal(snapshot.providers[0]?.models[0]?.id, "default");
+    assert.deepEqual(snapshot.providers[0]?.local_capabilities, ["filesystem", "git", "shell"]);
     assert.equal(snapshot.providers[1]?.status, "unavailable");
     assert.match(snapshot.providers[1]?.message ?? "", /Unsupported provider driver/);
     assert.equal(snapshot.providers[2]?.status, "disabled");
+    assert.equal(snapshot.local_capabilities[0]?.id, "filesystem");
     assert.deepEqual(snapshot.workspaces, [{ id: "workspace-main", path: "/tmp/workspace" }]);
   });
 

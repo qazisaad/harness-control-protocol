@@ -7,6 +7,7 @@ import type { McpServerAttachment } from "@hcp-runner/protocol";
 import {
   McpAttachmentClient,
   McpAttachmentExpiredError,
+  McpProofBindingError,
   McpToolPolicyError,
   type McpAttachmentEvent,
   type McpToolDescriptor,
@@ -112,6 +113,72 @@ describe("McpAttachmentClient", () => {
     now.setSeconds(now.getSeconds() + 2);
     await assert.rejects((): Promise<unknown> => connectedClient.callTool("read_file"), McpAttachmentExpiredError);
   });
+
+  it("requires proof context before connecting platform attachments", async () => {
+    const attachment: McpServerAttachment = makeAttachment({});
+    const client = new McpAttachmentClient(attachment, {
+      proofSigner: () => "test-signature",
+      sdkFactory: createNoopSdkFactory(),
+    });
+
+    await assert.rejects((): Promise<void> => client.connect(), McpProofBindingError);
+  });
+
+  it("requires a proof signer before connecting platform attachments", async () => {
+    const client = new McpAttachmentClient(makeAttachment({}), {
+      proofContext: proofContext(),
+      sdkFactory: createNoopSdkFactory(),
+    });
+
+    await assert.rejects((): Promise<void> => client.connect(), McpProofBindingError);
+  });
+
+  it("adds proof headers to streamable HTTP requests", async () => {
+    let proofFetch: ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => ReturnType<typeof fetch>) | undefined;
+    const client = new McpAttachmentClient(makeAttachment({}), {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      proofContext: proofContext(),
+      proofSigner: () => "test-signature",
+      sdkFactory: {
+        createClient() {
+          return {
+            async connect(): Promise<void> {},
+            async listTools(): Promise<{ tools: Tool[] }> {
+              return { tools: [] };
+            },
+            async callTool(): Promise<{ content: [] }> {
+              return { content: [] };
+            },
+            async close(): Promise<void> {},
+          };
+        },
+        createStreamableHttpTransport(_attachment, options): unknown {
+          proofFetch = options.fetch;
+          return {};
+        },
+      },
+    });
+    const originalFetch = globalThis.fetch;
+    const requests: Headers[] = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      requests.push(new Headers(init?.headers));
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await client.connect();
+      assert.ok(proofFetch);
+      await proofFetch("https://example.com/mcp", { method: "POST", body: "{}" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const headers = requests[0];
+    assert.equal(headers?.get("x-hcp-session-id"), "session-1");
+    assert.equal(headers?.get("x-hcp-host-id"), "host-1");
+    assert.equal(headers?.get("x-hcp-proof-signature"), "test-signature");
+    assert.equal(headers?.get("x-hcp-lease-id"), "mcp_lease_test");
+  });
 });
 
 describe("MCP redaction helpers", () => {
@@ -146,19 +213,17 @@ function createTestClient(
   events: McpAttachmentEvent[] = [],
   now?: () => Date,
 ): McpAttachmentClient {
-  const attachment: McpServerAttachment = {
-    name: "local-test-mcp",
-    transport: "streamable_http",
-    url: "http://127.0.0.1:9999/mcp",
-    ...attachmentOverrides,
-  };
+  const attachment: McpServerAttachment = makeAttachment(attachmentOverrides);
 
   return new McpAttachmentClient(attachment, {
+    proofContext: proofContext(),
+    proofSigner: () => "test-signature",
     ...(now ? { now } : {}),
     eventSink(event: McpAttachmentEvent): void {
       events.push(event);
     },
     sdkFactory: {
+      ...createNoopSdkFactory(),
       createClient() {
         return {
           async connect(): Promise<void> {},
@@ -172,9 +237,56 @@ function createTestClient(
           async close(): Promise<void> {},
         };
       },
-      createStreamableHttpTransport(): unknown {
-        return {};
-      },
     },
   });
+}
+
+function makeAttachment(attachmentOverrides: Partial<McpServerAttachment>): McpServerAttachment {
+  const baseAttachment: McpServerAttachment = {
+    name: "local-test-mcp",
+    transport: "streamable_http",
+    url: "http://127.0.0.1:9999/mcp",
+    headers: { Authorization: "Bearer test-lease-token" },
+    lease_id: "mcp_lease_test",
+    proof_of_possession: {
+      scheme: "runner_signed_request",
+      key_id: "proof_key_test",
+      required_headers: ["x-hcp-proof-signature", "x-hcp-proof-nonce"],
+    },
+  };
+
+  return {
+    ...baseAttachment,
+    ...attachmentOverrides,
+  };
+}
+
+function proofContext() {
+  return {
+    session_id: "session-1",
+    host_id: "host-1",
+    provider_instance_id: "provider-1",
+    workspace_id: "workspace-1",
+    server_id: "local-test-mcp",
+  };
+}
+
+function createNoopSdkFactory() {
+  return {
+    createClient() {
+      return {
+        async connect(): Promise<void> {},
+        async listTools(): Promise<{ tools: Tool[] }> {
+          return { tools: [] };
+        },
+        async callTool(): Promise<{ content: [] }> {
+          return { content: [] };
+        },
+        async close(): Promise<void> {},
+      };
+    },
+    createStreamableHttpTransport(): unknown {
+      return {};
+    },
+  };
 }

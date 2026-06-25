@@ -4,6 +4,8 @@ import { ZodError } from "zod";
 
 import {
   HCP_VERSION,
+  KNOWN_HCP_EVENT_TYPES,
+  knownHcpEventDataSchemas,
   parseHcpEnvelope,
   parseHcpHostAcceptedPayload,
   parseHcpHostCapabilitiesUpdatedPayload,
@@ -15,6 +17,8 @@ import {
   parseMcpServerAttachment,
   type HcpEnvelope,
   type HcpHostHelloPayload,
+  type LocalCapabilityLease,
+  type McpServerAttachment,
 } from "../src/index.js";
 
 const sentAt = "2026-01-01T00:00:00.000Z";
@@ -42,7 +46,45 @@ const helloPayload: HcpHostHelloPayload = {
   runner_version: "0.0.0",
   supported_protocol_versions: [HCP_VERSION],
   capabilities: ["sessions", "mcp.attachments"],
-  last_event_sequence: 12,
+  resume: {
+    sessions: [{ session_id: "session-1", last_event_sequence: 12 }],
+  },
+};
+
+const leasePayload: LocalCapabilityLease = {
+  lease_id: "local_lease_123",
+  org_id: "org_123",
+  actor_id: "user_123",
+  workflow_id: "workflow_123",
+  run_id: "run_123",
+  node_id: "node_harness",
+  hcp_session_id: "session-1",
+  execution_host_id: "host-local",
+  provider_instance_id: "provider-1",
+  workspace_id: "workspace-1",
+  issued_at: sentAt,
+  expires_at: "2026-01-01T01:00:00.000Z",
+  policy_version: "policy_2026_01_01",
+  capabilities: [
+    {
+      id: "filesystem",
+      scopes: ["workspace_read", "workspace_write"],
+    },
+  ],
+};
+
+const attachmentPayload: McpServerAttachment = {
+  name: "tools",
+  transport: "streamable_http",
+  url: "https://example.com/mcp",
+  headers: { Authorization: "Bearer lease-token" },
+  lease_id: "mcp_lease_123",
+  proof_of_possession: {
+    scheme: "runner_signed_request",
+    key_id: "proof_key_123",
+    required_headers: ["x-hcp-session-id", "x-hcp-proof-signature"],
+  },
+  allowed_tools: ["read_status"],
 };
 
 describe("HCP protocol runtime parsing", () => {
@@ -122,6 +164,15 @@ describe("HCP protocol runtime parsing", () => {
                 capabilities: { option_descriptors: [] },
               },
             ],
+            local_capabilities: ["filesystem"],
+          },
+        ],
+        local_capabilities: [
+          {
+            id: "filesystem",
+            status: "available",
+            scopes: ["workspace_read", "workspace_write"],
+            approval_required: false,
           },
         ],
         workspaces: [{ id: "workspace-1", path: "/tmp/workspace" }],
@@ -132,24 +183,16 @@ describe("HCP protocol runtime parsing", () => {
     assert.equal(
       parseHcpSessionStartPayload({
         session_id: "session-1",
+        workspace_id: "workspace-1",
         provider_instance_id: "provider-1",
         driver_kind: "mock",
         cwd: "/tmp/workspace",
-        runtime_mode: "approval_required",
         sandbox_mode: "workspace_write",
         approval_policy: "ask",
         continue_session: false,
         model_selection: { model: "model-a" },
-        mcp_servers: [
-          {
-            name: "tools",
-            transport: "streamable_http",
-            url: "https://example.com/mcp",
-            headers: { authorization: "Bearer redacted" },
-            expires_at: sentAt,
-            allowed_tools: ["read_status"],
-          },
-        ],
+        local_capability_lease: leasePayload,
+        mcp_servers: [attachmentPayload],
       }).mcp_servers[0]?.name,
       "tools",
     );
@@ -174,13 +217,69 @@ describe("HCP protocol runtime parsing", () => {
       "turn.started",
     );
 
+    assert.equal(parseMcpServerAttachment(attachmentPayload).transport, "streamable_http");
+  });
+
+  it("exports one runtime schema per known event type", () => {
+    assert.equal(Object.keys(knownHcpEventDataSchemas).length, KNOWN_HCP_EVENT_TYPES.length);
+    assert.ok(knownHcpEventDataSchemas["workspace.preflight.completed"]);
+    assert.ok(knownHcpEventDataSchemas["local_capability.action.failed"]);
+  });
+
+  it("requires terminal turn final outputs and local action attribution", () => {
+    assertRejected(
+      {
+        session_id: "session-1",
+        turn_id: "turn-1",
+        sequence: 1,
+        event_type: "turn.completed",
+        created_at: sentAt,
+        data: { status: "accepted" },
+      },
+      parseHcpHarnessEventPayload,
+    );
+
+    assertRejected(
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "local_capability.action.started",
+        created_at: sentAt,
+        data: {
+          lease_id: "local_lease_123",
+          run_id: "run_123",
+          workspace_id: "workspace-1",
+          provider_instance_id: "provider-1",
+          capability_id: "filesystem",
+          action: "read_file",
+          status: "started",
+        },
+      },
+      parseHcpHarnessEventPayload,
+    );
+  });
+
+  it("accepts provider and extension events but rejects arbitrary event families", () => {
     assert.equal(
-      parseMcpServerAttachment({
-        name: "tools",
-        transport: "streamable_http",
-        url: "https://example.com/mcp",
-      }).transport,
-      "streamable_http",
+      parseHcpHarnessEventPayload({
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "provider.codex.raw",
+        created_at: sentAt,
+        data: { summary: "Provider event", fields: { native_id: "evt_1" } },
+      }).event_type,
+      "provider.codex.raw",
+    );
+
+    assertRejected(
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "custom.raw",
+        created_at: sentAt,
+        data: {},
+      },
+      parseHcpHarnessEventPayload,
     );
   });
 
@@ -190,6 +289,33 @@ describe("HCP protocol runtime parsing", () => {
         name: "tools",
         transport: "stdio",
         url: "not-a-url",
+      },
+      parseMcpServerAttachment,
+    );
+
+    assertRejected(
+      {
+        name: "tools",
+        transport: "streamable_http",
+        url: "ftp://example.com/mcp",
+        headers: { Authorization: "Bearer token" },
+        lease_id: "lease_123",
+        proof_of_possession: {
+          scheme: "runner_signed_request",
+          key_id: "proof_key_123",
+          required_headers: ["x-hcp-proof-signature"],
+        },
+      },
+      parseMcpServerAttachment,
+    );
+
+    assertRejected(
+      {
+        name: "tools",
+        transport: "streamable_http",
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer token" },
+        lease_id: "lease_123",
       },
       parseMcpServerAttachment,
     );

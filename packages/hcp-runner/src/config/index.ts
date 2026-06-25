@@ -12,6 +12,17 @@ const controlPlaneUrlSchema = z.string().url().refine(
 );
 
 const harnessOptionValueSchema = z.union([z.string(), z.boolean(), z.number()]);
+const localCapabilityIdSchema = z.enum(["filesystem", "git", "shell", "dev_server", "browser"]);
+
+export const LocalCapabilityConfigSchema = z.object({
+  id: localCapabilityIdSchema,
+  status: z.enum(["available", "unavailable", "disabled", "unknown"]).default("available"),
+  scopes: z.array(z.string().min(1)).default([]),
+  approval_required: z.boolean().default(false),
+  message: z.string().min(1).optional(),
+});
+
+export type LocalCapabilityConfig = z.infer<typeof LocalCapabilityConfigSchema>;
 
 const HarnessOptionDescriptorConfigSchema = z.object({
   id: z.string().min(1),
@@ -57,6 +68,7 @@ export const ProviderInstanceConfigSchema = z.object({
   hidden_models: z.array(z.string().min(1)).default([]),
   model_order: z.array(z.string().min(1)).default([]),
   favorite_models: z.array(z.string().min(1)).default([]),
+  local_capabilities: z.array(localCapabilityIdSchema).default(["filesystem", "git", "shell"]),
 });
 
 export type ProviderInstanceConfig = z.infer<typeof ProviderInstanceConfigSchema>;
@@ -67,6 +79,14 @@ export const RunnerConfigSchema = z.object({
   control_plane_url: controlPlaneUrlSchema,
   workspaces: z.array(RunnerWorkspaceConfigSchema).default([]),
   provider_instances: z.array(ProviderInstanceConfigSchema).default([]),
+  local_capabilities: z
+    .array(LocalCapabilityConfigSchema)
+    .default([
+      { id: "filesystem", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
+      { id: "git", status: "available", scopes: ["workspace_read"], approval_required: false },
+      { id: "shell", status: "available", scopes: ["workspace"], approval_required: true },
+      { id: "dev_server", status: "available", scopes: ["workspace"], approval_required: true },
+    ]),
 });
 
 export type RunnerConfig = z.infer<typeof RunnerConfigSchema>;
