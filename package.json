@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -b",
     "check": "tsc -b --pretty false",
+    "test": "npm test --workspaces --if-present",
     "dev:runner": "tsx packages/hcp-runner/src/index.ts",
     "dev:mock": "tsx apps/mock-control-plane/src/index.ts"
   },

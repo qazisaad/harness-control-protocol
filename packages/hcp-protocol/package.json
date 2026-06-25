@@ -13,6 +13,10 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "check": "tsc -b --pretty false"
+    "check": "tsc -b --pretty false",
+    "test": "tsx --test src/**/*.test.ts test/**/*.test.ts"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   }
 }

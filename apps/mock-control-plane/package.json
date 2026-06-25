@@ -8,9 +8,14 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
-    "check": "tsc -b --pretty false"
+    "check": "tsc -b --pretty false",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@hcp-runner/protocol": "0.0.0"
+    "@hcp-runner/protocol": "0.0.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }
