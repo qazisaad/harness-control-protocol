@@ -1,0 +1,21 @@
+{
+  "id": "message-host-hello",
+  "type": "host.hello",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "runner_id": "runner-local",
+    "host_id": "host-local",
+    "runner_version": "0.0.0",
+    "supported_protocol_versions": ["hcp.v0"],
+    "capabilities": ["providers", "mcp_streamable_http"],
+    "resume": {
+      "sessions": [
+        {
+          "session_id": "session-1",
+          "last_event_sequence": 12
+        }
+      ]
+    }
+  }
+}

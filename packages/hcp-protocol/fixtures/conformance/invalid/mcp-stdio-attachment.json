@@ -1,0 +1,27 @@
+{
+  "id": "message-mcp-stdio-attachment",
+  "type": "harness.session.start",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "workspace_id": "workspace-1",
+    "provider_instance_id": "provider-1",
+    "driver_kind": "codex",
+    "cwd": "/tmp/workspace",
+    "sandbox_mode": "workspace_write",
+    "approval_policy": "ask",
+    "continue_session": false,
+    "model_selection": {
+      "model": "gpt-5.3-codex"
+    },
+    "mcp_servers": [
+      {
+        "name": "bad",
+        "transport": "stdio",
+        "command": "node",
+        "args": ["server.js"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "message-provider-event",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 2,
+    "event_type": "provider.codex.native_event",
+    "created_at": "2026-01-01T00:00:02.000Z",
+    "data": {
+      "summary": "Native provider event",
+      "fields": {
+        "provider_event_id": "evt-1"
+      }
+    }
+  }
+}

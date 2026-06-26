@@ -32,6 +32,7 @@ const lease: LocalCapabilityLease = {
     {
       id: "shell",
       scopes: ["workspace"],
+      approval_policy: "full_access",
       command_policy: {
         allowed_executables: ["npm"],
         denied_executables: ["rm"],
@@ -43,7 +44,20 @@ const lease: LocalCapabilityLease = {
         network_policy: "inherit",
       },
     },
-    { id: "dev_server", scopes: ["workspace"] },
+    {
+      id: "dev_server",
+      scopes: ["workspace"],
+      approval_policy: "full_access",
+      command_policy: {
+        allowed_executables: ["npm"],
+        argv_patterns: ["^run dev"],
+        cwd_policy: "selected_workspace_only",
+        env_policy: "minimal",
+        allow_shell: false,
+        timeout_seconds: 30,
+        network_policy: "inherit",
+      },
+    },
   ],
 };
 
@@ -161,18 +175,31 @@ describe("LocalCapabilityEngine", () => {
     }
   });
 
-  it("authorizes dev server actions through the dev_server capability", () => {
+  it("authorizes dev server actions through the dev_server capability", async () => {
     const engine = new LocalCapabilityEngine(new LocalCapabilityLeaseManager(config(), "host-1"));
+    const workspace = await createWorkspace();
 
-    assert.equal(
-      engine.authorizeDevServerAction(lease, {
-        session_id: "session-1",
-        turn_id: "turn-1",
-        workspace_id: "workspace-1",
-        provider_instance_id: "provider-1",
-        action: "inspect",
-      }).id,
-      "dev_server",
-    );
+    try {
+      assert.equal(
+        (
+          await engine.authorizeDevServerAction(lease, {
+            session_id: "session-1",
+            turn_id: "turn-1",
+            workspace_id: "workspace-1",
+            provider_instance_id: "provider-1",
+            action: "start",
+            executable: "npm",
+            argv: ["run", "dev"],
+            cwd: workspace.root,
+            workspace_root: workspace.root,
+            use_shell: false,
+            timeout_seconds: 20,
+          })
+        ).id,
+        "dev_server",
+      );
+    } finally {
+      await workspace.cleanup();
+    }
   });
 });

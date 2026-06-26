@@ -10,18 +10,50 @@ import {
   HCP_VERSION,
   createHcpEnvelope,
   parseHcpMessage,
+  type HcpHarnessEventPayload,
   type HcpMessage,
   type HcpSessionStartPayload,
+  type HcpTurnSendPayload,
 } from "@hcp-runner/protocol";
 
 import { RunnerConnection } from "./runner-connection.js";
 import type { RunnerConfig } from "../config/index.js";
+import { HarnessSessionManager } from "../harnesses/index.js";
 
 type TestWorkspace = {
   root: string;
   project: string;
   cleanup(): Promise<void>;
 };
+
+class BlockingTurnSessionManager extends HarnessSessionManager {
+  turnCalls = 0;
+  readonly turnStarted: Promise<void>;
+  readonly #resolveTurnStarted: () => void;
+  #releaseTurn: (() => void) | undefined;
+
+  constructor(config: RunnerConfig) {
+    super(config);
+    let resolveTurnStarted: () => void = () => undefined;
+    this.turnStarted = new Promise<void>((resolve) => {
+      resolveTurnStarted = resolve;
+    });
+    this.#resolveTurnStarted = resolveTurnStarted;
+  }
+
+  override async sendTurn(_payload: HcpTurnSendPayload): Promise<HcpHarnessEventPayload[]> {
+    this.turnCalls += 1;
+    this.#resolveTurnStarted();
+    await new Promise<void>((resolve) => {
+      this.#releaseTurn = resolve;
+    });
+    return [];
+  }
+
+  releaseTurn(): void {
+    this.#releaseTurn?.();
+  }
+}
 
 async function createWorkspace(): Promise<TestWorkspace> {
   const root: string = await mkdtemp(join(tmpdir(), "hcp-runner-connection-"));
@@ -240,6 +272,49 @@ describe("RunnerConnection", () => {
     }
   });
 
+  it("does not execute duplicate in-flight commands twice", async () => {
+    const workspace = await createWorkspace();
+    const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: "ws://placeholder.invalid" };
+    const harnessSessions = new BlockingTurnSessionManager(config);
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+          }),
+        ),
+      );
+
+      const command = createHcpEnvelope("harness.turn.send", {
+        session_id: "session-1",
+        turn_id: "turn-1",
+        input: "hello",
+      });
+      socket.send(JSON.stringify(command));
+      await harnessSessions.turnStarted;
+      socket.send(JSON.stringify(command));
+      harnessSessions.releaseTurn();
+    });
+    const connection = new RunnerConnection({
+      config: { ...config, control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+      harnessSessions,
+    });
+
+    try {
+      await connection.connect();
+      await waitForAckCount(server.messages, 2);
+      assert.equal(harnessSessions.turnCalls, 1);
+      assert.equal(server.messages.filter((message) => message.type === "hcp.command.ack" && message.payload.duplicate).length, 1);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+    }
+  });
+
   it("reconnects and sends host hello after a dropped socket", async () => {
     const workspace = await createWorkspace();
     let connectionCount = 0;
@@ -271,6 +346,50 @@ describe("RunnerConnection", () => {
       await connection.connect();
       await waitForMessageCount(server.messages, "host.hello", 2);
       assert.equal(connectionCount, 2);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+    }
+  });
+
+  it("replays retained session events after an accepted resume cursor", async () => {
+    const workspace = await createWorkspace();
+    const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: "ws://placeholder.invalid" };
+    const harnessSessions = new HarnessSessionManager(config);
+    await harnessSessions.startSession(createSessionStartPayload(workspace.project));
+    await harnessSessions.sendTurn({
+      session_id: "session-1",
+      turn_id: "turn-1",
+      input: "hello",
+    });
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      const hello = await waitForMessage(messages, "host.hello");
+      assert.deepEqual(hello.payload.resume?.sessions, [{ session_id: "session-1", last_event_sequence: 3 }]);
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+          }),
+        ),
+      );
+    });
+    const connection = new RunnerConnection({
+      config: { ...config, control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+      harnessSessions,
+      resumeCursor: { sessions: [{ session_id: "session-1", last_event_sequence: 3 }] },
+    });
+
+    try {
+      await connection.connect();
+      await waitForEventCount(server.messages, 2);
+      const events = server.messages.filter((message) => message.type === "harness.event");
+      assert.deepEqual(
+        events.map((event) => event.payload.event_type),
+        ["turn.started", "turn.completed"],
+      );
     } finally {
       await connection.close();
       await server.close();

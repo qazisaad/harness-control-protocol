@@ -8,7 +8,7 @@ Open-source local runner for the Harness Control Protocol (HCP).
 
 HCP connects hosted apps, workflow systems, and local coding-agent harnesses through an outbound WebSocket connection. The control plane can start sessions, send turns, attach short-lived MCP servers, and receive normalized runtime events without requiring inbound network access to the user's machine.
 
-This repository contains the protocol package, runner implementation, MCP attachment layer, local capability policy engine, mock control plane, and architecture docs needed to build and test HCP integrations.
+This repository contains the protocol package, runner implementation, MCP attachment layer, local capability engine, mock control plane, sample MCP server, examples, and architecture docs needed to build and test HCP integrations.
 
 ## Project Status
 
@@ -17,19 +17,21 @@ HCP Runner is an early, pre-1.0 foundation. The protocol and runner core are imp
 Implemented today:
 
 - HCP v0 envelopes, message schemas, event types, and parser helpers.
+- Public JSON Schema export, conformance fixtures, and a conformance CLI.
 - Runner CLI commands for `version`, `pair`, and `run`.
-- Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, and capability snapshots.
+- Reference pairing with single-use pairing codes, local credential storage, and short-lived connection tokens.
+- Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, replay, and capability snapshots.
 - Control-plane command handling with ACK/NACK responses and duplicate-command idempotency.
-- Session lifecycle events for start, configure, turn, cancel, and stop.
-- Local capability leases for filesystem, Git, shell, and dev-server access.
+- Adapter-based session lifecycle with a deterministic mock adapter and a Codex adapter.
+- Local capability leases and real filesystem, Git, shell, and dev-server executors.
 - MCP Streamable HTTP attachment client using the official Model Context Protocol TypeScript SDK.
 - Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
-- Mock control plane for local development and integration testing.
+- Sample Streamable HTTP MCP server with server-side proof verification.
+- Mock control plane and end-to-end example for local development and integration testing.
 
 Next major work:
 
-- Production adapters for concrete harnesses such as Codex and Claude Code.
-- Real examples for app developers and workflow engines.
+- Claude Code adapter and richer provider-native event normalization.
 - Published packages and release automation.
 - Contributor docs, security-reporting process, and compatibility matrix.
 
@@ -58,6 +60,8 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | `packages/hcp-protocol` | Public TypeScript types, Zod schemas, HCP message envelopes, and parser helpers. |
 | `packages/hcp-runner` | Local runner CLI, connection lifecycle, config loading, session management, MCP attachment client, and local action policies. |
 | `apps/mock-control-plane` | Local WebSocket control plane for development, tests, and third-party validation. |
+| `apps/sample-mcp-server` | Streamable HTTP MCP server that verifies HCP proof-of-possession headers. |
+| `examples/basic-runner-flow.ts` | Standalone reference flow from pairing through session turn and cleanup. |
 | `docs/architecture.md` | Architecture boundary and MCP SDK responsibility split. |
 | `docs/license-decision.md` | Apache-2.0 licensing rationale. |
 
@@ -85,7 +89,7 @@ Start the mock control plane in one terminal:
 npm run dev:mock -- --host 127.0.0.1 --port 8787
 ```
 
-Create a local runner config and connect the runner in another terminal:
+Create a paired local runner config and connect the runner in another terminal:
 
 ```bash
 npm run dev:runner -- pair http://127.0.0.1:8787 \
@@ -96,7 +100,21 @@ npm run dev:runner -- pair http://127.0.0.1:8787 \
 npm run dev:runner -- run --config ./runner.local.json
 ```
 
-The `pair` command accepts `http`, `https`, `ws`, or `wss` control-plane URLs and writes a runner config with a normalized WebSocket URL.
+The `pair` command accepts `http`, `https`, `ws`, or `wss` control-plane URLs. With the mock control plane it requests a single-use pairing code, exchanges it for a runner credential, stores credentials separately, and writes a runner config with a normalized WebSocket URL.
+
+For tests that only need a config file and no reference credential exchange, pass `--offline`.
+
+Run the standalone example:
+
+```bash
+npx tsx examples/basic-runner-flow.ts
+```
+
+Run the public protocol conformance fixtures:
+
+```bash
+npm run conformance --workspace @hcp-runner/protocol
+```
 
 ## Runner Configuration
 
@@ -237,6 +255,7 @@ HCP Runner treats the local machine as the sensitive boundary.
 - Local actions require leases and are checked again at action time.
 - MCP tools are attached per session and closed at session end.
 - Tool arguments, outputs, request headers, and errors are redacted before event logging.
+- The sample MCP server rejects invalid proof signatures, nonce reuse, stale timestamps, host/session/provider/workspace/server binding mismatches, revoked leases, and unselected tools.
 
 This project does not yet include a formal `SECURITY.md`. Until that exists, avoid publishing exploit details in public issues; open a minimal issue requesting a private maintainer contact path.
 

@@ -1,0 +1,80 @@
+{
+  "id": "message-session-start",
+  "type": "harness.session.start",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "workspace_id": "workspace-1",
+    "provider_instance_id": "provider-1",
+    "driver_kind": "codex",
+    "cwd": "/tmp/workspace",
+    "sandbox_mode": "workspace_write",
+    "approval_policy": "ask",
+    "continue_session": false,
+    "model_selection": {
+      "model": "gpt-5.3-codex"
+    },
+    "workspace_preflight": {
+      "workspace_id": "workspace-1",
+      "expected_branch": "main",
+      "allow_dirty_worktree": true
+    },
+    "local_capability_lease": {
+      "lease_id": "local-lease-1",
+      "org_id": "org-1",
+      "actor_id": "user-1",
+      "workflow_id": "workflow-1",
+      "run_id": "run-1",
+      "node_id": "node-harness",
+      "hcp_session_id": "session-1",
+      "execution_host_id": "host-local",
+      "provider_instance_id": "provider-1",
+      "workspace_id": "workspace-1",
+      "issued_at": "2026-01-01T00:00:00.000Z",
+      "expires_at": "2026-01-01T01:00:00.000Z",
+      "policy_version": "policy-2026-01-01",
+      "capabilities": [
+        {
+          "id": "filesystem",
+          "scopes": ["workspace_read", "workspace_write"]
+        },
+        {
+          "id": "shell",
+          "scopes": ["workspace"],
+          "approval_policy": "ask",
+          "command_policy": {
+            "allowed_executables": ["npm"],
+            "denied_executables": ["rm"],
+            "cwd_policy": "selected_workspace_only",
+            "env_policy": "minimal",
+            "allow_shell": false,
+            "timeout_seconds": 60,
+            "network_policy": "inherit"
+          }
+        }
+      ]
+    },
+    "mcp_servers": [
+      {
+        "name": "linear",
+        "transport": "streamable_http",
+        "url": "https://example.com/mcp/linear",
+        "headers": {
+          "Authorization": "Bearer lease-token"
+        },
+        "lease_id": "mcp-lease-1",
+        "proof_of_possession": {
+          "scheme": "runner_signed_request",
+          "key_id": "proof-key-1",
+          "required_headers": [
+            "x-hcp-session-id",
+            "x-hcp-host-id",
+            "x-hcp-proof-signature",
+            "x-hcp-proof-nonce"
+          ]
+        }
+      }
+    ]
+  }
+}

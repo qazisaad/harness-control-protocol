@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { HarnessSessionError, HarnessSessionManager, type HarnessMcpClient } from "./index.js";
+import type { AuditLogEvent } from "../audit/index.js";
 import type { LocalCapabilityConfig, RunnerConfig } from "../config/index.js";
 
 const defaultCapabilities: LocalCapabilityConfig[] = [
@@ -68,7 +69,7 @@ describe("HarnessSessionManager", () => {
         model_selection: { model: "mock-model" },
         mcp_servers: [],
       });
-      const turnEvents = manager.sendTurn({
+      const turnEvents = await manager.sendTurn({
         session_id: "session-1",
         turn_id: "turn-1",
         input: "hello",
@@ -131,6 +132,36 @@ describe("HarnessSessionManager", () => {
     } finally {
       await workspace.cleanup();
       await outside.cleanup();
+    }
+  });
+
+  it("rejects session starts when no workspace allowlist is configured", async () => {
+    const workspace = await createWorkspace();
+    const noWorkspaceConfig: RunnerConfig = {
+      ...createConfig(workspace.root),
+      workspaces: [],
+    };
+    const manager = new HarnessSessionManager(noWorkspaceConfig);
+
+    try {
+      await assert.rejects(
+        () =>
+          manager.startSession({
+            session_id: "session-1",
+            workspace_id: "repo",
+            provider_instance_id: "mock-provider",
+            driver_kind: "mock",
+            cwd: workspace.root,
+            sandbox_mode: "workspace_write",
+            approval_policy: "ask",
+            continue_session: false,
+            model_selection: { model: "mock-model" },
+            mcp_servers: [],
+          }),
+        /no workspaces configured/,
+      );
+    } finally {
+      await workspace.cleanup();
     }
   });
 
@@ -285,6 +316,90 @@ describe("HarnessSessionManager", () => {
 
       assert.deepEqual(connected, ["tools"]);
       assert.deepEqual(closed, ["tools"]);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("retains replayable events and reports replay gaps", async () => {
+    const workspace = await createWorkspace();
+    const manager = new HarnessSessionManager(createConfig(workspace.root), {
+      replayRetentionEventsPerSession: 4,
+    });
+
+    try {
+      await manager.startSession({
+        session_id: "session-1",
+        workspace_id: "repo",
+        provider_instance_id: "mock-provider",
+        driver_kind: "mock",
+        cwd: workspace.root,
+        sandbox_mode: "workspace_write",
+        approval_policy: "ask",
+        continue_session: false,
+        model_selection: { model: "mock-model" },
+        mcp_servers: [],
+      });
+      await manager.sendTurn({
+        session_id: "session-1",
+        turn_id: "turn-1",
+        input: "hello",
+      });
+
+      const replayed = manager.replayEventsAfter({
+        sessions: [{ session_id: "session-1", last_event_sequence: 3 }],
+      });
+      assert.deepEqual(
+        replayed.map((event) => event.event_type),
+        ["turn.started", "turn.completed"],
+      );
+
+      const unavailable = manager.replayEventsAfter({
+        sessions: [{ session_id: "session-1", last_event_sequence: 0 }],
+      });
+      assert.equal(unavailable[0]?.event_type, "session.replay_unavailable");
+      assert.equal((unavailable[0]?.data as Record<string, unknown> | undefined)?.reason, "cursor_outside_retention");
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("writes redacted audit events through the configured audit logger", async () => {
+    const workspace = await createWorkspace();
+    const auditEvents: AuditLogEvent[] = [];
+    const manager = new HarnessSessionManager(createConfig(workspace.root), {
+      auditLogger: {
+        async record(event: AuditLogEvent): Promise<void> {
+          auditEvents.push(event);
+        },
+      },
+    });
+
+    try {
+      await manager.startSession({
+        session_id: "session-1",
+        workspace_id: "repo",
+        provider_instance_id: "mock-provider",
+        driver_kind: "mock",
+        cwd: workspace.root,
+        sandbox_mode: "workspace_write",
+        approval_policy: "ask",
+        continue_session: false,
+        model_selection: { model: "mock-model" },
+        mcp_servers: [],
+      });
+      await manager.sendTurn({
+        session_id: "session-1",
+        turn_id: "turn-1",
+        input: "hello",
+      });
+
+      assert.deepEqual(
+        auditEvents.map((event) => event.event),
+        ["session.started", "turn.completed"],
+      );
+      assert.equal(auditEvents[0]?.session_id, "session-1");
+      assert.equal(auditEvents[1]?.turn_id, "turn-1");
     } finally {
       await workspace.cleanup();
     }

@@ -1,0 +1,11 @@
+{
+  "id": "message-command-ack",
+  "type": "hcp.command.ack",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "command-1",
+    "accepted_at": "2026-01-01T00:00:01.000Z",
+    "duplicate": false
+  }
+}

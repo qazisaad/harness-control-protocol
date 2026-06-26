@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  HCP_METADATA_MAX_ENCODED_BYTES,
+  HCP_PAYLOAD_MAX_ENCODED_BYTES,
   HCP_VERSION,
   hcpMessageSchema,
   parseHcpMessage,
@@ -133,6 +135,31 @@ test("rejects unknown envelope types and top-level fields", () => {
         capabilities: [],
       }),
       unexpected: true,
+    }).success,
+    false,
+  );
+});
+
+test("rejects oversized metadata and payloads", () => {
+  const baseEnvelope = createEnvelope("host.hello", {
+    runner_id: "runner-local",
+    host_id: "host-local",
+    runner_version: "0.0.0",
+    supported_protocol_versions: [HCP_VERSION],
+    capabilities: [],
+  });
+
+  assert.equal(
+    hcpMessageSchema.safeParse({
+      ...baseEnvelope,
+      metadata: { oversized: "x".repeat(HCP_METADATA_MAX_ENCODED_BYTES + 1) },
+    }).success,
+    false,
+  );
+  assert.equal(
+    hcpMessageSchema.safeParse({
+      ...baseEnvelope,
+      payload: { oversized: "x".repeat(HCP_PAYLOAD_MAX_ENCODED_BYTES + 1) },
     }).success,
     false,
   );

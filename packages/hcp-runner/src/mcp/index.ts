@@ -2,6 +2,7 @@ export {
   McpAttachmentClient,
   McpAttachmentExpiredError,
   McpToolPolicyError,
+  createDevelopmentHmacProofSigner,
   type McpAttachmentClientOptions,
   type McpAttachmentEvent,
   type McpAttachmentEventSink,

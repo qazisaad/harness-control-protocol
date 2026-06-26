@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  HCP_MESSAGE_MAX_ENCODED_BYTES,
   HCP_VERSION,
   createHcpEnvelope,
   parseHcpEnvelope,
@@ -14,15 +15,22 @@ import {
   type HcpMessage,
   type HcpAckPayload,
   type HcpNackPayload,
+  type HostResumeCursor,
   type ControlPlaneCommandMessageType,
 } from "@hcp-runner/protocol";
 import WebSocket from "ws";
 
 import type { RunnerConfig } from "../config/index.js";
+import { HarnessAdapterError } from "../harnesses/adapters.js";
 import { HarnessSessionError, HarnessSessionManager } from "../harnesses/index.js";
 import { ProviderInstanceRegistry } from "../host/provider-registry.js";
 
 type CommandRecord =
+  | {
+      payloadHash: string;
+      outcome: "pending";
+      completion: Promise<SettledCommandRecord>;
+    }
   | {
       payloadHash: string;
       outcome: "ack";
@@ -33,6 +41,8 @@ type CommandRecord =
       nackPayload: HcpNackPayload;
     };
 
+type SettledCommandRecord = Exclude<CommandRecord, { outcome: "pending" }>;
+
 export type RunnerReconnectOptions = {
   initialDelayMs?: number;
   maxDelayMs?: number;
@@ -42,6 +52,8 @@ export type RunnerConnectionOptions = {
   config: RunnerConfig;
   runnerVersion: string;
   lastEventSequence?: number;
+  resumeCursor?: HostResumeCursor;
+  connectionTokenProvider?: () => Promise<string | undefined>;
   onLog?: (message: string) => void;
   harnessSessions?: HarnessSessionManager;
   reconnect?: RunnerReconnectOptions;
@@ -50,7 +62,8 @@ export type RunnerConnectionOptions = {
 export class RunnerConnection {
   readonly #config: RunnerConfig;
   readonly #runnerVersion: string;
-  readonly #lastEventSequence: number | undefined;
+  readonly #resumeCursor: HostResumeCursor | undefined;
+  readonly #connectionTokenProvider: (() => Promise<string | undefined>) | undefined;
   readonly #onLog: (message: string) => void;
   readonly #harnessSessions: HarnessSessionManager;
   readonly #reconnectInitialDelayMs: number;
@@ -65,7 +78,14 @@ export class RunnerConnection {
   constructor(options: RunnerConnectionOptions) {
     this.#config = options.config;
     this.#runnerVersion = options.runnerVersion;
-    this.#lastEventSequence = options.lastEventSequence;
+    this.#resumeCursor =
+      options.resumeCursor ??
+      (options.lastEventSequence === undefined
+        ? undefined
+        : {
+            sessions: [{ session_id: "default", last_event_sequence: options.lastEventSequence }],
+          });
+    this.#connectionTokenProvider = options.connectionTokenProvider;
     this.#onLog = options.onLog ?? (() => undefined);
     this.#harnessSessions = options.harnessSessions ?? new HarnessSessionManager(options.config);
     this.#reconnectInitialDelayMs = options.reconnect?.initialDelayMs ?? 1_000;
@@ -78,7 +98,12 @@ export class RunnerConnection {
   }
 
   async #openSocket(): Promise<void> {
-    const socket = new WebSocket(this.#config.control_plane_url);
+    const connectionToken: string | undefined = this.#connectionTokenProvider
+      ? await this.#connectionTokenProvider()
+      : undefined;
+    const socket = new WebSocket(this.#config.control_plane_url, {
+      ...(connectionToken ? { headers: { authorization: `Bearer ${connectionToken}` } } : {}),
+    });
     this.#socket = socket;
 
     socket.on("message", (data: WebSocket.RawData) => {
@@ -146,19 +171,22 @@ export class RunnerConnection {
         "local_shell",
         "local_dev_server",
       ],
-      ...(this.#lastEventSequence === undefined
-        ? {}
-        : {
-            resume: {
-              sessions: [{ session_id: "default", last_event_sequence: this.#lastEventSequence }],
-            },
-          }),
+      ...(this.#resumeCursor ? { resume: this.#resumeCursor } : {}),
     };
 
     this.#send(createHcpEnvelope("host.hello", payload));
   }
 
   async #handleMessage(raw: string): Promise<void> {
+    if (Buffer.byteLength(raw, "utf8") > HCP_MESSAGE_MAX_ENCODED_BYTES) {
+      this.#sendNack("unknown", {
+        code: "message_too_large",
+        message: `Control plane message exceeds ${HCP_MESSAGE_MAX_ENCODED_BYTES} encoded bytes.`,
+        retryable: false,
+      });
+      return;
+    }
+
     let envelope: HcpMessage;
     try {
       envelope = parseJsonHcpMessage(raw);
@@ -169,7 +197,7 @@ export class RunnerConnection {
 
     switch (envelope.type) {
       case "host.accepted":
-        this.#handleAccepted(envelope);
+        await this.#handleAccepted(envelope);
         return;
       case "host.rejected":
         this.#onLog(`Control plane rejected runner: ${envelope.payload.reason}`);
@@ -210,10 +238,21 @@ export class RunnerConnection {
     }
   }
 
-  #handleAccepted(envelope: HcpHostAcceptedMessage): void {
+  async #handleAccepted(envelope: HcpHostAcceptedMessage): Promise<void> {
     this.#onLog(`Control plane accepted ${envelope.payload.protocol_version}.`);
-    this.#sendCapabilities();
+    await this.#sendCapabilities();
+    this.#replayRequestedEvents();
     this.#startHeartbeat(envelope.payload.heartbeat_interval_seconds);
+  }
+
+  #replayRequestedEvents(): void {
+    if (!this.#resumeCursor) {
+      return;
+    }
+    const events: HcpHarnessEventPayload[] = this.#harnessSessions.replayEventsAfter(this.#resumeCursor);
+    for (const event of events) {
+      this.#send(createHcpEnvelope("harness.event", event));
+    }
   }
 
   async #handleCommand<TMessage extends Extract<HcpMessage, { type: ControlPlaneCommandMessageType }>>(
@@ -226,6 +265,15 @@ export class RunnerConnection {
 
     if (existingRecord !== undefined) {
       if (existingRecord.payloadHash === commandHash) {
+        if (existingRecord.outcome === "pending") {
+          const settledRecord: SettledCommandRecord = await existingRecord.completion;
+          if (settledRecord.outcome === "ack") {
+            this.#sendAck(commandId, true);
+          } else {
+            this.#sendNackPayload(settledRecord.nackPayload);
+          }
+          return;
+        }
         if (existingRecord.outcome === "ack") {
           this.#sendAck(commandId, true);
         } else {
@@ -242,23 +290,37 @@ export class RunnerConnection {
       return;
     }
 
+    let settleCommand: (record: SettledCommandRecord) => void;
+    const completion: Promise<SettledCommandRecord> = new Promise<SettledCommandRecord>((resolve) => {
+      settleCommand = resolve;
+    });
+    this.#commandRecords.set(commandId, {
+      payloadHash: commandHash,
+      outcome: "pending",
+      completion,
+    });
+
     try {
       const events: HcpHarnessEventPayload[] = await handler(envelope);
-      this.#commandRecords.set(commandId, {
+      const record: SettledCommandRecord = {
         payloadHash: commandHash,
         outcome: "ack",
-      });
+      };
+      this.#commandRecords.set(commandId, record);
+      settleCommand!(record);
       this.#sendAck(commandId, false);
       for (const event of events) {
         this.#send(createHcpEnvelope("harness.event", event));
       }
     } catch (error: unknown) {
       const nackPayload: HcpNackPayload = createNackPayload(commandId, toHcpError(error));
-      this.#commandRecords.set(commandId, {
+      const record: SettledCommandRecord = {
         payloadHash: commandHash,
         outcome: "nack",
         nackPayload,
-      });
+      };
+      this.#commandRecords.set(commandId, record);
+      settleCommand!(record);
       this.#sendNackPayload(nackPayload);
     }
   }
@@ -267,11 +329,11 @@ export class RunnerConnection {
     return this.#harnessSessions.startSession(envelope.payload);
   }
 
-  #handleTurnSend(envelope: Extract<HcpMessage, { type: "harness.turn.send" }>): HcpHarnessEventPayload[] {
+  #handleTurnSend(envelope: Extract<HcpMessage, { type: "harness.turn.send" }>): Promise<HcpHarnessEventPayload[]> {
     return this.#harnessSessions.sendTurn(envelope.payload);
   }
 
-  #handleTurnCancel(envelope: Extract<HcpMessage, { type: "harness.turn.cancel" }>): HcpHarnessEventPayload[] {
+  #handleTurnCancel(envelope: Extract<HcpMessage, { type: "harness.turn.cancel" }>): Promise<HcpHarnessEventPayload[]> {
     return this.#harnessSessions.cancelTurn(envelope.payload.session_id, envelope.payload.turn_id);
   }
 
@@ -279,8 +341,8 @@ export class RunnerConnection {
     return this.#harnessSessions.stopSession(envelope.payload.session_id, envelope.payload.reason);
   }
 
-  #sendCapabilities(): void {
-    const registry = new ProviderInstanceRegistry(this.#config);
+  async #sendCapabilities(): Promise<void> {
+    const registry = new ProviderInstanceRegistry(this.#config, await this.#harnessSessions.providerDriverStatuses());
     const payload: HcpHostCapabilitiesUpdatedPayload = registry.snapshot();
     this.#send(createHcpEnvelope("host.capabilities.updated", payload));
   }
@@ -394,6 +456,14 @@ export class RunnerConnection {
 
 function toHcpError(error: unknown): HcpError {
   if (error instanceof HarnessSessionError) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: false,
+    };
+  }
+
+  if (error instanceof HarnessAdapterError) {
     return {
       code: error.code,
       message: error.message,

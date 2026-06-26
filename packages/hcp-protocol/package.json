@@ -5,15 +5,31 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "hcp-protocol-conformance": "./dist/bin/conformance.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance.d.ts",
+      "import": "./dist/conformance.js"
+    },
+    "./json-schema": {
+      "types": "./dist/json-schema.d.ts",
+      "import": "./dist/json-schema.js"
+    },
+    "./schema.json": {
+      "default": "./schemas/hcp-message.schema.json"
     }
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && npm run schema:generate",
     "check": "tsc -b --pretty false",
+    "conformance": "tsx src/bin/conformance.ts --fixtures fixtures/conformance",
+    "schema:generate": "tsx src/bin/generate-json-schema.ts",
     "test": "tsx --test src/**/*.test.ts test/**/*.test.ts"
   },
   "dependencies": {

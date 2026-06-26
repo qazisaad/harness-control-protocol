@@ -77,6 +77,7 @@ export const RunnerConfigSchema = z.object({
   runner_id: z.string().min(1),
   host_id: z.string().min(1).optional(),
   control_plane_url: controlPlaneUrlSchema,
+  credentials_path: z.string().min(1).optional(),
   workspaces: z.array(RunnerWorkspaceConfigSchema).default([]),
   provider_instances: z.array(ProviderInstanceConfigSchema).default([]),
   local_capabilities: z

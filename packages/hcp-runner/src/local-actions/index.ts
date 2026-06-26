@@ -58,6 +58,7 @@ export type LocalShellAuthorizationRequest = {
   workspace_root: string;
   use_shell: boolean;
   timeout_seconds: number;
+  env?: Record<string, string>;
 };
 
 export type LocalDevServerAuthorizationRequest = {
@@ -66,6 +67,13 @@ export type LocalDevServerAuthorizationRequest = {
   workspace_id: string;
   provider_instance_id: string;
   action: "start" | "stop" | "inspect";
+  executable?: string;
+  argv?: string[];
+  cwd?: string;
+  workspace_root?: string;
+  use_shell?: boolean;
+  timeout_seconds?: number;
+  env?: Record<string, string>;
 };
 
 export class LocalCapabilityPolicyError extends Error {
@@ -274,53 +282,24 @@ export class LocalCapabilityEngine {
       action: "run_command",
     });
 
-    const policy: CommandPolicy | undefined = grant.command_policy;
-    if (!policy) {
-      throw new LocalCapabilityPolicyError(
-        "local_capability_command_policy_required",
-        "Shell actions require a structured command policy.",
-      );
-    }
-
-    if (!policy.allow_shell && request.use_shell) {
-      throw new LocalCapabilityPolicyError("local_capability_shell_denied", "Shell wrappers are not allowed by policy.");
-    }
-    if (request.timeout_seconds > policy.timeout_seconds) {
-      throw new LocalCapabilityPolicyError(
-        "local_capability_timeout_exceeded",
-        `Requested timeout ${request.timeout_seconds}s exceeds policy timeout ${policy.timeout_seconds}s.`,
-      );
-    }
-    if (policy.denied_executables?.includes(request.executable)) {
-      throw new LocalCapabilityPolicyError(
-        "local_capability_executable_denied",
-        `Executable '${request.executable}' is denied by policy.`,
-      );
-    }
-    if (policy.allowed_executables && !policy.allowed_executables.includes(request.executable)) {
-      throw new LocalCapabilityPolicyError(
-        "local_capability_executable_not_allowed",
-        `Executable '${request.executable}' is not allowed by policy.`,
-      );
-    }
-    if (policy.argv_patterns && !argvMatchesPolicy(request.argv, policy.argv_patterns)) {
-      throw new LocalCapabilityPolicyError(
-        "local_capability_argv_denied",
-        `Command arguments do not match policy.`,
-      );
-    }
-    if (policy.cwd_policy === "selected_workspace_only") {
-      await assertPathInsideWorkspace(request.cwd, request.workspace_root);
-    }
-
+    await assertExecutableGrantAllowed(grant, "Shell actions");
+    await assertCommandPolicyAllows(grant.command_policy, {
+      executable: request.executable,
+      argv: request.argv,
+      cwd: request.cwd,
+      workspace_root: request.workspace_root,
+      use_shell: request.use_shell,
+      timeout_seconds: request.timeout_seconds,
+      env: request.env ?? {},
+    });
     return grant;
   }
 
-  authorizeDevServerAction(
+  async authorizeDevServerAction(
     lease: LocalCapabilityLease,
     request: LocalDevServerAuthorizationRequest,
-  ): LocalCapabilityGrant {
-    return this.leaseManager.assertActionAllowed(lease, {
+  ): Promise<LocalCapabilityGrant> {
+    const grant: LocalCapabilityGrant = this.leaseManager.assertActionAllowed(lease, {
       session_id: request.session_id,
       turn_id: request.turn_id,
       workspace_id: request.workspace_id,
@@ -329,6 +308,107 @@ export class LocalCapabilityEngine {
       scope: "workspace",
       action: request.action,
     });
+    if (request.action === "start") {
+      await assertExecutableGrantAllowed(grant, "Dev server start actions");
+      if (
+        !request.executable ||
+        !request.argv ||
+        !request.cwd ||
+        !request.workspace_root ||
+        request.use_shell === undefined ||
+        request.timeout_seconds === undefined
+      ) {
+        throw new LocalCapabilityPolicyError(
+          "local_capability_command_policy_required",
+          "Dev server start actions require executable, argv, cwd, workspace root, shell mode, and timeout.",
+        );
+      }
+      await assertCommandPolicyAllows(grant.command_policy, {
+        executable: request.executable,
+        argv: request.argv,
+        cwd: request.cwd,
+        workspace_root: request.workspace_root,
+        use_shell: request.use_shell,
+        timeout_seconds: request.timeout_seconds,
+        env: request.env ?? {},
+      });
+    }
+    return grant;
+  }
+}
+
+async function assertExecutableGrantAllowed(grant: LocalCapabilityGrant, actionLabel: string): Promise<void> {
+  if (grant.approval_policy !== "full_access") {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_approval_required",
+      `${actionLabel} require a local capability lease grant with approval_policy 'full_access'.`,
+    );
+  }
+  if (!grant.command_policy) {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_command_policy_required",
+      `${actionLabel} require a structured command policy.`,
+    );
+  }
+}
+
+async function assertCommandPolicyAllows(
+  policy: CommandPolicy | undefined,
+  request: {
+    executable: string;
+    argv: string[];
+    cwd: string;
+    workspace_root: string;
+    use_shell: boolean;
+    timeout_seconds: number;
+    env: Record<string, string>;
+  },
+): Promise<void> {
+  if (!policy) {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_command_policy_required",
+      "Executable local capability actions require a structured command policy.",
+    );
+  }
+
+  if (!policy.allow_shell && request.use_shell) {
+    throw new LocalCapabilityPolicyError("local_capability_shell_denied", "Shell wrappers are not allowed by policy.");
+  }
+  if (request.timeout_seconds > policy.timeout_seconds) {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_timeout_exceeded",
+      `Requested timeout ${request.timeout_seconds}s exceeds policy timeout ${policy.timeout_seconds}s.`,
+    );
+  }
+  if (policy.network_policy !== "inherit") {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_network_policy_unsupported",
+      `Network policy '${policy.network_policy}' cannot be enforced by this runner.`,
+    );
+  }
+  if (policy.env_policy === "minimal" && Object.keys(request.env).length > 0) {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_env_denied",
+      "Custom environment variables are not allowed by minimal environment policy.",
+    );
+  }
+  if (policy.denied_executables?.includes(request.executable)) {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_executable_denied",
+      `Executable '${request.executable}' is denied by policy.`,
+    );
+  }
+  if (policy.allowed_executables && !policy.allowed_executables.includes(request.executable)) {
+    throw new LocalCapabilityPolicyError(
+      "local_capability_executable_not_allowed",
+      `Executable '${request.executable}' is not allowed by policy.`,
+    );
+  }
+  if (policy.argv_patterns && !argvMatchesPolicy(request.argv, policy.argv_patterns)) {
+    throw new LocalCapabilityPolicyError("local_capability_argv_denied", `Command arguments do not match policy.`);
+  }
+  if (policy.cwd_policy === "selected_workspace_only") {
+    await assertPathInsideWorkspace(request.cwd, request.workspace_root);
   }
 }
 

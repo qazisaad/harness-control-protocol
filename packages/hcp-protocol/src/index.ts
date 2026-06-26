@@ -1,6 +1,9 @@
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
+export const HCP_METADATA_MAX_ENCODED_BYTES = 16 * 1024;
+export const HCP_PAYLOAD_MAX_ENCODED_BYTES = 1024 * 1024;
+export const HCP_MESSAGE_MAX_ENCODED_BYTES = HCP_METADATA_MAX_ENCODED_BYTES + HCP_PAYLOAD_MAX_ENCODED_BYTES + 64 * 1024;
 
 export type HcpVersion = typeof HCP_VERSION;
 
@@ -1291,6 +1294,34 @@ export function isHcpEventType(value: string): value is HcpEventType {
   return isKnownHcpEventType(value) || value.startsWith("provider.") || value.startsWith("extension.");
 }
 
+function enforceEnvelopeSizeLimits(
+  envelope: { payload?: unknown; metadata?: HcpMetadata | undefined },
+  context: z.RefinementCtx,
+): void {
+  const payloadBytes: number = encodedJsonByteLength(envelope.payload);
+  if (payloadBytes > HCP_PAYLOAD_MAX_ENCODED_BYTES) {
+    context.addIssue({
+      code: "custom",
+      path: ["payload"],
+      message: `HCP payload exceeds ${HCP_PAYLOAD_MAX_ENCODED_BYTES} encoded bytes.`,
+    });
+  }
+  if (envelope.metadata !== undefined) {
+    const metadataBytes: number = encodedJsonByteLength(envelope.metadata);
+    if (metadataBytes > HCP_METADATA_MAX_ENCODED_BYTES) {
+      context.addIssue({
+        code: "custom",
+        path: ["metadata"],
+        message: `HCP metadata exceeds ${HCP_METADATA_MAX_ENCODED_BYTES} encoded bytes.`,
+      });
+    }
+  }
+}
+
+function encodedJsonByteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value) ?? "null").byteLength;
+}
+
 export const hcpEventTypeSchema = z.string().refine(isHcpEventType, {
   message: "Event type must be a known HCP event, provider.* event, or extension.* event.",
 });
@@ -1338,7 +1369,8 @@ export const hcpEnvelopeSchema = z
     payload: z.unknown(),
     metadata: metadataSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(enforceEnvelopeSizeLimits);
 
 export function hcpTypedEnvelopeSchema<TType extends string, TPayload extends z.ZodType>(
   type: TType,
@@ -1353,7 +1385,8 @@ export function hcpTypedEnvelopeSchema<TType extends string, TPayload extends z.
       payload: payloadSchema,
       metadata: metadataSchema.optional(),
     })
-    .strict();
+    .strict()
+    .superRefine(enforceEnvelopeSizeLimits);
 }
 
 export const hcpCommandAckMessageSchema = hcpTypedEnvelopeSchema("hcp.command.ack", hcpCommandAckPayloadSchema);

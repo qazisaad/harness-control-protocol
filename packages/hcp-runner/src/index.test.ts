@@ -35,7 +35,7 @@ test("requires a config path for run", async () => {
   }
 });
 
-test("pair prints a mock runner config", async () => {
+test("pair prints an offline runner config when requested", async () => {
   const lines: string[] = [];
   const originalLog = console.log;
   console.log = (message?: unknown) => {
@@ -50,6 +50,7 @@ test("pair prints a mock runner config", async () => {
       "runner-test",
       "--host-id",
       "host-test",
+      "--offline",
     ]);
     assert.equal(exitCode, 0);
     const config = JSON.parse(lines[0] ?? "{}") as Record<string, unknown>;

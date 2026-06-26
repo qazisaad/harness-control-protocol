@@ -1,0 +1,21 @@
+{
+  "id": "message-local-action-missing-turn-id",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 1,
+    "event_type": "local_capability.action.started",
+    "created_at": "2026-01-01T00:00:01.000Z",
+    "data": {
+      "lease_id": "local-lease-1",
+      "run_id": "run-1",
+      "workspace_id": "workspace-1",
+      "provider_instance_id": "provider-1",
+      "capability_id": "filesystem",
+      "action": "read_file",
+      "status": "started"
+    }
+  }
+}

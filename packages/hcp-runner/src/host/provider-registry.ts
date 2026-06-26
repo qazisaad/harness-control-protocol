@@ -14,9 +14,12 @@ export type ProviderRegistrySnapshot = {
 };
 
 export type ProviderDriverStatus = {
+  provider_instance_id?: string;
   driver_kind: string;
   installed: boolean;
   available: boolean;
+  status?: HarnessProviderSnapshot["status"];
+  authStatus?: NonNullable<HarnessProviderSnapshot["auth"]>["status"];
   version?: string;
   message?: string;
   models: HarnessModel[];
@@ -30,13 +33,20 @@ export type ProviderContinuationGroup = {
 
 export class ProviderInstanceRegistry {
   readonly #config: RunnerConfig;
-  readonly #drivers: Map<string, ProviderDriverStatus>;
+  readonly #driversByKind: Map<string, ProviderDriverStatus>;
+  readonly #driversByProviderId: Map<string, ProviderDriverStatus>;
 
   constructor(config: RunnerConfig, drivers: ProviderDriverStatus[] = []) {
     this.#config = config;
-    this.#drivers = new Map(
-      drivers.map((driver: ProviderDriverStatus): [string, ProviderDriverStatus] => [driver.driver_kind, driver]),
-    );
+    this.#driversByKind = new Map();
+    this.#driversByProviderId = new Map();
+    for (const driver of drivers) {
+      if (driver.provider_instance_id) {
+        this.#driversByProviderId.set(driver.provider_instance_id, driver);
+      } else {
+        this.#driversByKind.set(driver.driver_kind, driver);
+      }
+    }
   }
 
   static fromConfig(config: RunnerConfig, drivers: ProviderDriverStatus[] = []): ProviderInstanceRegistry {
@@ -82,10 +92,14 @@ export class ProviderInstanceRegistry {
   }
 
   #snapshotProvider(provider: ProviderInstanceConfig, now: Date): HarnessProviderSnapshot {
-    const driver: ProviderDriverStatus | undefined = this.#drivers.get(provider.driver_kind);
+    const driver: ProviderDriverStatus | undefined =
+      this.#driversByProviderId.get(provider.id) ?? this.#driversByKind.get(provider.driver_kind);
     const enabled: boolean = provider.enabled;
     const installed: boolean = driver?.installed ?? false;
     const available: boolean = enabled && Boolean(driver?.available);
+    const status: HarnessProviderSnapshot["status"] = enabled
+      ? driver?.status ?? (available ? "ready" : "unavailable")
+      : "disabled";
 
     const snapshot: HarnessProviderSnapshot = {
       provider_instance_id: provider.id,
@@ -94,14 +108,14 @@ export class ProviderInstanceRegistry {
       ...(provider.accent_color ? { accent_color: provider.accent_color } : {}),
       enabled,
       installed,
-      status: available ? "ready" : enabled ? "unavailable" : "disabled",
+      status,
       availability: available ? "available" : "unavailable",
       ...(driver?.version ? { version: driver.version } : {}),
       ...(available ? {} : { message: this.#unavailableMessage(provider, driver) }),
       checked_at: now.toISOString(),
       continuation_group_key: computeContinuationGroupKey(provider),
       auth: {
-        status: "unknown",
+        status: driver?.authStatus ?? (status === "unauthenticated" ? "unauthenticated" : "unknown"),
       },
       models: provider.models.length > 0 ? normalizeHarnessModels(provider.models) : driver?.models ?? [],
       local_capabilities: provider.local_capabilities,
@@ -138,7 +152,13 @@ export class ProviderInstanceRegistry {
 }
 
 export function computeContinuationGroupKey(provider: ProviderInstanceConfig): string {
-  return provider.continuation_group_key ?? `driver:${provider.driver_kind}`;
+  if (provider.continuation_group_key) {
+    return provider.continuation_group_key;
+  }
+  if (provider.driver_kind === "codex" && provider.home) {
+    return `codex:${provider.home}`;
+  }
+  return `driver:${provider.driver_kind}`;
 }
 
 function normalizeHarnessModels(models: ProviderInstanceConfig["models"]): HarnessModel[] {

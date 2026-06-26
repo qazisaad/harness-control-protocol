@@ -98,6 +98,64 @@ describe("ProviderInstanceRegistry", () => {
     assert.equal(snapshot.providers[0]?.message, "Executable is not available.");
   });
 
+  it("keeps probe status separate for provider instances with the same driver", () => {
+    const sameDriverConfig: RunnerConfig = {
+      ...config,
+      provider_instances: [
+        {
+          id: "provider-work",
+          driver_kind: "example-driver",
+          enabled: true,
+          launch_args: [],
+          env: {},
+          models: [],
+          hidden_models: [],
+          model_order: [],
+          favorite_models: [],
+          local_capabilities: ["filesystem"],
+        },
+        {
+          id: "provider-personal",
+          driver_kind: "example-driver",
+          enabled: true,
+          launch_args: [],
+          env: {},
+          models: [],
+          hidden_models: [],
+          model_order: [],
+          favorite_models: [],
+          local_capabilities: ["filesystem"],
+        },
+      ],
+    };
+    const registry = ProviderInstanceRegistry.fromConfig(sameDriverConfig, [
+      {
+        provider_instance_id: "provider-work",
+        driver_kind: "example-driver",
+        installed: true,
+        available: true,
+        version: "1.2.3",
+        models: [],
+      },
+      {
+        provider_instance_id: "provider-personal",
+        driver_kind: "example-driver",
+        installed: true,
+        available: false,
+        status: "unauthenticated",
+        message: "Provider-specific login is missing.",
+        models: [],
+      },
+    ]);
+
+    const snapshot = registry.snapshot(new Date("2026-01-01T00:00:00.000Z"));
+
+    assert.equal(snapshot.providers[0]?.status, "ready");
+    assert.equal(snapshot.providers[0]?.availability, "available");
+    assert.equal(snapshot.providers[1]?.status, "unauthenticated");
+    assert.equal(snapshot.providers[1]?.message, "Provider-specific login is missing.");
+  });
+
   it("computes placeholder continuation groups", () => {
     const registry = ProviderInstanceRegistry.fromConfig(config);
 
@@ -111,6 +169,53 @@ describe("ProviderInstanceRegistry", () => {
         key: "driver:unknown-driver",
         driver_kind: "unknown-driver",
         provider_instance_ids: ["provider-unknown"],
+      },
+    ]);
+  });
+
+  it("computes Codex continuation groups from runner-local home paths", () => {
+    const registry = ProviderInstanceRegistry.fromConfig({
+      ...config,
+      provider_instances: [
+        {
+          id: "codex-work",
+          driver_kind: "codex",
+          enabled: true,
+          home: "/tmp/codex-work",
+          launch_args: [],
+          env: {},
+          models: [],
+          hidden_models: [],
+          model_order: [],
+          favorite_models: [],
+          local_capabilities: ["filesystem"],
+        },
+        {
+          id: "codex-personal",
+          driver_kind: "codex",
+          enabled: true,
+          home: "/tmp/codex-personal",
+          launch_args: [],
+          env: {},
+          models: [],
+          hidden_models: [],
+          model_order: [],
+          favorite_models: [],
+          local_capabilities: ["filesystem"],
+        },
+      ],
+    });
+
+    assert.deepEqual(registry.computeContinuationGroups(), [
+      {
+        key: "codex:/tmp/codex-work",
+        driver_kind: "codex",
+        provider_instance_ids: ["codex-work"],
+      },
+      {
+        key: "codex:/tmp/codex-personal",
+        driver_kind: "codex",
+        provider_instance_ids: ["codex-personal"],
       },
     ]);
   });
