@@ -166,13 +166,15 @@ export class HarnessSessionManager {
       payload,
       provider,
     );
-    const mcpClients: HarnessMcpClient[] = await this.#attachMcpServers(payload);
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
+    await adapter.validateStart({ payload, provider });
+    const mcpClients: HarnessMcpClient[] = await this.#attachMcpServers(payload);
+
     let adapterSession: HarnessAdapterSession;
     try {
       adapterSession = await adapter.startSession({ payload, provider });
     } catch (error: unknown) {
-      await closeMcpClientsBestEffort(mcpClients);
+      await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpClients, "adapter_start_failed", error);
       throw error;
     }
 
@@ -510,5 +512,39 @@ async function closeMcpClientsBestEffort(clients: HarnessMcpClient[]): Promise<v
   }
   if (errors.length > 0) {
     throw new HarnessSessionError("mcp_attachment_close_failed", errors.join("; "));
+  }
+}
+
+async function stopAdapterSessionAfterStartFailure(
+  adapter: HarnessAdapter,
+  sessionId: string,
+  reason: string,
+): Promise<void> {
+  await adapter.stopSession({ sessionId, reason });
+}
+
+async function cleanupAdapterSessionStartFailure(
+  adapter: HarnessAdapter,
+  sessionId: string,
+  mcpClients: HarnessMcpClient[],
+  reason: string,
+  originalError: unknown,
+): Promise<void> {
+  const cleanupErrors: string[] = [];
+  try {
+    await closeMcpClientsBestEffort(mcpClients);
+  } catch (error: unknown) {
+    cleanupErrors.push(error instanceof Error ? error.message : "MCP attachment close failed.");
+  }
+
+  try {
+    await stopAdapterSessionAfterStartFailure(adapter, sessionId, reason);
+  } catch (error: unknown) {
+    cleanupErrors.push(error instanceof Error ? `adapter stop failed: ${error.message}` : "adapter stop failed.");
+  }
+
+  if (cleanupErrors.length > 0) {
+    const originalMessage: string = originalError instanceof Error ? originalError.message : "Adapter session start failed.";
+    throw new HarnessSessionError("adapter_start_cleanup_failed", `${originalMessage}; cleanup failed: ${cleanupErrors.join("; ")}`);
   }
 }

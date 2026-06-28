@@ -28,9 +28,11 @@ Implemented today:
 - Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
 - Sample Streamable HTTP MCP server with server-side proof verification.
 - Mock control plane and end-to-end example for local development and integration testing.
+- Codex live-smoke example that advertises real local Codex readiness and runs one real Codex turn when the local Codex CLI config and auth are valid.
 
 Next major work:
 
+- Session-local Codex MCP attachment overlay or runner-owned MCP proxy support. The current Codex adapter rejects MCP attachments rather than mutating permanent user config.
 - Claude Code adapter and richer provider-native event normalization.
 - Published packages and release automation.
 - Contributor docs, security-reporting process, and compatibility matrix.
@@ -110,6 +112,14 @@ Run the standalone example:
 npx tsx examples/basic-runner-flow.ts
 ```
 
+Run the Codex live-smoke reference flow:
+
+```bash
+npx tsx examples/codex-runner-flow.ts
+```
+
+This flow pairs with the mock control plane, connects a local runner, probes the configured Codex provider, and starts a real Codex turn only when `codex --version` and `codex login status` succeed. The example uses runner-local `launch_args` to pass a process-scoped `service_tier=fast` override for current Codex CLI compatibility; it does not edit `~/.codex/config.toml`. The live turn uses HCP `approval_policy: "full_access"` so `codex exec` can run non-interactively while the sandbox remains `workspace_write`. If Codex is unavailable or unauthenticated, the example prints the provider snapshot and exits without sending a turn.
+
 Run the public protocol conformance fixtures:
 
 ```bash
@@ -140,8 +150,8 @@ A runner config describes the local host, allowed workspaces, provider instances
       "enabled": true,
       "models": [
         {
-          "id": "gpt-5-codex",
-          "label": "GPT-5 Codex",
+          "id": "gpt-5.5",
+          "label": "GPT-5.5",
           "is_default": true,
           "capabilities": {
             "option_descriptors": []
@@ -208,6 +218,8 @@ The runner enforces:
 - Redaction of headers, arguments, outputs, and errors before logging.
 - Event emission for connection, discovery, tool calls, denial, and failure.
 - Client close and cleanup when the harness session ends.
+
+The Codex adapter does not yet expose these attachments to `codex exec`. HCP requires dynamic proof-of-possession headers on every platform MCP request, while Codex's CLI-level MCP configuration is persistent by default and does not provide a proven per-request proof hook in this runner. Until a session-local Codex overlay or runner-owned MCP proxy is implemented, Codex sessions with MCP attachments fail closed with `codex_mcp_attachment_unsupported`.
 
 ## Local Capability Leases
 

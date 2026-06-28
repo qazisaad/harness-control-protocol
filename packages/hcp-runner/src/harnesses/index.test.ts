@@ -7,6 +7,13 @@ import { describe, it } from "node:test";
 import { HarnessSessionError, HarnessSessionManager, type HarnessMcpClient } from "./index.js";
 import type { AuditLogEvent } from "../audit/index.js";
 import type { LocalCapabilityConfig, RunnerConfig } from "../config/index.js";
+import {
+  HarnessAdapterError,
+  HarnessAdapterRegistry,
+  type HarnessAdapter,
+  type HarnessAdapterEvent,
+  type HarnessAdapterSession,
+} from "./adapters.js";
 
 const defaultCapabilities: LocalCapabilityConfig[] = [
   { id: "filesystem", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
@@ -29,6 +36,26 @@ function createConfig(workspacePath: string, localCapabilities: LocalCapabilityC
         launch_args: [],
         env: {},
         models: [],
+        hidden_models: [],
+        model_order: [],
+        favorite_models: [],
+        local_capabilities: ["filesystem", "git", "shell"],
+      },
+    ],
+  };
+}
+
+function createCodexConfig(workspacePath: string): RunnerConfig {
+  return {
+    ...createConfig(workspacePath),
+    provider_instances: [
+      {
+        id: "codex-local",
+        driver_kind: "codex",
+        enabled: true,
+        launch_args: [],
+        env: {},
+        models: [{ id: "gpt-test", label: "GPT Test", capabilities: { option_descriptors: [] } }],
         hidden_models: [],
         model_order: [],
         favorite_models: [],
@@ -316,6 +343,229 @@ describe("HarnessSessionManager", () => {
 
       assert.deepEqual(connected, ["tools"]);
       assert.deepEqual(closed, ["tools"]);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("validates adapter start, connects MCP clients, then starts the adapter session", async () => {
+    const workspace = await createWorkspace();
+    const calls: string[] = [];
+    const adapter: HarnessAdapter = {
+      driverKind: "mock",
+      async probe() {
+        return {
+          provider_instance_id: "mock-provider",
+          driver_kind: "mock",
+          installed: true,
+          available: true,
+          status: "ready",
+          models: [],
+        };
+      },
+      async validateStart(): Promise<void> {
+        calls.push("validate");
+      },
+      async startSession(input): Promise<HarnessAdapterSession> {
+        calls.push("start");
+        return { adapter_session_id: input.payload.session_id };
+      },
+      async sendTurn(): Promise<HarnessAdapterEvent[]> {
+        return [];
+      },
+      async cancelTurn(): Promise<HarnessAdapterEvent[]> {
+        return [];
+      },
+      async stopSession(): Promise<HarnessAdapterEvent[]> {
+        return [];
+      },
+    };
+    const manager = new HarnessSessionManager(createConfig(workspace.root), {
+      hostId: "host-test",
+      adapterRegistry: new HarnessAdapterRegistry([adapter]),
+      mcpClientFactory() {
+        return {
+          async connect(): Promise<void> {
+            calls.push("connect");
+          },
+          async close(): Promise<void> {
+            calls.push("close");
+          },
+        };
+      },
+    });
+
+    try {
+      await manager.startSession({
+        session_id: "session-1",
+        workspace_id: "repo",
+        provider_instance_id: "mock-provider",
+        driver_kind: "mock",
+        cwd: workspace.root,
+        sandbox_mode: "workspace_write",
+        approval_policy: "ask",
+        continue_session: false,
+        model_selection: { model: "mock-model" },
+        mcp_servers: [
+          {
+            name: "tools",
+            transport: "streamable_http",
+            url: "https://example.com/mcp",
+            headers: { Authorization: "Bearer token" },
+            lease_id: "mcp_lease_123",
+            proof_of_possession: {
+              scheme: "runner_signed_request",
+              key_id: "proof_key_123",
+              required_headers: ["x-hcp-proof-signature"],
+            },
+          },
+        ],
+      });
+
+      assert.deepEqual(calls, ["validate", "connect", "start"]);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("attempts adapter stop when adapter start and MCP cleanup both fail", async () => {
+    const workspace = await createWorkspace();
+    const calls: string[] = [];
+    const adapter: HarnessAdapter = {
+      driverKind: "mock",
+      async probe() {
+        return {
+          provider_instance_id: "mock-provider",
+          driver_kind: "mock",
+          installed: true,
+          available: true,
+          status: "ready",
+          models: [],
+        };
+      },
+      async validateStart(): Promise<void> {
+        calls.push("validate");
+      },
+      async startSession(): Promise<HarnessAdapterSession> {
+        calls.push("start");
+        throw new Error("adapter start failed");
+      },
+      async sendTurn(): Promise<HarnessAdapterEvent[]> {
+        return [];
+      },
+      async cancelTurn(): Promise<HarnessAdapterEvent[]> {
+        return [];
+      },
+      async stopSession(): Promise<HarnessAdapterEvent[]> {
+        calls.push("stop");
+        return [];
+      },
+    };
+    const manager = new HarnessSessionManager(createConfig(workspace.root), {
+      hostId: "host-test",
+      adapterRegistry: new HarnessAdapterRegistry([adapter]),
+      mcpClientFactory() {
+        return {
+          async connect(): Promise<void> {
+            calls.push("connect");
+          },
+          async close(): Promise<void> {
+            calls.push("close");
+            throw new Error("mcp close failed");
+          },
+        };
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () =>
+          manager.startSession({
+            session_id: "session-1",
+            workspace_id: "repo",
+            provider_instance_id: "mock-provider",
+            driver_kind: "mock",
+            cwd: workspace.root,
+            sandbox_mode: "workspace_write",
+            approval_policy: "ask",
+            continue_session: false,
+            model_selection: { model: "mock-model" },
+            mcp_servers: [
+              {
+                name: "tools",
+                transport: "streamable_http",
+                url: "https://example.com/mcp",
+                headers: { Authorization: "Bearer token" },
+                lease_id: "mcp_lease_123",
+                proof_of_possession: {
+                  scheme: "runner_signed_request",
+                  key_id: "proof_key_123",
+                  required_headers: ["x-hcp-proof-signature"],
+                },
+              },
+            ],
+          }),
+        (error: unknown): boolean =>
+          error instanceof HarnessSessionError &&
+          error.code === "adapter_start_cleanup_failed" &&
+          error.message.includes("adapter start failed") &&
+          error.message.includes("mcp close failed"),
+      );
+
+      assert.deepEqual(calls, ["validate", "connect", "start", "close", "stop"]);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("rejects Codex MCP attachments before connecting MCP clients", async () => {
+    const workspace = await createWorkspace();
+    const connected: string[] = [];
+    const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
+      mcpClientFactory(request) {
+        return {
+          async connect(): Promise<void> {
+            connected.push(request.attachment.name);
+          },
+          async close(): Promise<void> {
+            return;
+          },
+        };
+      },
+    });
+
+    try {
+      await assert.rejects(
+        () =>
+          manager.startSession({
+            session_id: "session-1",
+            workspace_id: "repo",
+            provider_instance_id: "codex-local",
+            driver_kind: "codex",
+            cwd: workspace.root,
+            sandbox_mode: "workspace_write",
+            approval_policy: "ask",
+            continue_session: false,
+            model_selection: { model: "gpt-test" },
+            mcp_servers: [
+              {
+                name: "tools",
+                transport: "streamable_http",
+                url: "https://example.com/mcp",
+                headers: { Authorization: "Bearer token" },
+                lease_id: "mcp_lease_123",
+                proof_of_possession: {
+                  scheme: "runner_signed_request",
+                  key_id: "proof_key_123",
+                  required_headers: ["x-hcp-proof-signature"],
+                },
+              },
+            ],
+          }),
+        (error: unknown): boolean =>
+          error instanceof HarnessAdapterError && error.code === "codex_mcp_attachment_unsupported",
+      );
+      assert.deepEqual(connected, []);
     } finally {
       await workspace.cleanup();
     }
