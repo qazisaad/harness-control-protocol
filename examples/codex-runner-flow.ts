@@ -2,12 +2,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HarnessProviderSnapshot, HcpHarnessEventPayload, HcpNackPayload } from "@hcp-runner/protocol";
+import type { HarnessProviderSnapshot, HcpHarnessEventPayload } from "@hcp-runner/protocol";
 
 import { startMockControlPlane } from "../apps/mock-control-plane/src/index.js";
+import { startSampleMcpServer } from "../apps/sample-mcp-server/src/index.js";
 import { RunnerConnection } from "../packages/hcp-runner/src/connection/runner-connection.js";
 import type { RunnerConfig } from "../packages/hcp-runner/src/config/index.js";
 import { HarnessSessionManager } from "../packages/hcp-runner/src/harnesses/index.js";
+import { createDevelopmentHmacProofSigner } from "../packages/hcp-runner/src/mcp/McpAttachmentClient.js";
 import { pairWithReferenceControlPlane, requestConnectionToken } from "../packages/hcp-runner/src/pairing/index.js";
 
 const workspaceRoot: string = await mkdtemp(join(tmpdir(), "hcp-codex-example-workspace-"));
@@ -53,7 +55,25 @@ try {
       },
     ],
   };
-  const harnessSessions = new HarnessSessionManager(config);
+  const mcpProofSecret: string = pairing.credential.mcp_proof_secret ?? pairing.credential.credential_secret;
+  const sampleMcp = await startSampleMcpServer({
+    port: 0,
+    lease: {
+      lease_id: "mcp_lease_example",
+      key_id: "proof_key_example",
+      secret: mcpProofSecret,
+      session_id: "session-mcp-proxied",
+      host_id: "codex-example-host",
+      provider_instance_id: "codex-local",
+      workspace_id: "workspace-1",
+      server_id: "sample",
+      expires_at: "2999-01-01T00:00:00.000Z",
+      allowed_tools: ["echo"],
+    },
+  });
+  const harnessSessions = new HarnessSessionManager(config, {
+    mcpProofSigner: createDevelopmentHmacProofSigner(mcpProofSecret),
+  });
   const connection = new RunnerConnection({
     config,
     runnerVersion: "0.0.0-example",
@@ -79,8 +99,8 @@ try {
       ),
     );
 
-    const mcpCommandId: string = mockControlPlane.sendSessionStart({
-      session_id: "session-mcp-unsupported",
+    mockControlPlane.sendSessionStart({
+      session_id: "session-mcp-proxied",
       workspace_id: "workspace-1",
       provider_instance_id: "codex-local",
       driver_kind: "codex",
@@ -93,7 +113,7 @@ try {
         {
           name: "sample",
           transport: "streamable_http",
-          url: "http://127.0.0.1:8791/mcp",
+          url: sampleMcp.url,
           headers: { Authorization: "Bearer sample-token" },
           lease_id: "mcp_lease_example",
           proof_of_possession: {
@@ -105,22 +125,21 @@ try {
         },
       ],
     });
-    const mcpNack: HcpNackPayload = await waitForNack(mcpCommandId);
-    if (mcpNack.error.code !== "codex_mcp_attachment_unsupported") {
-      throw new Error(`Expected codex_mcp_attachment_unsupported, received ${mcpNack.error.code}.`);
-    }
+    await waitForEventOrNack("session.configured", "session-mcp-proxied");
+    await waitForEventOrNack("mcp.status.updated", "session-mcp-proxied");
     console.log(
       "codex mcp attachment:",
       JSON.stringify(
         {
-          status: "unsupported",
-          code: mcpNack.error.code,
-          message: mcpNack.error.message,
+          status: "proxied",
+          server: "sample",
         },
         null,
         2,
       ),
     );
+    mockControlPlane.stopSession({ session_id: "session-mcp-proxied", reason: "codex-example-mcp-proxy-validated" });
+    await waitForEventOrNack("session.exited", "session-mcp-proxied");
 
     let liveSessionStarted = false;
     if (codexProvider.availability !== "available") {
@@ -139,7 +158,7 @@ try {
           model_selection: { model: "gpt-5.5" },
           mcp_servers: [],
         });
-        await waitForEventOrNack("session.configured");
+        await waitForEventOrNack("session.configured", "session-1");
         liveSessionStarted = true;
 
         mockControlPlane.sendTurn({
@@ -156,7 +175,7 @@ try {
       } finally {
         if (liveSessionStarted && !hasEvent("session-1", "session.exited")) {
           mockControlPlane.stopSession({ session_id: "session-1", reason: "codex-example-complete" });
-          await waitForEventOrNack("session.exited");
+          await waitForEventOrNack("session.exited", "session-1");
         }
       }
     }
@@ -170,7 +189,11 @@ try {
       })),
     );
   } finally {
-    await connection.close();
+    try {
+      await connection.close();
+    } finally {
+      await sampleMcp.close();
+    }
   }
 } finally {
   await mockControlPlane.close();
@@ -188,11 +211,15 @@ function providerSnapshot(providerInstanceId: string): HarnessProviderSnapshot |
   return provider;
 }
 
-async function waitForEventOrNack(eventType: HcpHarnessEventPayload["event_type"]): Promise<HcpHarnessEventPayload> {
+async function waitForEventOrNack(
+  eventType: HcpHarnessEventPayload["event_type"],
+  sessionId?: string,
+): Promise<HcpHarnessEventPayload> {
   const initialNackCount: number = mockControlPlane.state.commandNacks.length;
   return await waitForState(() => {
     const event: HcpHarnessEventPayload | undefined = mockControlPlane.state.events.find(
-      (candidate: HcpHarnessEventPayload): boolean => candidate.event_type === eventType,
+      (candidate: HcpHarnessEventPayload): boolean =>
+        candidate.event_type === eventType && (sessionId === undefined || candidate.session_id === sessionId),
     );
     if (event) {
       return event;
@@ -203,12 +230,6 @@ async function waitForEventOrNack(eventType: HcpHarnessEventPayload["event_type"
     }
     return undefined;
   });
-}
-
-async function waitForNack(commandId: string): Promise<HcpNackPayload> {
-  return await waitForState(() =>
-    mockControlPlane.state.commandNacks.find((candidate: HcpNackPayload): boolean => candidate.command_id === commandId),
-  );
 }
 
 async function waitForTurnTerminalEvent(turnId: string): Promise<HcpHarnessEventPayload> {

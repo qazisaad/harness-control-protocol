@@ -10,4 +10,5 @@ export {
   type McpToolCallArguments,
   type McpToolCallResult,
 } from "./McpAttachmentClient.js";
+export { McpProxyServer, type McpProxyServerOptions, type McpProxyUpstream } from "./McpProxyServer.js";
 export { redactHeaders, redactValue } from "./redaction.js";

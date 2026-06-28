@@ -244,6 +244,54 @@ describe("CodexHarnessAdapter", () => {
     }
   });
 
+  it("passes proxied MCP config to Codex turns", async () => {
+    const fake = await fakeCodexScript(true);
+    const workspace = await createWorkspace();
+    const argsPath: string = join(fake.root, "args.log");
+    const adapter = new CodexHarnessAdapter();
+    const selectedProvider: ProviderInstanceConfig = provider(fake.executable, { HCP_FAKE_CODEX_ARGS_PATH: argsPath });
+
+    try {
+      const selectedStartPayload: HcpSessionStartPayload = {
+        ...startPayload(workspace.root),
+        mcp_servers: [
+          {
+            name: "tools",
+            transport: "streamable_http",
+            url: "http://127.0.0.1:12345/mcp",
+            headers: {},
+            lease_id: "mcp_lease_123",
+            proof_of_possession: {
+              scheme: "runner_signed_request",
+              key_id: "proof_key_123",
+              required_headers: ["x-hcp-proof-signature"],
+            },
+          },
+        ],
+      };
+      const session = await adapter.startSession({ payload: selectedStartPayload, provider: selectedProvider });
+      await adapter.sendTurn({
+        session,
+        startPayload: selectedStartPayload,
+        provider: selectedProvider,
+        payload: {
+          session_id: "session-1",
+          turn_id: "turn-1",
+          input: "Say hello.",
+        },
+      });
+
+      const lines: string[] = (await readFile(argsPath, "utf8")).trim().split(/\r?\n/);
+      assert.match(
+        lines[0] ?? "",
+        /^-c mcp_servers\.tools\.url="http:\/\/127\.0\.0\.1:12345\/mcp" --ask-for-approval on-request exec /,
+      );
+    } finally {
+      await workspace.cleanup();
+      await fake.cleanup();
+    }
+  });
+
   it("closes Codex stdin after passing the prompt as an argument", async () => {
     const fake = await fakeCodexScript(true);
     const workspace = await createWorkspace();
@@ -461,7 +509,7 @@ describe("CodexHarnessAdapter", () => {
     }
   });
 
-  it("fails closed when Codex sessions include MCP attachments", async () => {
+  it("fails closed when Codex sessions include unproxied MCP attachments", async () => {
     const fake = await fakeCodexScript(true);
     const workspace = await createWorkspace();
     const adapter = new CodexHarnessAdapter();
@@ -470,7 +518,7 @@ describe("CodexHarnessAdapter", () => {
     try {
       await assert.rejects(
         () =>
-          adapter.validateStart({
+          adapter.startSession({
             provider: selectedProvider,
             payload: {
               ...startPayload(workspace.root),
@@ -491,7 +539,7 @@ describe("CodexHarnessAdapter", () => {
             },
           }),
         (error: unknown): boolean =>
-          error instanceof HarnessAdapterError && error.code === "codex_mcp_attachment_unsupported",
+          error instanceof HarnessAdapterError && error.code === "codex_mcp_attachment_requires_proxy",
       );
     } finally {
       await workspace.cleanup();

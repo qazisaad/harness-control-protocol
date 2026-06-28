@@ -28,11 +28,10 @@ Implemented today:
 - Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
 - Sample Streamable HTTP MCP server with server-side proof verification.
 - Mock control plane and end-to-end example for local development and integration testing.
-- Codex live-smoke example that advertises real local Codex readiness and runs one real Codex turn when the local Codex CLI config and auth are valid.
+- Codex live-smoke example that advertises real local Codex readiness, validates proxied MCP setup, and runs one real Codex turn when the local Codex CLI config and auth are valid.
 
 Next major work:
 
-- Session-local Codex MCP attachment overlay or runner-owned MCP proxy support. The current Codex adapter rejects MCP attachments rather than mutating permanent user config.
 - Claude Code adapter and richer provider-native event normalization.
 - Published packages and release automation.
 - Contributor docs, security-reporting process, and compatibility matrix.
@@ -219,7 +218,7 @@ The runner enforces:
 - Event emission for connection, discovery, tool calls, denial, and failure.
 - Client close and cleanup when the harness session ends.
 
-The Codex adapter does not yet expose these attachments to `codex exec`. HCP requires dynamic proof-of-possession headers on every platform MCP request, while Codex's CLI-level MCP configuration is persistent by default and does not provide a proven per-request proof hook in this runner. Until a session-local Codex overlay or runner-owned MCP proxy is implemented, Codex sessions with MCP attachments fail closed with `codex_mcp_attachment_unsupported`.
+For Codex sessions, the runner creates a session-owned loopback MCP proxy for each attachment. The proxy talks to the platform MCP server through `McpAttachmentClient`, injects the required proof-of-possession headers, and exposes a local `http://127.0.0.1:<port>/mcp` endpoint to `codex exec` through process-local `-c mcp_servers.<name>.url=...` config overlays. The adapter rejects any unproxied Codex MCP attachment with `codex_mcp_attachment_requires_proxy`, so platform URLs and bearer/proof headers are not passed directly to Codex and the user's permanent Codex config is not mutated.
 
 ## Local Capability Leases
 

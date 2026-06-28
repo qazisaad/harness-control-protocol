@@ -518,9 +518,71 @@ describe("HarnessSessionManager", () => {
     }
   });
 
-  it("rejects Codex MCP attachments before connecting MCP clients", async () => {
+  it("proxies Codex MCP attachments before adapter start", async () => {
     const workspace = await createWorkspace();
     const connected: string[] = [];
+    const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
+      mcpClientFactory(request) {
+        return {
+          get adapterAttachment() {
+            return {
+              ...request.attachment,
+              url: "http://127.0.0.1:12345/mcp",
+              headers: {},
+            };
+          },
+          async connect(): Promise<void> {
+            connected.push(request.attachment.name);
+          },
+          async close(): Promise<void> {
+            return;
+          },
+        };
+      },
+    });
+
+    try {
+      const events = await manager.startSession({
+        session_id: "session-1",
+        workspace_id: "repo",
+        provider_instance_id: "codex-local",
+        driver_kind: "codex",
+        cwd: workspace.root,
+        sandbox_mode: "workspace_write",
+        approval_policy: "ask",
+        continue_session: false,
+        model_selection: { model: "gpt-test" },
+        mcp_servers: [
+          {
+            name: "tools",
+            transport: "streamable_http",
+            url: "https://example.com/mcp",
+            headers: { Authorization: "Bearer token" },
+            lease_id: "mcp_lease_123",
+            proof_of_possession: {
+              scheme: "runner_signed_request",
+              key_id: "proof_key_123",
+              required_headers: ["x-hcp-proof-signature"],
+            },
+          },
+        ],
+      });
+
+      assert.deepEqual(connected, ["tools"]);
+      assert.deepEqual(
+        events.map((event) => event.event_type),
+        ["session.started", "workspace.preflight.completed", "session.configured", "mcp.status.updated"],
+      );
+      await manager.stopSession("session-1", "done");
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("closes Codex MCP clients when an attachment factory does not provide a proxy", async () => {
+    const workspace = await createWorkspace();
+    const connected: string[] = [];
+    const closed: string[] = [];
     const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
       mcpClientFactory(request) {
         return {
@@ -528,7 +590,7 @@ describe("HarnessSessionManager", () => {
             connected.push(request.attachment.name);
           },
           async close(): Promise<void> {
-            return;
+            closed.push(request.attachment.name);
           },
         };
       },
@@ -563,9 +625,10 @@ describe("HarnessSessionManager", () => {
             ],
           }),
         (error: unknown): boolean =>
-          error instanceof HarnessAdapterError && error.code === "codex_mcp_attachment_unsupported",
+          error instanceof HarnessAdapterError && error.code === "codex_mcp_attachment_requires_proxy",
       );
-      assert.deepEqual(connected, []);
+      assert.deepEqual(connected, ["tools"]);
+      assert.deepEqual(closed, ["tools"]);
     } finally {
       await workspace.cleanup();
     }

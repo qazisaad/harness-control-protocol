@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
-import type { HarnessModel, HcpEventType, HcpSessionStartPayload, HcpTurnSendPayload } from "@hcp-runner/protocol";
+import type {
+  HarnessModel,
+  HcpEventType,
+  HcpSessionStartPayload,
+  HcpTurnSendPayload,
+  McpServerAttachment,
+} from "@hcp-runner/protocol";
 
 import type { ProviderInstanceConfig } from "../config/index.js";
 import type { ProviderDriverStatus } from "../host/provider-registry.js";
@@ -346,15 +352,12 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     mapCodexSandbox(input.payload.sandbox_mode);
     mapCodexApprovalPolicy(input.payload.approval_policy);
-    if (input.payload.mcp_servers.length > 0) {
-      throw new HarnessAdapterError(
-        "codex_mcp_attachment_unsupported",
-        "Codex MCP attachments require a session-local config overlay, which this runner does not yet implement.",
-      );
-    }
   }
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
+    for (const attachment of input.payload.mcp_servers) {
+      assertCodexMcpAttachmentProxied(attachment);
+    }
     return {
       adapter_session_id: input.payload.session_id,
     };
@@ -380,6 +383,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     );
     const args: string[] = [
       ...codexLaunchArgs(input.provider),
+      ...codexMcpConfigArgs(input.startPayload.mcp_servers),
       "--ask-for-approval",
       mapCodexApprovalPolicy(input.startPayload.approval_policy),
       "exec",
@@ -689,6 +693,58 @@ function mapCodexApprovalPolicy(approvalPolicy: HcpSessionStartPayload["approval
     case "full_access":
       return "never";
   }
+}
+
+function assertCodexMcpAttachmentProxied(attachment: McpServerAttachment): void {
+  codexMcpServerConfigName(attachment.name);
+  if (Object.keys(attachment.headers).length > 0) {
+    throw new HarnessAdapterError(
+      "codex_mcp_attachment_requires_proxy",
+      `Codex MCP attachment '${attachment.name}' must not expose platform headers to Codex; route it through the runner-owned proxy.`,
+    );
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(attachment.url);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      throw new HarnessAdapterError("codex_mcp_attachment_url_invalid", error.message);
+    }
+    throw error;
+  }
+
+  const isLoopback: boolean =
+    parsedUrl.protocol === "http:" && (parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost");
+  if (!isLoopback) {
+    throw new HarnessAdapterError(
+      "codex_mcp_attachment_requires_proxy",
+      "Codex MCP attachments must be routed through a runner-owned loopback MCP proxy so HCP proof headers can be injected.",
+    );
+  }
+}
+
+function codexMcpConfigArgs(attachments: McpServerAttachment[]): string[] {
+  const args: string[] = [];
+  for (const attachment of attachments) {
+    const name: string = codexMcpServerConfigName(attachment.name);
+    args.push("-c", `mcp_servers.${name}.url=${tomlString(attachment.url)}`);
+  }
+  return args;
+}
+
+function codexMcpServerConfigName(name: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new HarnessAdapterError(
+      "codex_mcp_attachment_name_invalid",
+      `Codex MCP attachment name '${name}' must contain only ASCII letters, numbers, underscores, or hyphens.`,
+    );
+  }
+  return name;
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
 }
 
 function firstLine(value: string): string | undefined {

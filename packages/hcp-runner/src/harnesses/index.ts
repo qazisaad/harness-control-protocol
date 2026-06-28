@@ -15,6 +15,7 @@ import type { ProviderInstanceConfig, RunnerConfig } from "../config/index.js";
 import type { ProviderDriverStatus } from "../host/provider-registry.js";
 import { LocalCapabilityLeaseManager } from "../local-actions/index.js";
 import { McpAttachmentClient, type McpProofSigner } from "../mcp/McpAttachmentClient.js";
+import { McpProxyServer } from "../mcp/McpProxyServer.js";
 import {
   HarnessAdapterRegistry,
   createDefaultHarnessAdapterRegistry,
@@ -48,6 +49,7 @@ export type HarnessSession = {
 };
 
 export type HarnessMcpClient = {
+  readonly adapterAttachment?: McpServerAttachment | undefined;
   connect(): Promise<void>;
   close(): Promise<void>;
 };
@@ -58,10 +60,16 @@ export type HarnessMcpClientRequest = {
   hostId: string;
   providerInstanceId: string;
   workspaceId: string;
+  driverKind: string;
   proofSigner?: McpProofSigner;
 };
 
 export type HarnessMcpClientFactory = (request: HarnessMcpClientRequest) => HarnessMcpClient;
+
+export type HarnessMcpAttachmentResult = {
+  clients: HarnessMcpClient[];
+  adapterAttachments: McpServerAttachment[];
+};
 
 export type HarnessSessionManagerOptions = {
   hostId?: string;
@@ -168,13 +176,17 @@ export class HarnessSessionManager {
     );
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
     await adapter.validateStart({ payload, provider });
-    const mcpClients: HarnessMcpClient[] = await this.#attachMcpServers(payload);
+    const mcpAttachments: HarnessMcpAttachmentResult = await this.#attachMcpServers(payload, provider);
+    const adapterStartPayload: HcpSessionStartPayload = {
+      ...payload,
+      mcp_servers: mcpAttachments.adapterAttachments,
+    };
 
     let adapterSession: HarnessAdapterSession;
     try {
-      adapterSession = await adapter.startSession({ payload, provider });
+      adapterSession = await adapter.startSession({ payload: adapterStartPayload, provider });
     } catch (error: unknown) {
-      await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpClients, "adapter_start_failed", error);
+      await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpAttachments.clients, "adapter_start_failed", error);
       throw error;
     }
 
@@ -184,11 +196,11 @@ export class HarnessSessionManager {
       providerInstanceId: provider.id,
       driverKind: provider.driver_kind,
       cwd: payload.cwd,
-      startPayload: payload,
+      startPayload: adapterStartPayload,
       adapter,
       adapterSession,
       ...(localCapabilityLease ? { localCapabilityLease } : {}),
-      mcpClients,
+      mcpClients: mcpAttachments.clients,
     };
     this.#sessions.set(payload.session_id, session);
     this.#nextSequences.set(payload.session_id, 1);
@@ -383,8 +395,9 @@ export class HarnessSessionManager {
     }
   }
 
-  async #attachMcpServers(payload: HcpSessionStartPayload): Promise<HarnessMcpClient[]> {
+  async #attachMcpServers(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig): Promise<HarnessMcpAttachmentResult> {
     const clients: HarnessMcpClient[] = [];
+    const adapterAttachments: McpServerAttachment[] = [];
     try {
       for (const attachment of payload.mcp_servers) {
         const client: HarnessMcpClient = this.#mcpClientFactory({
@@ -393,17 +406,19 @@ export class HarnessSessionManager {
           hostId: this.#hostId,
           providerInstanceId: payload.provider_instance_id,
           workspaceId: payload.workspace_id,
+          driverKind: provider.driver_kind,
           ...(this.#mcpProofSigner ? { proofSigner: this.#mcpProofSigner } : {}),
         });
         await client.connect();
         clients.push(client);
+        adapterAttachments.push(client.adapterAttachment ?? attachment);
       }
     } catch (error: unknown) {
       await closeMcpClientsBestEffort(clients);
       throw error;
     }
 
-    return clients;
+    return { clients, adapterAttachments };
   }
 
   async #closeMcpClients(session: HarnessSession): Promise<void> {
@@ -478,7 +493,7 @@ function defaultMcpClientFactory(request: HarnessMcpClientRequest): HarnessMcpCl
     );
   }
 
-  return new McpAttachmentClient(request.attachment, {
+  const upstream = new McpAttachmentClient(request.attachment, {
     proofContext: {
       session_id: request.sessionId,
       host_id: request.hostId,
@@ -488,6 +503,14 @@ function defaultMcpClientFactory(request: HarnessMcpClientRequest): HarnessMcpCl
     },
     proofSigner: request.proofSigner,
   });
+  if (request.driverKind === "codex") {
+    return new McpProxyServer({
+      attachment: request.attachment,
+      upstream,
+    });
+  }
+
+  return upstream;
 }
 
 async function realpathOrWorkspaceError(path: string): Promise<string> {
