@@ -23,7 +23,7 @@ import type {
   LocalCapabilityExecutionContext,
   LocalCapabilityExecutionEvent,
 } from "../local-actions/executors.js";
-import { McpAttachmentClient, type McpProofSigner } from "../mcp/McpAttachmentClient.js";
+import { McpAttachmentClient, type McpProofSigner, type McpToolDescriptor } from "../mcp/McpAttachmentClient.js";
 import { McpProxyServer } from "../mcp/McpProxyServer.js";
 import {
   HarnessAdapterRegistry,
@@ -60,6 +60,7 @@ export type HarnessSession = {
 export type HarnessMcpClient = {
   readonly adapterAttachment?: McpServerAttachment | undefined;
   connect(): Promise<void>;
+  listTools?(): Promise<McpToolDescriptor[]>;
   close(): Promise<void>;
 };
 
@@ -78,6 +79,12 @@ export type HarnessMcpClientFactory = (request: HarnessMcpClientRequest) => Harn
 export type HarnessMcpAttachmentResult = {
   clients: HarnessMcpClient[];
   adapterAttachments: McpServerAttachment[];
+  discoveredTools: HarnessMcpToolDiscovery[];
+};
+
+export type HarnessMcpToolDiscovery = {
+  attachmentName: string;
+  tools: McpToolDescriptor[];
 };
 
 export type HarnessSessionManagerOptions = {
@@ -317,6 +324,15 @@ export class HarnessSessionManager {
         }),
       );
     }
+    for (const discovery of mcpAttachments.discoveredTools) {
+      events.push(
+        this.#event(payload.session_id, undefined, "mcp.status.updated", {
+          attachment: discovery.attachmentName,
+          status: "tools_discovered",
+          message: `allowed tools: ${discovery.tools.map((tool: McpToolDescriptor): string => tool.name).join(", ")}`,
+        }),
+      );
+    }
 
     await this.#recordAudit({
       event: "session.started",
@@ -482,6 +498,7 @@ export class HarnessSessionManager {
   async #attachMcpServers(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig): Promise<HarnessMcpAttachmentResult> {
     const clients: HarnessMcpClient[] = [];
     const adapterAttachments: McpServerAttachment[] = [];
+    const discoveredTools: HarnessMcpToolDiscovery[] = [];
     try {
       for (const attachment of payload.mcp_servers) {
         const client: HarnessMcpClient = this.#mcpClientFactory({
@@ -494,6 +511,10 @@ export class HarnessSessionManager {
           ...(this.#mcpProofSigner ? { proofSigner: this.#mcpProofSigner } : {}),
         });
         await client.connect();
+        if (client.listTools !== undefined) {
+          const tools: McpToolDescriptor[] = await client.listTools();
+          discoveredTools.push({ attachmentName: attachment.name, tools });
+        }
         clients.push(client);
         adapterAttachments.push(client.adapterAttachment ?? attachment);
       }
@@ -502,7 +523,7 @@ export class HarnessSessionManager {
       throw error;
     }
 
-    return { clients, adapterAttachments };
+    return { clients, adapterAttachments, discoveredTools };
   }
 
   async #closeMcpClients(session: HarnessSession): Promise<void> {

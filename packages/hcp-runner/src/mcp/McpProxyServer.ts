@@ -80,6 +80,10 @@ export class McpProxyServer {
     };
   }
 
+  async listTools(): Promise<McpToolDescriptor[]> {
+    return await this.#upstream.listTools();
+  }
+
   async close(): Promise<void> {
     const httpServer: HttpServer | undefined = this.#httpServer;
     this.#httpServer = undefined;

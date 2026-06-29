@@ -3,7 +3,8 @@
   "references": [
     { "path": "./packages/hcp-protocol" },
     { "path": "./packages/hcp-runner" },
-    { "path": "./apps/mock-control-plane" }
+    { "path": "./apps/mock-control-plane" },
+    { "path": "./apps/sample-mcp-server" },
+    { "path": "./demo/quickstart" }
   ]
 }
-

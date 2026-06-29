@@ -8,12 +8,14 @@
     "build": "tsc -b",
     "check": "tsc -b --pretty false",
     "test": "npm test --workspaces --if-present",
+    "demo:quickstart": "npm run start --workspace @hcp-runner/quickstart-demo",
     "dev:runner": "tsx packages/hcp-runner/src/index.ts",
     "dev:mock": "tsx apps/mock-control-plane/src/index.ts"
   },
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "demo/*"
   ],
   "devDependencies": {
     "@types/node": "^22.0.0",

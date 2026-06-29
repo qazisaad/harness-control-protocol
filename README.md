@@ -29,6 +29,7 @@ Implemented today:
 - Sample Streamable HTTP MCP server with server-side proof verification.
 - Mock control plane and end-to-end example for local development and integration testing.
 - Codex and Claude Code live-smoke examples that advertise real local provider readiness, validate proxied MCP setup, and run one real provider turn when local CLI config and auth are valid.
+- Browser quickstart demo for local action onboarding, Codex/Claude prompt checks, and sample Streamable HTTP MCP attachment setup.
 
 Next major work:
 
@@ -62,6 +63,7 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | `packages/hcp-runner` | Local runner CLI, connection lifecycle, config loading, session management, MCP attachment client, and local action policies. |
 | `apps/mock-control-plane` | Local WebSocket control plane for development, tests, and third-party validation. |
 | `apps/sample-mcp-server` | Streamable HTTP MCP server that verifies HCP proof-of-possession headers. |
+| `demo/quickstart` | Browser-based quickstart control plane for local actions, provider turns, and sample MCP attachment flow. |
 | `examples/basic-runner-flow.ts` | Standalone reference flow from pairing through session turn and cleanup. |
 | `examples/codex-runner-flow.ts` | Live-smoke reference flow for local Codex CLI readiness, proxied MCP setup, and one Codex turn. |
 | `examples/claude-runner-flow.ts` | Live-smoke reference flow for local Claude Code readiness, proxied MCP setup, and one Claude Code turn. |
@@ -85,6 +87,22 @@ npm run check
 npm test
 npm run build
 ```
+
+Run the browser quickstart demo:
+
+```bash
+npm run demo:quickstart
+```
+
+Open the printed URL, usually `http://127.0.0.1:8790`.
+
+![HCP quickstart console](demo/quickstart/assets/quickstart.png)
+
+The browser console starts a local demo control plane and a local HCP runner, then sends real HCP messages across the runner/control-plane WebSocket. It includes buttons for README read, Git status, a hardcoded safe Node shell command, and dev-server start/stop.
+
+Codex and Claude Code appear in the provider list when configured by the demo runner. If the local CLI is installed and authenticated, the prompt panel can send a real `harness.turn.send` to that provider. If a CLI is missing or unauthenticated, the demo reports the provider as unavailable and does not fake a response.
+
+The MCP panel starts the sample Streamable HTTP MCP server and attaches it through HCP. For Codex and Claude Code sessions, the runner creates a session-owned loopback proxy and passes process-local MCP config to the provider. On machines without a ready provider CLI, the mock provider still validates the proof-bound Streamable HTTP client path.
 
 Start the mock control plane in one terminal:
 
@@ -230,6 +248,8 @@ The runner enforces:
 
 For Codex and Claude Code sessions, the runner creates a session-owned loopback MCP proxy for each attachment. The proxy talks to the platform MCP server through `McpAttachmentClient`, injects the required proof-of-possession headers, and exposes a local `http://127.0.0.1:<port>/mcp` endpoint to the provider CLI through process-local config overlays. Codex receives `-c mcp_servers.<name>.url=...`; Claude Code receives `--mcp-config ... --strict-mcp-config`. The adapters reject unproxied MCP attachments, so platform URLs and bearer/proof headers are not passed directly to provider CLIs and permanent user config is not mutated.
 
+HCP does not currently accept backend-supplied `stdio` MCP attachments. Payloads with `transport: "stdio"`, `command`, or `args` are rejected by protocol validation. The recommended future design is local runner-owned named stdio MCP profiles that a control plane can reference without supplying executable config. See [MCP Stdio And Cursor](docs/mcp-stdio-and-cursor.md).
+
 ## Local Capability Leases
 
 Local capabilities are short-lived grants minted by the control plane and enforced by the runner. A lease is bound to a session, host, provider instance, and workspace.
@@ -256,7 +276,8 @@ Useful commands:
 | --- | --- |
 | `npm run check` | Type-checks every workspace with `tsc -b --pretty false`. |
 | `npm test` | Runs all package and app tests. |
-| `npm run build` | Builds protocol, runner, and mock control plane packages. |
+| `npm run build` | Builds all TypeScript projects. |
+| `npm run demo:quickstart` | Starts the browser quickstart demo on `127.0.0.1:8790` or the next available port. |
 | `npm run dev:mock -- --port 8787` | Starts the local mock control plane. |
 | `npm run dev:runner -- version` | Prints the runner and protocol versions. |
 | `npm run dev:runner -- pair <url>` | Generates a runner config for a control-plane URL. |
@@ -268,6 +289,7 @@ The repo uses npm workspaces:
 npm test --workspace @hcp-runner/protocol
 npm test --workspace @hcp-runner/runner
 npm test --workspace @hcp-runner/mock-control-plane
+npm test --workspace @hcp-runner/quickstart-demo
 ```
 
 ## Security Posture

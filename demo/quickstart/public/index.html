@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HCP Quickstart Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Harness Control Protocol</p>
+          <h1>HCP Quickstart Console</h1>
+        </div>
+        <div class="status-strip" aria-live="polite">
+          <span id="runnerStatus" class="status-pill status-waiting">starting</span>
+          <span id="workspacePath" class="workspace-path"></span>
+        </div>
+      </header>
+
+      <section class="grid">
+        <aside class="panel sidebar">
+          <div class="panel-title">
+            <span>Providers</span>
+            <button id="refreshSnapshot" class="icon-button" title="Refresh status" type="button">R</button>
+          </div>
+          <div id="providerList" class="provider-list"></div>
+          <div class="capability-band">
+            <span>Filesystem</span>
+            <span>Git</span>
+            <span>Shell</span>
+            <span>Dev server</span>
+          </div>
+        </aside>
+
+        <section class="workspace">
+          <div class="panel controls-panel">
+            <div class="panel-title">
+              <span>Local Actions</span>
+              <button id="startLocalSession" type="button">Start Session</button>
+            </div>
+            <div class="button-grid">
+              <button id="readFile" type="button">Read README</button>
+              <button id="gitStatus" type="button">Git Status</button>
+              <button id="safeShell" type="button">Safe Shell</button>
+              <button id="startDevServer" type="button">Start Dev Server</button>
+              <button id="stopDevServer" type="button">Stop Dev Server</button>
+            </div>
+            <pre id="actionOutput" class="output" aria-live="polite"></pre>
+          </div>
+
+          <div class="panel prompt-panel">
+            <div class="panel-title">
+              <span>Provider Prompt</span>
+              <select id="promptProvider" aria-label="Prompt provider"></select>
+            </div>
+            <textarea id="promptInput" rows="4">Reply with exactly: HCP provider turn OK</textarea>
+            <div class="command-row">
+              <button id="sendPrompt" type="button">Send Prompt</button>
+              <span id="promptState" class="muted"></span>
+            </div>
+          </div>
+
+          <div class="panel mcp-panel">
+            <div class="panel-title">
+              <span>MCP Attachment</span>
+              <select id="mcpProvider" aria-label="MCP provider"></select>
+            </div>
+            <div class="mcp-options">
+              <label>
+                <input id="mcpSendTurn" type="checkbox" />
+                send provider turn
+              </label>
+              <button id="runMcp" type="button">Run Sample MCP</button>
+            </div>
+            <pre id="mcpOutput" class="output compact" aria-live="polite"></pre>
+          </div>
+        </section>
+
+        <aside class="panel event-panel">
+          <div class="panel-title">
+            <span>HCP Event Stream</span>
+            <span id="eventCount" class="event-count">0</span>
+          </div>
+          <ol id="eventLog" class="event-log"></ol>
+        </aside>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
