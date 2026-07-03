@@ -88,9 +88,16 @@ async function runMcp() {
 }
 
 async function postJson(path, body) {
+  const token = state.snapshot?.api_token;
+  if (!token) {
+    await refreshSnapshot();
+  }
   const response = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-hcp-quickstart-token": state.snapshot?.api_token || "",
+    },
     body: JSON.stringify(body),
   });
   const payload = await response.json();

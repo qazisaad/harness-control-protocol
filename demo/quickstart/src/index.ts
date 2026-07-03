@@ -52,6 +52,7 @@ const DEMO_RUN_ID = "quickstart-run";
 const LOCAL_DEV_SERVER_ID = "quickstart-dev-server";
 const LOCAL_ACTION_TIMEOUT_MS = 30_000;
 const TURN_TIMEOUT_MS = 180_000;
+const API_TOKEN_HEADER = "x-hcp-quickstart-token";
 
 const staticRoot: string = join(dirname(fileURLToPath(import.meta.url)), "../public");
 const repoRoot: string = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -90,6 +91,7 @@ type SessionSummary = {
 };
 
 type DemoSnapshot = {
+  api_token: string;
   runner_status: RunnerStatus;
   control_plane_url: string;
   workspace_root: string;
@@ -160,6 +162,7 @@ class DemoHttpError extends Error {
 
 class QuickstartControlPlane {
   readonly #host: string;
+  readonly #apiToken: string;
   #port: number;
   readonly #webSocketServer: WebSocketServer;
   readonly #sseClients = new Set<ServerResponse>();
@@ -180,9 +183,10 @@ class QuickstartControlPlane {
   #runnerSocket: WebSocket | undefined;
   #devServerUrl: string | undefined;
 
-  constructor(host: string, port: number) {
+  constructor(host: string, port: number, apiToken: string) {
     this.#host = host;
     this.#port = port;
+    this.#apiToken = apiToken;
     this.#webSocketServer = new WebSocketServer({ noServer: true });
     this.#webSocketServer.on("connection", (socket: WebSocket) => this.#handleRunnerSocket(socket));
   }
@@ -225,6 +229,7 @@ class QuickstartControlPlane {
 
   snapshot(): DemoSnapshot {
     return {
+      api_token: this.#apiToken,
       runner_status: this.#runnerStatus,
       control_plane_url: this.controlPlaneUrl,
       workspace_root: this.#capabilities.workspaces[0]?.path ?? "",
@@ -581,6 +586,7 @@ class QuickstartDemoApp {
   readonly #host: string;
   readonly #requestedPort: number;
   readonly #workspaceRoot: string;
+  readonly #apiToken = randomUUID();
   readonly #httpServer: HttpServer;
   readonly #controlPlane: QuickstartControlPlane;
   #runnerConnection: RunnerConnection | undefined;
@@ -590,7 +596,7 @@ class QuickstartDemoApp {
     this.#host = options.host;
     this.#requestedPort = options.port;
     this.#workspaceRoot = options.workspaceRoot;
-    this.#controlPlane = new QuickstartControlPlane(this.#host, this.#requestedPort);
+    this.#controlPlane = new QuickstartControlPlane(this.#host, this.#requestedPort, this.#apiToken);
     this.#httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
       this.#handleHttp(request, response).catch((error: unknown) => {
         writeErrorResponse(response, error);
@@ -681,6 +687,7 @@ class QuickstartDemoApp {
     if (request.method !== "POST") {
       throw new DemoHttpError(405, "API route requires POST.");
     }
+    this.#assertMutatingRequestAllowed(request);
 
     const body: Record<string, unknown> = await readJsonBody(request);
     let result: ApiResult;
@@ -715,6 +722,23 @@ class QuickstartDemoApp {
     writeJson(response, 200, result);
   }
 
+  #assertMutatingRequestAllowed(request: IncomingMessage): void {
+    const contentType: string | undefined = singleHeader(request.headers["content-type"]);
+    if (contentType?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
+      throw new DemoHttpError(415, "Mutating quickstart API requests require Content-Type: application/json.");
+    }
+
+    const origin: string | undefined = singleHeader(request.headers.origin);
+    if (origin !== undefined && origin !== this.#controlPlane.httpUrl) {
+      throw new DemoHttpError(403, "Mutating quickstart API requests must come from the demo origin.");
+    }
+
+    const token: string | undefined = singleHeader(request.headers[API_TOKEN_HEADER]);
+    if (token !== this.#apiToken) {
+      throw new DemoHttpError(403, "Mutating quickstart API requests require the quickstart API token.");
+    }
+  }
+
   async #startLocalSession(): Promise<ApiResult> {
     await this.#ensureLocalSession();
     return {
@@ -746,8 +770,8 @@ class QuickstartDemoApp {
     };
     const commandId: string = this.#controlPlane.send("harness.session.start", payload);
     await assertCommandAccepted(await this.#controlPlane.waitForCommand(commandId));
-    await this.#controlPlane.waitForEvent("session.configured", LOCAL_SESSION_ID);
     this.#localSessionStarted = true;
+    await this.#controlPlane.waitForEvent("session.configured", LOCAL_SESSION_ID);
   }
 
   async #readFileAction(): Promise<ApiResult> {
@@ -888,8 +912,8 @@ class QuickstartDemoApp {
       });
       const commandId: string = this.#controlPlane.send("harness.session.start", sessionStart);
       await assertCommandAccepted(await this.#controlPlane.waitForCommand(commandId));
-      await this.#controlPlane.waitForEvent("session.configured", sessionId);
       started = true;
+      await this.#controlPlane.waitForEvent("session.configured", sessionId);
 
       const turnPayload: HcpTurnSendPayload = {
         session_id: sessionId,
@@ -955,9 +979,9 @@ class QuickstartDemoApp {
       });
       const commandId: string = this.#controlPlane.send("harness.session.start", sessionStart);
       await assertCommandAccepted(await this.#controlPlane.waitForCommand(commandId));
+      started = true;
       await this.#controlPlane.waitForMcpStatus(sessionId, "connected");
       await this.#controlPlane.waitForMcpStatus(sessionId, "tools_discovered");
-      started = true;
 
       let terminalEvent: HcpHarnessEventPayload | undefined;
       if (sendTurn) {
@@ -1384,6 +1408,10 @@ function requiredString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function singleHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function shortId(): string {
