@@ -35,7 +35,7 @@ Next major work:
 
 - Richer provider-native event normalization.
 - Published packages and release automation.
-- Contributor docs, security-reporting process, and compatibility matrix.
+- First public package release under the `@harness-control` scope.
 
 ## Why HCP Exists
 
@@ -68,7 +68,11 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | `examples/codex-runner-flow.ts` | Live-smoke reference flow for local Codex CLI readiness, proxied MCP setup, and one Codex turn. |
 | `examples/claude-runner-flow.ts` | Live-smoke reference flow for local Claude Code readiness, proxied MCP setup, and one Claude Code turn. |
 | `docs/architecture.md` | Architecture boundary and MCP SDK responsibility split. |
+| `docs/compatibility.md` | Compatibility policy for protocol, runner, MCP, and package surfaces. |
+| `docs/release.md` | Pre-1.0 release and package publishing checklist. |
 | `docs/license-decision.md` | Apache-2.0 licensing rationale. |
+| `CONTRIBUTING.md` | Development setup, validation, and pull request expectations. |
+| `SECURITY.md` | Security boundary and vulnerability reporting policy. |
 
 ## Quick Start
 
@@ -304,11 +308,11 @@ HCP treats the local machine as the sensitive boundary.
 - Tool arguments, outputs, request headers, and errors are redacted before event logging.
 - The sample MCP server rejects invalid proof signatures, nonce reuse, stale timestamps, host/session/provider/workspace/server binding mismatches, revoked leases, and unselected tools.
 
-This project does not yet include a formal `SECURITY.md`. Until that exists, avoid publishing exploit details in public issues; open a minimal issue requesting a private maintainer contact path.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and supported security boundaries.
 
 ## Contributing
 
-Contributions are welcome while the project is still taking shape. The most useful contributions right now are small, focused pull requests that improve one of the core contracts:
+Contributions are welcome while the project is still taking shape. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and pull request expectations. The most useful contributions right now are small, focused pull requests that improve one of the core contracts:
 
 - Protocol schema clarity and test coverage.
 - Runner lifecycle behavior.
