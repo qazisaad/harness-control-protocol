@@ -1,10 +1,10 @@
-# HCP Runner
+# Harness Control Protocol (HCP)
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178c6.svg)](https://www.typescriptlang.org/)
 [![Protocol](https://img.shields.io/badge/protocol-hcp.v0-orange.svg)](packages/hcp-protocol)
 
-Open-source local runner for the Harness Control Protocol (HCP).
+Open-source protocol and local runner for connecting hosted harnesses to local developer tools.
 
 HCP connects hosted apps, workflow systems, and local coding-agent harnesses through an outbound WebSocket connection. The control plane can start sessions, send turns, attach short-lived MCP servers, and receive normalized runtime events without requiring inbound network access to the user's machine.
 
@@ -12,7 +12,7 @@ This repository contains the protocol package, runner implementation, MCP attach
 
 ## Project Status
 
-HCP Runner is an early, pre-1.0 foundation. The protocol and runner core are implemented and covered by tests, but production harness adapters and hosted control-plane integration are still being built.
+Harness Control Protocol is an early, pre-1.0 foundation. The protocol and runner core are implemented and covered by tests, but production harness adapters and hosted control-plane integration are still being built.
 
 Implemented today:
 
@@ -37,7 +37,7 @@ Next major work:
 - Published packages and release automation.
 - Contributor docs, security-reporting process, and compatibility matrix.
 
-## Why HCP Runner Exists
+## Why HCP Exists
 
 Most hosted automation products need a safe way to use a developer's local environment: source code, Git state, provider credentials, local tools, and running dev servers. Opening inbound ports or copying long-lived credentials into a hosted service is a poor default.
 
@@ -80,8 +80,8 @@ Prerequisites:
 Clone and validate the project:
 
 ```bash
-git clone https://github.com/qazisaad/hcp-runner.git
-cd hcp-runner
+git clone https://github.com/qazisaad/harness-control-protocol.git
+cd harness-control-protocol
 npm install
 npm run check
 npm test
@@ -294,7 +294,7 @@ npm test --workspace @hcp-runner/quickstart-demo
 
 ## Security Posture
 
-HCP Runner treats the local machine as the sensitive boundary.
+HCP treats the local machine as the sensitive boundary.
 
 - The runner connects outbound; it does not require inbound network access.
 - Provider paths, homes, launch args, and persistent environment remain runner-local.
@@ -321,4 +321,4 @@ Before opening a larger change, start with an issue describing the use case and 
 
 ## License
 
-HCP Runner is licensed under the [Apache License 2.0](LICENSE). The license was chosen because this project is intended to be adopted by applications, companies, and open-source infrastructure while preserving a clear patent grant.
+Harness Control Protocol is licensed under the [Apache License 2.0](LICENSE). The license was chosen because this project is intended to be adopted by applications, companies, and open-source infrastructure while preserving a clear patent grant.

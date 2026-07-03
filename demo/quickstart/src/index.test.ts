@@ -40,7 +40,7 @@ describe("quickstart demo", () => {
         snapshot.api_token,
       );
       assert.equal(readResult.status, "ok");
-      assert.match(JSON.stringify(readResult.data), /HCP Runner/);
+      assert.match(JSON.stringify(readResult.data), /Harness Control Protocol/);
 
       const shellResult = await postJson<{ stdout: string; exit_code: number }>(
         `${server.url}/api/local/safe-shell`,
