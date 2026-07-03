@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WebSocket } from "ws";
-import { HCP_VERSION, type HcpEnvelope } from "@hcp-runner/protocol";
+import { HCP_VERSION, type HcpEnvelope } from "@harness-control/protocol";
 import { startMockControlPlane, type MockControlPlaneServer } from "./index.js";
 
 type ReceivedEnvelope = HcpEnvelope<string, Record<string, unknown>>;

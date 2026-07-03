@@ -6,7 +6,7 @@ import type {
   HcpSessionStartPayload,
   LocalCapabilityGrant,
   LocalCapabilityLease,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 
 import type { LocalCapabilityConfig, ProviderInstanceConfig, RunnerConfig } from "../config/index.js";
 

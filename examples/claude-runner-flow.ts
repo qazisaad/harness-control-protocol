@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HarnessProviderSnapshot, HcpHarnessEventPayload } from "@hcp-runner/protocol";
+import type { HarnessProviderSnapshot, HcpHarnessEventPayload } from "@harness-control/protocol";
 
 import { startMockControlPlane } from "../apps/mock-control-plane/src/index.js";
 import { startSampleMcpServer } from "../apps/sample-mcp-server/src/index.js";

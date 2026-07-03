@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import type { HcpSessionStartPayload } from "@hcp-runner/protocol";
+import type { HcpSessionStartPayload } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../config/index.js";
 import { ClaudeHarnessAdapter, CodexHarnessAdapter, HarnessAdapterError, type HarnessAdapterEvent } from "./adapters.js";

@@ -29,12 +29,12 @@ import {
   type LocalActionResponsePayload,
   type LocalCapabilityLease,
   type McpServerAttachment,
-} from "@hcp-runner/protocol";
-import { RunnerConnection } from "@hcp-runner/runner/connection";
-import type { ProviderInstanceConfig, RunnerConfig } from "@hcp-runner/runner/config";
-import { HarnessSessionManager } from "@hcp-runner/runner/harnesses";
-import { createDevelopmentHmacProofSigner } from "@hcp-runner/runner/mcp";
-import { startSampleMcpServer, type SampleMcpServer } from "@hcp-runner/sample-mcp-server";
+} from "@harness-control/protocol";
+import { RunnerConnection } from "@harness-control/runner/connection";
+import type { ProviderInstanceConfig, RunnerConfig } from "@harness-control/runner/config";
+import { HarnessSessionManager } from "@harness-control/runner/harnesses";
+import { createDevelopmentHmacProofSigner } from "@harness-control/runner/mcp";
+import { startSampleMcpServer, type SampleMcpServer } from "@harness-control/sample-mcp-server";
 import { WebSocket, WebSocketServer } from "ws";
 
 const DEFAULT_HOST = "127.0.0.1";

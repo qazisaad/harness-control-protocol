@@ -19,7 +19,7 @@ import {
   type ControlPlaneCommandMessageType,
   type LocalActionErrorPayload,
   type LocalActionResponsePayload,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 import WebSocket from "ws";
 
 import type { RunnerConfig } from "../config/index.js";

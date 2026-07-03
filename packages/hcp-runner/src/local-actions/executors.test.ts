@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
 
-import type { LocalCapabilityLease } from "@hcp-runner/protocol";
+import type { LocalCapabilityLease } from "@harness-control/protocol";
 
 import type { RunnerConfig } from "../config/index.js";
 import { LocalCapabilityEngine, LocalCapabilityLeaseManager, LocalCapabilityPolicyError } from "./index.js";

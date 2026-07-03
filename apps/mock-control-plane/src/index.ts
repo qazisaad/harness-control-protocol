@@ -18,7 +18,7 @@ import {
   type HcpSessionStopPayload,
   type HcpTurnCancelPayload,
   type HcpTurnSendPayload,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_HOST = "127.0.0.1";

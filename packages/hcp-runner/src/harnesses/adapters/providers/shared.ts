@@ -1,4 +1,4 @@
-import type { HarnessModel, McpServerAttachment } from "@hcp-runner/protocol";
+import type { HarnessModel, McpServerAttachment } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import { HarnessAdapterError, type HarnessAdapterEvent } from "../types.js";

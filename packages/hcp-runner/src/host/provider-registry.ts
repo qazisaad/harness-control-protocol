@@ -3,7 +3,7 @@ import type {
   HarnessOptionDescriptor,
   HarnessProviderSnapshot,
   HcpHostCapabilitiesUpdatedPayload,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig, RunnerConfig } from "../config/index.js";
 

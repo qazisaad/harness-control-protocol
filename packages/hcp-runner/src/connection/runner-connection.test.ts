@@ -17,7 +17,7 @@ import {
   type LocalGitStatusRequestPayload,
   type LocalActionRequestPayload,
   type LocalCapabilityLease,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 
 import { RunnerConnection } from "./runner-connection.js";
 import type { RunnerConfig } from "../config/index.js";

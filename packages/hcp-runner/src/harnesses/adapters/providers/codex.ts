@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HcpSessionStartPayload, McpServerAttachment } from "@hcp-runner/protocol";
+import type { HcpSessionStartPayload, McpServerAttachment } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import type { ProviderDriverStatus } from "../../../host/provider-registry.js";

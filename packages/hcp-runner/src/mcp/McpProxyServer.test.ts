@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServerAttachment } from "@hcp-runner/protocol";
+import type { McpServerAttachment } from "@harness-control/protocol";
 
 import { McpProxyServer, type McpProxyUpstream } from "./McpProxyServer.js";
 import type { McpToolCallArguments, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";

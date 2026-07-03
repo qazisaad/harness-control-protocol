@@ -1,4 +1,4 @@
-import type { HcpEventType, HcpSessionStartPayload, HcpTurnSendPayload } from "@hcp-runner/protocol";
+import type { HcpEventType, HcpSessionStartPayload, HcpTurnSendPayload } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../config/index.js";
 import type { ProviderDriverStatus } from "../../host/provider-registry.js";

@@ -159,7 +159,7 @@ test("committed JSON Schema is generated from the protocol source", async () => 
 test("JSON Schema export keeps extension events open and strict branches represented", () => {
   const schema: JsonSchema = createHcpMessageJsonSchema();
 
-  assert.equal(schema.$id, "https://schemas.hcp-runner.local/hcp.v0/message.schema.json");
+  assert.equal(schema.$id, "https://schemas.harness-control.local/hcp.v0/message.schema.json");
   assertEventTypePattern(schema, "^provider\\..+$");
   assertEventTypePattern(schema, "^extension\\..+$");
 

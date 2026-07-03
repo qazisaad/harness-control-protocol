@@ -9,7 +9,7 @@ import type {
   LocalActionRequestPayload,
   LocalCapabilityLease,
   McpServerAttachment,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 
 import type { AuditLogger } from "../audit/index.js";
 import type { ProviderInstanceConfig, RunnerConfig } from "../config/index.js";

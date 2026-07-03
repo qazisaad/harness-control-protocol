@@ -150,7 +150,7 @@ This flow pairs with the mock control plane, connects a local runner, probes the
 Run the public protocol conformance fixtures:
 
 ```bash
-npm run conformance --workspace @hcp-runner/protocol
+npm run conformance --workspace @harness-control/protocol
 ```
 
 ## Runner Configuration
@@ -286,10 +286,10 @@ Useful commands:
 The repo uses npm workspaces:
 
 ```bash
-npm test --workspace @hcp-runner/protocol
-npm test --workspace @hcp-runner/runner
-npm test --workspace @hcp-runner/mock-control-plane
-npm test --workspace @hcp-runner/quickstart-demo
+npm test --workspace @harness-control/protocol
+npm test --workspace @harness-control/runner
+npm test --workspace @harness-control/mock-control-plane
+npm test --workspace @harness-control/quickstart-demo
 ```
 
 ## Security Posture

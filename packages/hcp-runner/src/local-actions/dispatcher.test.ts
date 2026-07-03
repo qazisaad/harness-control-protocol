@@ -15,7 +15,7 @@ import {
   type LocalActionRequestPayload,
   type LocalActionResponsePayload,
   type LocalCapabilityLease,
-} from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
 
 import type { RunnerConfig } from "../config/index.js";
 import { HarnessSessionManager } from "../harnesses/index.js";

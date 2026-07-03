@@ -5,8 +5,8 @@ import type {
   LocalActionRequestPayload,
   LocalActionResponseAuditEvents,
   LocalActionResponsePayload,
-} from "@hcp-runner/protocol";
-import { parseLocalActionErrorPayload, parseLocalActionResponsePayload } from "@hcp-runner/protocol";
+} from "@harness-control/protocol";
+import { parseLocalActionErrorPayload, parseLocalActionResponsePayload } from "@harness-control/protocol";
 
 import { LocalCapabilityPolicyError } from "./index.js";
 import {

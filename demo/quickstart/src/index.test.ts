@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { LocalActionResponsePayload } from "@hcp-runner/protocol";
+import type { LocalActionResponsePayload } from "@harness-control/protocol";
 
 import { startQuickstartDemo } from "./index.js";
 

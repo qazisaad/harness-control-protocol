@@ -1,5 +1,5 @@
 {
-  "name": "@hcp-runner/sample-mcp-server",
+  "name": "@harness-control/sample-mcp-server",
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
@@ -18,7 +18,7 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@hcp-runner/runner": "0.0.0",
+    "@harness-control/runner": "0.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
   }

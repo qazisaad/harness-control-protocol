@@ -8,7 +8,7 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServerAttachment } from "@hcp-runner/protocol";
+import type { McpServerAttachment } from "@harness-control/protocol";
 
 import type { McpAttachmentClient, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
 

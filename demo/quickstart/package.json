@@ -1,5 +1,5 @@
 {
-  "name": "@hcp-runner/quickstart-demo",
+  "name": "@harness-control/quickstart-demo",
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
@@ -13,9 +13,9 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@hcp-runner/protocol": "0.0.0",
-    "@hcp-runner/runner": "0.0.0",
-    "@hcp-runner/sample-mcp-server": "0.0.0",
+    "@harness-control/protocol": "0.0.0",
+    "@harness-control/runner": "0.0.0",
+    "@harness-control/sample-mcp-server": "0.0.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {

@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
-import type { HcpEventType, LocalCapabilityLease } from "@hcp-runner/protocol";
+import type { HcpEventType, LocalCapabilityLease } from "@harness-control/protocol";
 
 import type { AuditLogger } from "../audit/index.js";
 import { redactValue } from "../mcp/redaction.js";

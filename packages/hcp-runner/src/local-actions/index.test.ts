@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import type { LocalCapabilityLease } from "@hcp-runner/protocol";
+import type { LocalCapabilityLease } from "@harness-control/protocol";
 
 import type { RunnerConfig } from "../config/index.js";
 import {

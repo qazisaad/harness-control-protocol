@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { HCP_VERSION } from "@hcp-runner/protocol";
+import { HCP_VERSION } from "@harness-control/protocol";
 import { z } from "zod";
 
 import type { RunnerConfig } from "../config/index.js";

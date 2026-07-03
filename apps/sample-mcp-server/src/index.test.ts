@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 
-import { McpAttachmentClient, createDevelopmentHmacProofSigner } from "@hcp-runner/runner/mcp";
-import type { McpServerAttachment } from "@hcp-runner/protocol";
+import { McpAttachmentClient, createDevelopmentHmacProofSigner } from "@harness-control/runner/mcp";
+import type { McpServerAttachment } from "@harness-control/protocol";
 
 import { startSampleMcpServer, type SampleMcpLease } from "./index.js";
 

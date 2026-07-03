@@ -26,7 +26,7 @@ export type JsonSchema = Record<string, unknown> & {
   type?: string;
 };
 
-export const HCP_MESSAGE_JSON_SCHEMA_ID = `https://schemas.hcp-runner.local/${HCP_VERSION}/message.schema.json`;
+export const HCP_MESSAGE_JSON_SCHEMA_ID = `https://schemas.harness-control.local/${HCP_VERSION}/message.schema.json`;
 
 function isJsonSchema(value: unknown): value is JsonSchema {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -17916,7 +17916,7 @@
       "additionalProperties": false
     }
   ],
-  "$id": "https://schemas.hcp-runner.local/hcp.v0/message.schema.json",
+  "$id": "https://schemas.harness-control.local/hcp.v0/message.schema.json",
   "title": "HCP protocol message",
   "description": "Structural JSON Schema for known hcp.v0 protocol messages. Runtime parsers enforce additional cross-field invariants such as lease-to-attribution equality."
 }

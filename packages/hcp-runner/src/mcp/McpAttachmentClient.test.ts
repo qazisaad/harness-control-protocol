@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServerAttachment } from "@hcp-runner/protocol";
+import type { McpServerAttachment } from "@harness-control/protocol";
 
 import {
   McpAttachmentClient,

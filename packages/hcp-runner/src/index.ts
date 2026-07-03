@@ -3,7 +3,7 @@
 import { writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
-import { HCP_VERSION } from "@hcp-runner/protocol";
+import { HCP_VERSION } from "@harness-control/protocol";
 
 import { JsonlAuditLogger, defaultAuditLogPath } from "./audit/index.js";
 import { loadRunnerConfig } from "./config/index.js";
