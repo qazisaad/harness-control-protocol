@@ -6,6 +6,7 @@ import { ProviderInstanceRegistry } from "./provider-registry.js";
 
 const config: RunnerConfig = {
   runner_id: "runner-local",
+  mcp_stdio_profiles: [],
   control_plane_url: "ws://localhost:8787/hcp",
   workspaces: [{ id: "workspace-main", path: "/tmp/workspace" }],
   local_capabilities: [
@@ -96,6 +97,30 @@ describe("ProviderInstanceRegistry", () => {
     assert.equal(snapshot.providers[0]?.status, "unavailable");
     assert.equal(snapshot.providers[0]?.installed, true);
     assert.equal(snapshot.providers[0]?.message, "Executable is not available.");
+  });
+
+  it("advertises stdio profile ids and policy without leaking executable configuration", () => {
+    const registry = ProviderInstanceRegistry.fromConfig({
+      ...config,
+      mcp_stdio_profiles: [
+        {
+          id: "sample-tools",
+          command: "/private/path/server",
+          args: ["--secret", "value"],
+          env: { PRIVATE_TOKEN: "secret" },
+          workspace_relative_cwd: ".",
+          provider_instance_ids: ["provider-ready"],
+          allowed_tools: ["echo"],
+          denied_tools: [],
+        },
+      ],
+    });
+
+    const snapshot = registry.snapshot(new Date("2026-01-01T00:00:00.000Z"));
+    assert.deepEqual(snapshot.mcp_stdio_profiles, [
+      { id: "sample-tools", provider_instance_ids: ["provider-ready"], allowed_tools: ["echo"] },
+    ]);
+    assert.doesNotMatch(JSON.stringify(snapshot), /private\/path|PRIVATE_TOKEN|secret/);
   });
 
   it("keeps probe status separate for provider instances with the same driver", () => {

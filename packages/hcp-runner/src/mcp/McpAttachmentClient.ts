@@ -3,7 +3,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { HcpEventType, McpServerAttachment } from "@harness-control/protocol";
+import type { HcpEventType, StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
 
 import { redactHeaders, redactValue } from "./redaction.js";
 
@@ -93,7 +93,7 @@ type SdkToolCallResult = Awaited<ReturnType<Client["callTool"]>>;
 
 type McpSdkFactory = {
   createClient(): SdkToolClient;
-  createStreamableHttpTransport(attachment: McpServerAttachment, options: { fetch: FetchLike }): unknown;
+  createStreamableHttpTransport(attachment: StreamableHttpMcpServerAttachment, options: { fetch: FetchLike }): unknown;
 };
 
 export type McpAttachmentClientOptions = {
@@ -117,7 +117,7 @@ export class McpAttachmentClient {
   private connected = false;
 
   constructor(
-    private readonly attachment: McpServerAttachment,
+    private readonly attachment: StreamableHttpMcpServerAttachment,
     options: McpAttachmentClientOptions = {},
   ) {
     this.allowedTools = attachment.allowed_tools ? new Set(attachment.allowed_tools) : undefined;
@@ -305,7 +305,7 @@ export class McpAttachmentClient {
   }
 
   private createProofFetch(): FetchLike {
-    const attachment: McpServerAttachment = this.attachment;
+    const attachment: StreamableHttpMcpServerAttachment = this.attachment;
     const proofContext: McpProofContext | undefined = this.proofContext;
     if (!proofContext) {
       throw new McpProofBindingError(attachment.name, `MCP attachment "${attachment.name}" requires runner proof context.`);
@@ -371,7 +371,7 @@ const defaultMcpSdkFactory: McpSdkFactory = {
   createClient(): SdkToolClient {
     return new Client({ name: "hcp-runner", version: "0.0.0" });
   },
-  createStreamableHttpTransport(attachment: McpServerAttachment, options: { fetch: FetchLike }): unknown {
+  createStreamableHttpTransport(attachment: StreamableHttpMcpServerAttachment, options: { fetch: FetchLike }): unknown {
     return new StreamableHTTPClientTransport(new URL(attachment.url), {
       requestInit: { headers: attachment.headers },
       fetch: options.fetch,

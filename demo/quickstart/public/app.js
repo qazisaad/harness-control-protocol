@@ -9,6 +9,7 @@ const els = {
   providerList: document.querySelector("#providerList"),
   promptProvider: document.querySelector("#promptProvider"),
   mcpProvider: document.querySelector("#mcpProvider"),
+  mcpTransport: document.querySelector("#mcpTransport"),
   actionOutput: document.querySelector("#actionOutput"),
   mcpOutput: document.querySelector("#mcpOutput"),
   eventLog: document.querySelector("#eventLog"),
@@ -80,6 +81,7 @@ async function runMcp() {
     els.mcpOutput.textContent = "running...";
     const payload = await postJson("/api/mcp/start", {
       provider_instance_id: els.mcpProvider.value || undefined,
+      transport: els.mcpTransport.value,
       send_turn: els.mcpSendTurn.checked,
     });
     els.mcpOutput.textContent = JSON.stringify(payload, null, 2);

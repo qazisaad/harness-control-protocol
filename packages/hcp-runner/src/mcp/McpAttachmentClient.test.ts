@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServerAttachment } from "@harness-control/protocol";
+import type { StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
 
 import {
   McpAttachmentClient,
@@ -115,7 +115,7 @@ describe("McpAttachmentClient", () => {
   });
 
   it("requires proof context before connecting platform attachments", async () => {
-    const attachment: McpServerAttachment = makeAttachment({});
+    const attachment: StreamableHttpMcpServerAttachment = makeAttachment({});
     const client = new McpAttachmentClient(attachment, {
       proofSigner: () => "test-signature",
       sdkFactory: createNoopSdkFactory(),
@@ -208,12 +208,12 @@ describe("MCP redaction helpers", () => {
 });
 
 function createTestClient(
-  attachmentOverrides: Partial<McpServerAttachment>,
+  attachmentOverrides: Partial<StreamableHttpMcpServerAttachment>,
   calls: string[] = [],
   events: McpAttachmentEvent[] = [],
   now?: () => Date,
 ): McpAttachmentClient {
-  const attachment: McpServerAttachment = makeAttachment(attachmentOverrides);
+  const attachment: StreamableHttpMcpServerAttachment = makeAttachment(attachmentOverrides);
 
   return new McpAttachmentClient(attachment, {
     proofContext: proofContext(),
@@ -241,8 +241,10 @@ function createTestClient(
   });
 }
 
-function makeAttachment(attachmentOverrides: Partial<McpServerAttachment>): McpServerAttachment {
-  const baseAttachment: McpServerAttachment = {
+function makeAttachment(
+  attachmentOverrides: Partial<StreamableHttpMcpServerAttachment>,
+): StreamableHttpMcpServerAttachment {
+  const baseAttachment: StreamableHttpMcpServerAttachment = {
     name: "local-test-mcp",
     transport: "streamable_http",
     url: "http://127.0.0.1:9999/mcp",

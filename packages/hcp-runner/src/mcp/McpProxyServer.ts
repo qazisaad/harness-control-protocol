@@ -8,26 +8,25 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServerAttachment } from "@harness-control/protocol";
-
+import type { HarnessAdapterMcpServer } from "../harnesses/adapters.js";
 import type { McpAttachmentClient, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
 
 export type McpProxyUpstream = Pick<McpAttachmentClient, "connect" | "listTools" | "callTool" | "close">;
 
 export type McpProxyServerOptions = {
-  attachment: McpServerAttachment;
+  attachment: Pick<HarnessAdapterMcpServer, "name" | "allowed_tools" | "denied_tools">;
   upstream: McpProxyUpstream;
   host?: "127.0.0.1" | "localhost";
   port?: number;
 };
 
 export class McpProxyServer {
-  readonly #attachment: McpServerAttachment;
+  readonly #attachment: Pick<HarnessAdapterMcpServer, "name" | "allowed_tools" | "denied_tools">;
   readonly #upstream: McpProxyUpstream;
   readonly #host: "127.0.0.1" | "localhost";
   readonly #port: number;
   #httpServer: HttpServer | undefined;
-  #adapterAttachment: McpServerAttachment | undefined;
+  #adapterAttachment: HarnessAdapterMcpServer | undefined;
 
   constructor(options: McpProxyServerOptions) {
     this.#attachment = options.attachment;
@@ -36,7 +35,7 @@ export class McpProxyServer {
     this.#port = options.port ?? 0;
   }
 
-  get adapterAttachment(): McpServerAttachment | undefined {
+  get adapterAttachment(): HarnessAdapterMcpServer | undefined {
     return this.#adapterAttachment;
   }
 
@@ -74,9 +73,12 @@ export class McpProxyServer {
     }
     this.#httpServer = httpServer;
     this.#adapterAttachment = {
-      ...this.#attachment,
+      name: this.#attachment.name,
+      transport: "streamable_http",
       url: `http://${this.#host}:${boundPort}/mcp`,
       headers: {},
+      ...(this.#attachment.allowed_tools ? { allowed_tools: this.#attachment.allowed_tools } : {}),
+      ...(this.#attachment.denied_tools ? { denied_tools: this.#attachment.denied_tools } : {}),
     };
   }
 

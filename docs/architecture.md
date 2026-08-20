@@ -36,6 +36,7 @@ Runner responsibilities:
 
 - decide which MCP transports are allowed by HCP policy
 - map HCP `McpServerAttachment` records into SDK clients
+- resolve runner-owned stdio profile ids into locally configured processes without exposing command configuration
 - enforce `allowed_tools` and `denied_tools`
 - attach MCP servers only to workflow-launched harness sessions
 - redact inputs, outputs, and headers before logging
@@ -45,7 +46,7 @@ Runner responsibilities:
 
 The SDK should sit behind a small runner-owned wrapper so SDK version changes do not leak into harness adapters.
 
-The sample MCP server uses the official SDK server transport and verifies HCP proof headers before handing requests to the SDK transport. It is a reference path for local tests, not a production authorization service.
+The sample MCP server exposes both proof-bound Streamable HTTP and local stdio entry points using official SDK transports. It is a reference path for local tests, not a production authorization service.
 
 ## Reliability Boundary
 

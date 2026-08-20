@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { HarnessSessionError, HarnessSessionManager, type HarnessMcpClient } from "./index.js";
 import type { AuditLogEvent } from "../audit/index.js";
@@ -24,6 +25,7 @@ const defaultCapabilities: LocalCapabilityConfig[] = [
 function createConfig(workspacePath: string, localCapabilities: LocalCapabilityConfig[] = defaultCapabilities): RunnerConfig {
   return {
     runner_id: "runner-test",
+    mcp_stdio_profiles: [],
     host_id: "host-test",
     control_plane_url: "ws://127.0.0.1:8787",
     workspaces: [{ id: "repo", path: workspacePath }],
@@ -363,6 +365,57 @@ describe("HarnessSessionManager", () => {
 
       assert.deepEqual(connected, ["tools"]);
       assert.deepEqual(closed, ["tools"]);
+    } finally {
+      await workspace.cleanup();
+    }
+  });
+
+  it("resolves a named runner stdio profile without accepting backend command fields", async () => {
+    const workspace = await createWorkspace();
+    const fixturePath: string = fileURLToPath(new URL("../../test-fixtures/sample-mcp-stdio.mjs", import.meta.url));
+    const config: RunnerConfig = {
+      ...createConfig(workspace.root),
+      mcp_stdio_profiles: [
+        {
+          id: "sample-tools",
+          command: process.execPath,
+          args: [fixturePath],
+          env: {},
+          workspace_relative_cwd: ".",
+          provider_instance_ids: ["mock-provider"],
+          allowed_tools: ["echo", "secret_admin"],
+          denied_tools: ["secret_admin"],
+        },
+      ],
+    };
+    const manager = new HarnessSessionManager(config);
+
+    try {
+      const events = await manager.startSession({
+        session_id: "session-stdio",
+        workspace_id: "repo",
+        provider_instance_id: "mock-provider",
+        driver_kind: "mock",
+        cwd: workspace.root,
+        sandbox_mode: "workspace_write",
+        approval_policy: "ask",
+        continue_session: false,
+        model_selection: { model: "mock-model" },
+        mcp_servers: [
+          {
+            name: "sample",
+            transport: "runner_stdio_profile",
+            profile_id: "sample-tools",
+            allowed_tools: ["echo", "secret_admin"],
+          },
+        ],
+      });
+      const discovery = events.find(
+        (event): boolean =>
+          event.event_type === "mcp.status.updated" && "status" in event.data && event.data.status === "tools_discovered",
+      );
+      assert.equal(discovery && "message" in discovery.data ? discovery.data.message : undefined, "allowed tools: echo");
+      await manager.stopSession("session-stdio", "done");
     } finally {
       await workspace.cleanup();
     }

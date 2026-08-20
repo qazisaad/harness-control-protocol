@@ -68,6 +68,10 @@
               <select id="mcpProvider" aria-label="MCP provider"></select>
             </div>
             <div class="mcp-options">
+              <select id="mcpTransport" aria-label="MCP transport">
+                <option value="streamable_http">Proof-bound HTTP</option>
+                <option value="runner_stdio_profile">Runner stdio profile</option>
+              </select>
               <label>
                 <input id="mcpSendTurn" type="checkbox" />
                 send provider turn

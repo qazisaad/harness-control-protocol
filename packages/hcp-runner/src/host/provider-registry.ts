@@ -11,6 +11,7 @@ export type ProviderRegistrySnapshot = {
   providers: HarnessProviderSnapshot[];
   local_capabilities: HcpHostCapabilitiesUpdatedPayload["local_capabilities"];
   workspaces: HcpHostCapabilitiesUpdatedPayload["workspaces"];
+  mcp_stdio_profiles: NonNullable<HcpHostCapabilitiesUpdatedPayload["mcp_stdio_profiles"]>;
 };
 
 export type ProviderDriverStatus = {
@@ -69,6 +70,12 @@ export class ProviderInstanceRegistry {
         id: workspace.id,
         path: workspace.path,
         ...(workspace.git_remote ? { git_remote: workspace.git_remote } : {}),
+      })),
+      mcp_stdio_profiles: this.#config.mcp_stdio_profiles.map((profile) => ({
+        id: profile.id,
+        provider_instance_ids: profile.provider_instance_ids,
+        ...(profile.allowed_tools ? { allowed_tools: profile.allowed_tools } : {}),
+        ...(profile.denied_tools.length > 0 ? { denied_tools: profile.denied_tools } : {}),
       })),
     };
   }

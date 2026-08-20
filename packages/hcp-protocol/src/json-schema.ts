@@ -160,7 +160,15 @@ function patchStreamableHttpMcpUrlSchema(schema: JsonSchema): void {
   const payloadSchema: JsonSchema = getObjectProperty(sessionStartSchema, "payload", "harness.session.start schema");
   const mcpServersSchema: JsonSchema = getObjectProperty(payloadSchema, "mcp_servers", "session start payload schema");
   const itemSchema: JsonSchema = asJsonSchema(mcpServersSchema.items, "mcp_servers items schema");
-  const urlSchema: JsonSchema = getObjectProperty(itemSchema, "url", "MCP server attachment schema");
+  const attachmentSchemas: JsonSchema[] = itemSchema.oneOf ?? [];
+  const streamableSchema: JsonSchema | undefined = attachmentSchemas.find((candidate: JsonSchema): boolean => {
+    const transportValue: JsonSchemaValue | undefined = candidate.properties?.transport;
+    const transportSchema: JsonSchema | undefined =
+      typeof transportValue === "object" && transportValue !== null ? transportValue : undefined;
+    return transportSchema?.const === "streamable_http";
+  });
+  const urlOwner: JsonSchema = streamableSchema ?? itemSchema;
+  const urlSchema: JsonSchema = getObjectProperty(urlOwner, "url", "streamable HTTP MCP server attachment schema");
   urlSchema.pattern = "^https?://";
 }
 

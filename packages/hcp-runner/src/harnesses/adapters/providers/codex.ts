@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HcpSessionStartPayload, McpServerAttachment } from "@harness-control/protocol";
+import type { HcpSessionStartPayload } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import type { ProviderDriverStatus } from "../../../host/provider-registry.js";
@@ -15,6 +15,7 @@ import type {
   HarnessAdapterStartInput,
   HarnessAdapterStopInput,
   HarnessAdapterTurnInput,
+  HarnessAdapterMcpServer,
 } from "../types.js";
 import {
   type CliManagedProcess,
@@ -28,6 +29,7 @@ import {
   startManagedCliProcess,
 } from "./cli-process.js";
 import {
+  adapterMcpServers,
   assertCliMcpAttachmentProxied,
   cliMcpServerConfigName,
   normalizeProviderModels,
@@ -178,7 +180,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
-    for (const attachment of input.payload.mcp_servers) {
+    for (const attachment of adapterMcpServers(input.mcpServers, input.payload)) {
       assertCodexMcpAttachmentProxied(attachment);
     }
     return {
@@ -206,7 +208,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     );
     const args: string[] = [
       ...codexLaunchArgs(input.provider),
-      ...codexMcpConfigArgs(input.startPayload.mcp_servers),
+      ...codexMcpConfigArgs(adapterMcpServers(input.mcpServers, input.startPayload)),
       "--ask-for-approval",
       mapCodexApprovalPolicy(input.startPayload.approval_policy),
       "exec",
@@ -462,13 +464,14 @@ function mapCodexApprovalPolicy(approvalPolicy: HcpSessionStartPayload["approval
   }
 }
 
-function assertCodexMcpAttachmentProxied(attachment: McpServerAttachment): void {
+function assertCodexMcpAttachmentProxied(attachment: HarnessAdapterMcpServer): void {
   assertCliMcpAttachmentProxied(attachment, "Codex", "codex");
 }
 
-function codexMcpConfigArgs(attachments: McpServerAttachment[]): string[] {
+function codexMcpConfigArgs(attachments: HarnessAdapterMcpServer[]): string[] {
   const args: string[] = [];
   for (const attachment of attachments) {
+    assertCodexMcpAttachmentProxied(attachment);
     const name: string = codexMcpServerConfigName(attachment.name);
     args.push("-c", `mcp_servers.${name}.url=${tomlString(attachment.url)}`);
   }

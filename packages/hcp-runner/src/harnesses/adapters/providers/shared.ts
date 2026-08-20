@@ -1,7 +1,11 @@
-import type { HarnessModel, McpServerAttachment } from "@harness-control/protocol";
+import type { HarnessModel, HcpSessionStartPayload } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
-import { HarnessAdapterError, type HarnessAdapterEvent } from "../types.js";
+import {
+  HarnessAdapterError,
+  type HarnessAdapterEvent,
+  type HarnessAdapterMcpServer,
+} from "../types.js";
 
 export function normalizeProviderModels(models: ProviderInstanceConfig["models"]): HarnessModel[] {
   return models.map((model): HarnessModel => {
@@ -65,7 +69,7 @@ export function turnFailedEvent(
 }
 
 export function assertCliMcpAttachmentProxied(
-  attachment: McpServerAttachment,
+  attachment: HarnessAdapterMcpServer,
   providerLabel: string,
   errorPrefix: string,
 ): void {
@@ -95,6 +99,29 @@ export function assertCliMcpAttachmentProxied(
       `${providerLabel} MCP attachments must be routed through a runner-owned loopback MCP proxy so HCP proof headers can be injected.`,
     );
   }
+}
+
+export function adapterMcpServers(
+  resolved: HarnessAdapterMcpServer[] | undefined,
+  payload: HcpSessionStartPayload,
+): HarnessAdapterMcpServer[] {
+  if (resolved) return resolved;
+  return payload.mcp_servers.map((attachment): HarnessAdapterMcpServer => {
+    if (attachment.transport !== "streamable_http") {
+      throw new HarnessAdapterError(
+        "mcp_stdio_profile_unresolved",
+        `Runner MCP profile '${attachment.profile_id}' must be resolved before starting a provider adapter.`,
+      );
+    }
+    return {
+      name: attachment.name,
+      transport: "streamable_http",
+      url: attachment.url,
+      headers: attachment.headers,
+      ...(attachment.allowed_tools ? { allowed_tools: attachment.allowed_tools } : {}),
+      ...(attachment.denied_tools ? { denied_tools: attachment.denied_tools } : {}),
+    };
+  });
 }
 
 export function cliMcpServerConfigName(name: string, errorPrefix: string): string {

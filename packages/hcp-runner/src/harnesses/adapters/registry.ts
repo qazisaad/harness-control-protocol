@@ -3,6 +3,7 @@ import type { ProviderDriverStatus } from "../../host/provider-registry.js";
 import { ClaudeHarnessAdapter } from "./providers/claude.js";
 import { CodexHarnessAdapter } from "./providers/codex.js";
 import { MockHarnessAdapter } from "./providers/mock.js";
+import { OpenCodeHarnessAdapter } from "./providers/opencode.js";
 import { HarnessAdapterError, type HarnessAdapter } from "./types.js";
 
 export class HarnessAdapterRegistry {
@@ -46,5 +47,10 @@ export class HarnessAdapterRegistry {
 }
 
 export function createDefaultHarnessAdapterRegistry(): HarnessAdapterRegistry {
-  return new HarnessAdapterRegistry([new MockHarnessAdapter(), new CodexHarnessAdapter(), new ClaudeHarnessAdapter()]);
+  return new HarnessAdapterRegistry([
+    new MockHarnessAdapter(),
+    new CodexHarnessAdapter(),
+    new ClaudeHarnessAdapter(),
+    new OpenCodeHarnessAdapter(),
+  ]);
 }

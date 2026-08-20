@@ -22,6 +22,13 @@ import {
 import { RunnerConnection } from "./runner-connection.js";
 import type { RunnerConfig } from "../config/index.js";
 import { HarnessSessionManager } from "../harnesses/index.js";
+import {
+  HarnessAdapterRegistry,
+  type HarnessAdapter,
+  type HarnessAdapterEvent,
+  type HarnessAdapterSession,
+  type HarnessAdapterTurnInput,
+} from "../harnesses/adapters.js";
 import { JsonRunnerStateStore } from "../state/index.js";
 
 type TestWorkspace = {
@@ -59,6 +66,54 @@ class BlockingTurnSessionManager extends HarnessSessionManager {
   }
 }
 
+class StreamingReconnectAdapter implements HarnessAdapter {
+  readonly driverKind = "mock";
+  #release: (() => void) | undefined;
+
+  async probe() {
+    return {
+      provider_instance_id: "mock-provider",
+      driver_kind: "mock",
+      installed: true,
+      available: true,
+      status: "ready" as const,
+      models: [],
+    };
+  }
+
+  async validateStart(): Promise<void> {}
+
+  async startSession(input: { payload: HcpSessionStartPayload }): Promise<HarnessAdapterSession> {
+    return { adapter_session_id: input.payload.session_id };
+  }
+
+  async sendTurn(input: HarnessAdapterTurnInput): Promise<HarnessAdapterEvent[]> {
+    input.emitEvent?.({ event_type: "content.delta", turn_id: input.payload.turn_id, data: { delta: "partial" } });
+    await new Promise<void>((resolve) => {
+      this.#release = resolve;
+    });
+    return [
+      {
+        event_type: "turn.completed",
+        turn_id: input.payload.turn_id,
+        data: { status: "completed", final_output: { final_text: "partial final" } },
+      },
+    ];
+  }
+
+  async cancelTurn(): Promise<HarnessAdapterEvent[]> {
+    return [];
+  }
+
+  async stopSession(): Promise<HarnessAdapterEvent[]> {
+    return [];
+  }
+
+  release(): void {
+    this.#release?.();
+  }
+}
+
 async function createWorkspace(): Promise<TestWorkspace> {
   const root: string = await mkdtemp(join(tmpdir(), "hcp-runner-connection-"));
   const project: string = join(root, "project");
@@ -75,6 +130,7 @@ async function createWorkspace(): Promise<TestWorkspace> {
 function createConfigBase(workspaceRoot: string): Omit<RunnerConfig, "control_plane_url"> {
   return {
     runner_id: "runner-test",
+    mcp_stdio_profiles: [],
     workspaces: [{ id: "repo", path: workspaceRoot }],
     local_capabilities: [
       { id: "filesystem", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
@@ -565,6 +621,83 @@ describe("RunnerConnection", () => {
     }
   });
 
+  it("persists an active streamed turn across disconnect and replays its terminal event after reconnect", async () => {
+    const workspace = await createWorkspace();
+    const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: "ws://placeholder.invalid" };
+    const adapter = new StreamingReconnectAdapter();
+    const harnessSessions = new HarnessSessionManager(config, {
+      adapterRegistry: new HarnessAdapterRegistry([adapter]),
+    });
+    let connectionCount = 0;
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      connectionCount += 1;
+      if (connectionCount === 1) {
+        await waitForMessageCount(messages, "host.hello", 1);
+        socket.send(
+          JSON.stringify(
+            createHcpEnvelope("host.accepted", {
+              protocol_version: HCP_VERSION,
+              heartbeat_interval_seconds: 60,
+            }),
+          ),
+        );
+        const sessionStart = createHcpEnvelope("harness.session.start", createSessionStartPayload(workspace.project));
+        socket.send(JSON.stringify(sessionStart));
+        await waitForAck(messages, sessionStart.id);
+        const turnSend = createHcpEnvelope("harness.turn.send", {
+          session_id: "session-1",
+          turn_id: "turn-reconnect",
+          input: "stream then reconnect",
+        });
+        socket.send(JSON.stringify(turnSend));
+        await waitForHarnessEvent(messages, "content.delta");
+        await waitForAck(messages, turnSend.id);
+        socket.terminate();
+        adapter.release();
+        await waitForRetainedSequence(harnessSessions, "session-1", 6);
+        return;
+      }
+
+      const hello = await waitForMessageCountAndGet(messages, "host.hello", 2);
+      assert.deepEqual(hello.payload.retained_events?.sessions, [
+        { session_id: "session-1", first_event_sequence: 1, last_event_sequence: 6 },
+      ]);
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+            resume: { sessions: [{ session_id: "session-1", last_event_sequence: 5 }] },
+          }),
+        ),
+      );
+    });
+    const connection = new RunnerConnection({
+      config: { ...config, control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+      harnessSessions,
+      reconnect: { initialDelayMs: 50, maxDelayMs: 50 },
+    });
+
+    try {
+      await connection.connect();
+      const completed = await waitForHarnessEvent(server.messages, "turn.completed");
+      assert.equal(connectionCount, 2);
+      assert.equal(completed.payload.sequence, 6);
+      assert.equal(completed.payload.turn_id, "turn-reconnect");
+      assert.equal(
+        server.messages.filter(
+          (message) => message.type === "harness.event" && message.payload.event_type === "turn.completed",
+        ).length,
+        1,
+      );
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+    }
+  });
+
   it("replays retained session events after an accepted resume cursor", async () => {
     const workspace = await createWorkspace();
     const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: "ws://placeholder.invalid" };
@@ -836,6 +969,39 @@ async function waitForMessageCount<TType extends HcpMessage["type"]>(
     (message): message is Extract<HcpMessage, { type: TType }> =>
       message.type === type && messages.filter((candidate) => candidate.type === type).length >= count,
   );
+}
+
+async function waitForMessageCountAndGet<TType extends HcpMessage["type"]>(
+  messages: HcpMessage[],
+  type: TType,
+  count: number,
+): Promise<Extract<HcpMessage, { type: TType }>> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const candidates: Array<Extract<HcpMessage, { type: TType }>> = messages.filter(
+      (message): message is Extract<HcpMessage, { type: TType }> => message.type === type,
+    );
+    const candidate: Extract<HcpMessage, { type: TType }> | undefined = candidates[count - 1];
+    if (candidate) return candidate;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${count} '${type}' messages.`);
+}
+
+async function waitForRetainedSequence(
+  manager: HarnessSessionManager,
+  sessionId: string,
+  sequence: number,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const retained = manager
+      .retainedEventRanges()
+      ?.sessions.find((candidate): boolean => candidate.session_id === sessionId);
+    if (retained?.last_event_sequence === sequence) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for retained sequence ${sequence} in session '${sessionId}'.`);
 }
 
 async function waitForAck(messages: HcpMessage[], receivedMessageId: string) {

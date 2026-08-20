@@ -5,7 +5,8 @@ import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
-import type { McpServerAttachment } from "@harness-control/protocol";
+import type { StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
+import type { HarnessAdapterMcpServer } from "../harnesses/adapters.js";
 
 import { McpProxyServer, type McpProxyUpstream } from "./McpProxyServer.js";
 import type { McpToolCallArguments, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
@@ -109,14 +110,14 @@ describe("McpProxyServer", () => {
 });
 
 function requireAdapterUrl(proxy: McpProxyServer): string {
-  const adapterAttachment: McpServerAttachment | undefined = proxy.adapterAttachment;
+  const adapterAttachment: HarnessAdapterMcpServer | undefined = proxy.adapterAttachment;
   if (!adapterAttachment) {
     throw new Error("MCP proxy did not expose an adapter attachment.");
   }
   return adapterAttachment.url;
 }
 
-function attachment(): McpServerAttachment {
+function attachment(): StreamableHttpMcpServerAttachment {
   return {
     name: "tools",
     transport: "streamable_http",

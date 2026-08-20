@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 
 import { z } from "zod";
 
@@ -73,6 +74,23 @@ export const ProviderInstanceConfigSchema = z.object({
 
 export type ProviderInstanceConfig = z.infer<typeof ProviderInstanceConfigSchema>;
 
+export const McpStdioProfileConfigSchema = z.object({
+  id: z.string().min(1),
+  command: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  env: envRecordSchema.default({}),
+  workspace_relative_cwd: z
+    .string()
+    .min(1)
+    .refine((value: string): boolean => !isAbsolute(value), { message: "MCP stdio profile cwd must be workspace-relative" })
+    .default("."),
+  provider_instance_ids: z.array(z.string().min(1)).default([]),
+  allowed_tools: z.array(z.string().min(1)).optional(),
+  denied_tools: z.array(z.string().min(1)).default([]),
+});
+
+export type McpStdioProfileConfig = z.infer<typeof McpStdioProfileConfigSchema>;
+
 export const RunnerConfigSchema = z.object({
   runner_id: z.string().min(1),
   host_id: z.string().min(1).optional(),
@@ -81,6 +99,7 @@ export const RunnerConfigSchema = z.object({
   state_path: z.string().min(1).optional(),
   workspaces: z.array(RunnerWorkspaceConfigSchema).default([]),
   provider_instances: z.array(ProviderInstanceConfigSchema).default([]),
+  mcp_stdio_profiles: z.array(McpStdioProfileConfigSchema).default([]),
   local_capabilities: z
     .array(LocalCapabilityConfigSchema)
     .default([
@@ -89,6 +108,28 @@ export const RunnerConfigSchema = z.object({
       { id: "shell", status: "available", scopes: ["workspace"], approval_required: true },
       { id: "dev_server", status: "available", scopes: ["workspace"], approval_required: true },
     ]),
+}).superRefine((config, context): void => {
+  const profileIds = new Set<string>();
+  const providerIds: ReadonlySet<string> = new Set(config.provider_instances.map((provider): string => provider.id));
+  for (const [index, profile] of config.mcp_stdio_profiles.entries()) {
+    if (profileIds.has(profile.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["mcp_stdio_profiles", index, "id"],
+        message: `Duplicate MCP stdio profile id '${profile.id}'`,
+      });
+    }
+    profileIds.add(profile.id);
+    for (const providerId of profile.provider_instance_ids) {
+      if (!providerIds.has(providerId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["mcp_stdio_profiles", index, "provider_instance_ids"],
+          message: `Unknown provider instance '${providerId}'`,
+        });
+      }
+    }
+  }
 });
 
 export type RunnerConfig = z.infer<typeof RunnerConfigSchema>;

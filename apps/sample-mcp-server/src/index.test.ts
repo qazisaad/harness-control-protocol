@@ -3,7 +3,7 @@ import { createHash, createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { McpAttachmentClient, createDevelopmentHmacProofSigner } from "@harness-control/runner/mcp";
-import type { McpServerAttachment } from "@harness-control/protocol";
+import type { StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
 
 import { startSampleMcpServer, type SampleMcpLease } from "./index.js";
 
@@ -25,7 +25,10 @@ function lease(overrides: Partial<SampleMcpLease> = {}): SampleMcpLease {
   };
 }
 
-function attachment(url: string, overrides: Partial<McpServerAttachment> = {}): McpServerAttachment {
+function attachment(
+  url: string,
+  overrides: Partial<StreamableHttpMcpServerAttachment> = {},
+): StreamableHttpMcpServerAttachment {
   return {
     name: "sample",
     transport: "streamable_http",

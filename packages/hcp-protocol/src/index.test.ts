@@ -13,6 +13,7 @@ import {
   type HcpSessionStartPayload,
   type LocalCapabilityLease,
   type McpServerAttachment,
+  type StreamableHttpMcpServerAttachment,
 } from "./index.js";
 
 const sentAt = "2026-01-01T00:00:00.000Z";
@@ -30,7 +31,9 @@ function createEnvelope<TType extends string, TPayload>(
   };
 }
 
-function proofBoundAttachment(overrides: Partial<McpServerAttachment> = {}): McpServerAttachment {
+function proofBoundAttachment(
+  overrides: Partial<StreamableHttpMcpServerAttachment> = {},
+): StreamableHttpMcpServerAttachment {
   return {
     name: "linear",
     transport: "streamable_http",
@@ -189,7 +192,11 @@ test("parses v0 harness session starts with MCP and local capability leases", ()
 
   assert.equal(parsed.type, "harness.session.start");
   if (parsed.type === "harness.session.start") {
-    assert.equal(parsed.payload.mcp_servers[0]?.proof_of_possession.scheme, "runner_signed_request");
+    const parsedAttachment: McpServerAttachment | undefined = parsed.payload.mcp_servers[0];
+    assert.equal(
+      parsedAttachment?.transport === "streamable_http" ? parsedAttachment.proof_of_possession.scheme : undefined,
+      "runner_signed_request",
+    );
     assert.equal(parsed.payload.local_capability_lease?.capabilities[1]?.id, "shell");
   }
 });

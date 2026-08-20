@@ -1,4 +1,4 @@
-import type { HcpSessionStartPayload, McpServerAttachment } from "@harness-control/protocol";
+import type { HcpSessionStartPayload } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import type { ProviderDriverStatus } from "../../../host/provider-registry.js";
@@ -11,6 +11,7 @@ import type {
   HarnessAdapterStartInput,
   HarnessAdapterStopInput,
   HarnessAdapterTurnInput,
+  HarnessAdapterMcpServer,
 } from "../types.js";
 import {
   type CliManagedProcess,
@@ -24,6 +25,7 @@ import {
   startManagedCliProcess,
 } from "./cli-process.js";
 import {
+  adapterMcpServers,
   assertCliMcpAttachmentProxied,
   cliMcpServerConfigName,
   normalizeProviderModels,
@@ -191,7 +193,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
-    for (const attachment of input.payload.mcp_servers) {
+    for (const attachment of adapterMcpServers(input.mcpServers, input.payload)) {
       assertCliMcpAttachmentProxied(attachment, "Claude Code", "claude");
     }
     return {
@@ -211,7 +213,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     const diagnosticPaths: string[] = claudeDiagnosticPaths(input.provider, executable, input.startPayload.cwd);
     const args: string[] = [
       ...claudeLaunchArgs(input.provider),
-      ...claudeMcpConfigArgs(input.startPayload.mcp_servers),
+      ...claudeMcpConfigArgs(adapterMcpServers(input.mcpServers, input.startPayload)),
       "-p",
       "--output-format",
       "json",
@@ -444,7 +446,7 @@ function mapClaudePermissionMode(approvalPolicy: HcpSessionStartPayload["approva
   }
 }
 
-function claudeMcpConfigArgs(attachments: McpServerAttachment[]): string[] {
+function claudeMcpConfigArgs(attachments: HarnessAdapterMcpServer[]): string[] {
   if (attachments.length === 0) {
     return [];
   }

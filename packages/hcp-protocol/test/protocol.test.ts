@@ -284,6 +284,28 @@ describe("HCP protocol runtime parsing", () => {
     );
 
     assert.equal(parseMcpServerAttachment(attachmentPayload).transport, "streamable_http");
+    assert.deepEqual(
+      parseMcpServerAttachment({
+        name: "local-tools",
+        transport: "runner_stdio_profile",
+        profile_id: "sample-tools",
+        allowed_tools: ["echo"],
+      }),
+      {
+        name: "local-tools",
+        transport: "runner_stdio_profile",
+        profile_id: "sample-tools",
+        allowed_tools: ["echo"],
+      },
+    );
+    assert.throws(() =>
+      parseMcpServerAttachment({
+        name: "injected",
+        transport: "runner_stdio_profile",
+        profile_id: "sample-tools",
+        command: "malicious-command",
+      }),
+    );
     assert.equal(parseLocalActionRequestPayload(localActionRequestPayload).action, "local.filesystem.read");
     assert.equal(parseLocalActionResponsePayload(localActionResponsePayload).status, "completed");
     assert.equal(

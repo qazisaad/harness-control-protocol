@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 function config(): RunnerConfig {
   return {
     runner_id: "runner-1",
+    mcp_stdio_profiles: [],
     host_id: "host-1",
     control_plane_url: "ws://127.0.0.1:8787",
     workspaces: [],

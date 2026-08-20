@@ -863,6 +863,44 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "mcp_stdio_profiles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "provider_instance_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "allowed_tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "denied_tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "provider_instance_ids"
+                ],
+                "additionalProperties": false
+              }
             }
           },
           "required": [
@@ -1289,47 +1327,76 @@
             "mcp_servers": {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "transport": {
-                    "type": "string",
-                    "const": "streamable_http"
-                  },
-                  "url": {
-                    "type": "string",
-                    "format": "uri",
-                    "pattern": "^https?://"
-                  },
-                  "headers": {
-                    "type": "object",
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "additionalProperties": {
-                      "type": "string"
-                    }
-                  },
-                  "lease_id": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "proof_of_possession": {
+                "oneOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "scheme": {
-                        "type": "string",
-                        "const": "runner_signed_request"
-                      },
-                      "key_id": {
+                      "name": {
                         "type": "string",
                         "minLength": 1
                       },
-                      "required_headers": {
-                        "minItems": 1,
+                      "transport": {
+                        "type": "string",
+                        "const": "streamable_http"
+                      },
+                      "url": {
+                        "type": "string",
+                        "format": "uri",
+                        "pattern": "^https?://"
+                      },
+                      "headers": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "lease_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "proof_of_possession": {
+                        "type": "object",
+                        "properties": {
+                          "scheme": {
+                            "type": "string",
+                            "const": "runner_signed_request"
+                          },
+                          "key_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "required_headers": {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        },
+                        "required": [
+                          "scheme",
+                          "key_id",
+                          "required_headers"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "expires_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      },
+                      "allowed_tools": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "denied_tools": {
                         "type": "array",
                         "items": {
                           "type": "string",
@@ -1338,41 +1405,53 @@
                       }
                     },
                     "required": [
-                      "scheme",
-                      "key_id",
-                      "required_headers"
+                      "name",
+                      "transport",
+                      "url",
+                      "headers",
+                      "lease_id",
+                      "proof_of_possession"
                     ],
                     "additionalProperties": false
                   },
-                  "expires_at": {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-                  },
-                  "allowed_tools": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "denied_tools": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1
-                    }
+                  {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "transport": {
+                        "type": "string",
+                        "const": "runner_stdio_profile"
+                      },
+                      "profile_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "allowed_tools": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "denied_tools": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "transport",
+                      "profile_id"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "name",
-                  "transport",
-                  "url",
-                  "headers",
-                  "lease_id",
-                  "proof_of_possession"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           },

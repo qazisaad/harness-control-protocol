@@ -140,7 +140,7 @@ async function handleRequest(
     return;
   }
 
-  const mcp = createMcpServer();
+  const mcp = createSampleMcpServer();
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]);
@@ -152,7 +152,7 @@ async function handleRequest(
   await transport.handleRequest(request, response, parsedBody);
 }
 
-function createMcpServer(): McpServer {
+export function createSampleMcpServer(): McpServer {
   const server = new McpServer({ name: "hcp-sample-mcp", version: "0.0.0" });
   server.registerTool(
     "echo",

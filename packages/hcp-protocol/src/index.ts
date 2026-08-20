@@ -266,10 +266,18 @@ export type HcpWorkspaceSnapshot = {
   git_remote?: string;
 };
 
+export type HcpMcpStdioProfileSnapshot = {
+  id: string;
+  provider_instance_ids: string[];
+  allowed_tools?: string[];
+  denied_tools?: string[];
+};
+
 export type HcpHostCapabilitiesUpdatedPayload = {
   providers: HarnessProviderSnapshot[];
   local_capabilities: LocalCapabilitySnapshot[];
   workspaces: HcpWorkspaceSnapshot[];
+  mcp_stdio_profiles?: HcpMcpStdioProfileSnapshot[];
 };
 
 export type HcpHostReplayUnavailablePayload = {
@@ -358,7 +366,7 @@ export type McpProofOfPossession = {
   required_headers: string[];
 };
 
-export type McpServerAttachment = {
+export type StreamableHttpMcpServerAttachment = {
   name: string;
   transport: "streamable_http";
   url: string;
@@ -369,6 +377,16 @@ export type McpServerAttachment = {
   allowed_tools?: string[];
   denied_tools?: string[];
 };
+
+export type RunnerStdioMcpProfileAttachment = {
+  name: string;
+  transport: "runner_stdio_profile";
+  profile_id: string;
+  allowed_tools?: string[];
+  denied_tools?: string[];
+};
+
+export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
   session_id: string;
@@ -1060,11 +1078,21 @@ export const hcpWorkspaceSchema = z
   })
   .strict();
 
+export const hcpMcpStdioProfileSnapshotSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    provider_instance_ids: z.array(nonEmptyStringSchema),
+    allowed_tools: z.array(nonEmptyStringSchema).optional(),
+    denied_tools: z.array(nonEmptyStringSchema).optional(),
+  })
+  .strict();
+
 export const hcpHostCapabilitiesUpdatedPayloadSchema = z
   .object({
     providers: z.array(harnessProviderSnapshotSchema),
     local_capabilities: z.array(localCapabilitySnapshotSchema),
     workspaces: z.array(hcpWorkspaceSchema),
+    mcp_stdio_profiles: z.array(hcpMcpStdioProfileSnapshotSchema).optional(),
   })
   .strict();
 
@@ -1181,7 +1209,7 @@ export const mcpProofOfPossessionSchema = z
   })
   .strict();
 
-export const mcpServerAttachmentSchema = z
+export const streamableHttpMcpServerAttachmentSchema = z
   .object({
     name: nonEmptyStringSchema,
     transport: z.literal("streamable_http"),
@@ -1194,6 +1222,21 @@ export const mcpServerAttachmentSchema = z
     denied_tools: z.array(nonEmptyStringSchema).optional(),
   })
   .strict();
+
+export const runnerStdioMcpProfileAttachmentSchema = z
+  .object({
+    name: nonEmptyStringSchema,
+    transport: z.literal("runner_stdio_profile"),
+    profile_id: nonEmptyStringSchema,
+    allowed_tools: z.array(nonEmptyStringSchema).optional(),
+    denied_tools: z.array(nonEmptyStringSchema).optional(),
+  })
+  .strict();
+
+export const mcpServerAttachmentSchema = z.discriminatedUnion("transport", [
+  streamableHttpMcpServerAttachmentSchema,
+  runnerStdioMcpProfileAttachmentSchema,
+]);
 
 export const hcpSessionStartPayloadSchema = z
   .object({

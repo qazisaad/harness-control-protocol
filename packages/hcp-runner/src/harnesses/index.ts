@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import type {
   HcpHarnessEventPayload,
@@ -12,10 +12,11 @@ import type {
   LocalActionRequestPayload,
   LocalCapabilityLease,
   McpServerAttachment,
+  StreamableHttpMcpServerAttachment,
 } from "@harness-control/protocol";
 
 import type { AuditLogger } from "../audit/index.js";
-import type { ProviderInstanceConfig, RunnerConfig } from "../config/index.js";
+import type { McpStdioProfileConfig, ProviderInstanceConfig, RunnerConfig } from "../config/index.js";
 import type { ProviderDriverStatus } from "../host/provider-registry.js";
 import {
   LocalCapabilityEngine,
@@ -28,6 +29,7 @@ import type {
 } from "../local-actions/executors.js";
 import { McpAttachmentClient, type McpProofSigner, type McpToolDescriptor } from "../mcp/McpAttachmentClient.js";
 import { McpProxyServer } from "../mcp/McpProxyServer.js";
+import { McpStdioProfileClient } from "../mcp/McpStdioProfileClient.js";
 import { MemoryRunnerStateStore, type RunnerStateStore } from "../state/index.js";
 import {
   HarnessAdapterError,
@@ -35,6 +37,7 @@ import {
   createDefaultHarnessAdapterRegistry,
   type HarnessAdapter,
   type HarnessAdapterEvent,
+  type HarnessAdapterMcpServer,
   type HarnessAdapterSession,
 } from "./adapters.js";
 
@@ -60,17 +63,18 @@ export type HarnessSession = {
   adapterSession: HarnessAdapterSession;
   localCapabilityLease?: LocalCapabilityLease;
   mcpClients: HarnessMcpClient[];
+  mcpServers: HarnessAdapterMcpServer[];
 };
 
 export type HarnessMcpClient = {
-  readonly adapterAttachment?: McpServerAttachment | undefined;
+  readonly adapterAttachment?: HarnessAdapterMcpServer | undefined;
   connect(): Promise<void>;
   listTools?(): Promise<McpToolDescriptor[]>;
   close(): Promise<void>;
 };
 
 export type HarnessMcpClientRequest = {
-  attachment: McpServerAttachment;
+  attachment: StreamableHttpMcpServerAttachment;
   sessionId: string;
   hostId: string;
   providerInstanceId: string;
@@ -83,7 +87,7 @@ export type HarnessMcpClientFactory = (request: HarnessMcpClientRequest) => Harn
 
 export type HarnessMcpAttachmentResult = {
   clients: HarnessMcpClient[];
-  adapterAttachments: McpServerAttachment[];
+  adapterAttachments: HarnessAdapterMcpServer[];
   discoveredTools: HarnessMcpToolDiscovery[];
 };
 
@@ -285,14 +289,15 @@ export class HarnessSessionManager {
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
     await adapter.validateStart({ payload, provider });
     const mcpAttachments: HarnessMcpAttachmentResult = await this.#attachMcpServers(payload, provider);
-    const adapterStartPayload: HcpSessionStartPayload = {
-      ...payload,
-      mcp_servers: mcpAttachments.adapterAttachments,
-    };
+    const adapterStartPayload: HcpSessionStartPayload = payload;
 
     let adapterSession: HarnessAdapterSession;
     try {
-      adapterSession = await adapter.startSession({ payload: adapterStartPayload, provider });
+      adapterSession = await adapter.startSession({
+        payload: adapterStartPayload,
+        provider,
+        mcpServers: mcpAttachments.adapterAttachments,
+      });
     } catch (error: unknown) {
       await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpAttachments.clients, "adapter_start_failed", error);
       throw error;
@@ -309,6 +314,7 @@ export class HarnessSessionManager {
       adapterSession,
       ...(localCapabilityLease ? { localCapabilityLease } : {}),
       mcpClients: mcpAttachments.clients,
+      mcpServers: mcpAttachments.adapterAttachments,
     };
     this.#sessions.set(payload.session_id, session);
     this.#turnIdsBySession.set(payload.session_id, new Set<string>());
@@ -417,15 +423,9 @@ export class HarnessSessionManager {
       events.push(startedEvent);
     }
 
-    const adapterEvents: HarnessAdapterEvent[] = await session.adapter.sendTurn({
-      payload,
-      session: session.adapterSession,
-      startPayload: session.startPayload,
-      provider: this.#requireProvider(session.providerInstanceId, session.driverKind),
-    });
-    for (const adapterEvent of adapterEvents) {
+    const emitAdapterEvent = (adapterEvent: HarnessAdapterEvent): void => {
       if (adapterEvent.event_type === "turn.started") {
-        continue;
+        return;
       }
       const event: HcpHarnessEventPayload = this.#event(
         payload.session_id,
@@ -438,6 +438,17 @@ export class HarnessSessionManager {
       } else {
         events.push(event);
       }
+    };
+    const adapterEvents: HarnessAdapterEvent[] = await session.adapter.sendTurn({
+      payload,
+      session: session.adapterSession,
+      startPayload: session.startPayload,
+      provider: this.#requireProvider(session.providerInstanceId, session.driverKind),
+      mcpServers: session.mcpServers,
+      emitEvent: emitAdapterEvent,
+    });
+    for (const adapterEvent of adapterEvents) {
+      emitAdapterEvent(adapterEvent);
     }
     await this.#recordAudit({
       event: "turn.completed",
@@ -580,26 +591,33 @@ export class HarnessSessionManager {
 
   async #attachMcpServers(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig): Promise<HarnessMcpAttachmentResult> {
     const clients: HarnessMcpClient[] = [];
-    const adapterAttachments: McpServerAttachment[] = [];
+    const adapterAttachments: HarnessAdapterMcpServer[] = [];
     const discoveredTools: HarnessMcpToolDiscovery[] = [];
     try {
       for (const attachment of payload.mcp_servers) {
-        const client: HarnessMcpClient = this.#mcpClientFactory({
-          attachment,
-          sessionId: payload.session_id,
-          hostId: this.#hostId,
-          providerInstanceId: payload.provider_instance_id,
-          workspaceId: payload.workspace_id,
-          driverKind: provider.driver_kind,
-          ...(this.#mcpProofSigner ? { proofSigner: this.#mcpProofSigner } : {}),
-        });
+        const client: HarnessMcpClient =
+          attachment.transport === "runner_stdio_profile"
+            ? await this.#createStdioProfileProxy(attachment, payload, provider)
+            : this.#mcpClientFactory({
+                attachment,
+                sessionId: payload.session_id,
+                hostId: this.#hostId,
+                providerInstanceId: payload.provider_instance_id,
+                workspaceId: payload.workspace_id,
+                driverKind: provider.driver_kind,
+                ...(this.#mcpProofSigner ? { proofSigner: this.#mcpProofSigner } : {}),
+              });
         await client.connect();
+        clients.push(client);
         if (client.listTools !== undefined) {
           const tools: McpToolDescriptor[] = await client.listTools();
           discoveredTools.push({ attachmentName: attachment.name, tools });
         }
-        clients.push(client);
-        adapterAttachments.push(client.adapterAttachment ?? attachment);
+        if (client.adapterAttachment) {
+          adapterAttachments.push(client.adapterAttachment);
+        } else if (attachment.transport === "streamable_http") {
+          adapterAttachments.push(toAdapterMcpServer(attachment));
+        }
       }
     } catch (error: unknown) {
       await closeMcpClientsBestEffort(clients);
@@ -607,6 +625,62 @@ export class HarnessSessionManager {
     }
 
     return { clients, adapterAttachments, discoveredTools };
+  }
+
+  async #createStdioProfileProxy(
+    attachment: Extract<McpServerAttachment, { transport: "runner_stdio_profile" }>,
+    payload: HcpSessionStartPayload,
+    provider: ProviderInstanceConfig,
+  ): Promise<HarnessMcpClient> {
+    const profile: McpStdioProfileConfig | undefined = this.#config.mcp_stdio_profiles.find(
+      (candidate: McpStdioProfileConfig): boolean => candidate.id === attachment.profile_id,
+    );
+    if (!profile) {
+      throw new HarnessSessionError(
+        "mcp_stdio_profile_not_found",
+        `Runner MCP profile '${attachment.profile_id}' is not configured on this host.`,
+      );
+    }
+    if (profile.provider_instance_ids.length > 0 && !profile.provider_instance_ids.includes(provider.id)) {
+      throw new HarnessSessionError(
+        "mcp_stdio_profile_provider_denied",
+        `Runner MCP profile '${profile.id}' is not allowed for provider '${provider.id}'.`,
+      );
+    }
+    if (isAbsolute(profile.workspace_relative_cwd)) {
+      throw new HarnessSessionError(
+        "mcp_stdio_profile_cwd_invalid",
+        `Runner MCP profile '${profile.id}' must use a workspace-relative cwd.`,
+      );
+    }
+    const workspaceRoot: string = await realpathOrWorkspaceError(this.#requireWorkspaceRoot(payload.workspace_id));
+    const profileCwd: string = await realpathOrWorkspaceError(resolve(workspaceRoot, profile.workspace_relative_cwd));
+    const relativeCwd: string = relative(workspaceRoot, profileCwd);
+    if (relativeCwd.startsWith("..") || isAbsolute(relativeCwd)) {
+      throw new HarnessSessionError(
+        "mcp_stdio_profile_cwd_invalid",
+        `Runner MCP profile '${profile.id}' resolves outside workspace '${payload.workspace_id}'.`,
+      );
+    }
+    const allowedTools: string[] | undefined = intersectAllowedTools(profile.allowed_tools, attachment.allowed_tools);
+    const deniedTools: string[] = [...new Set([...profile.denied_tools, ...(attachment.denied_tools ?? [])])];
+    const upstream = new McpStdioProfileClient({
+      name: attachment.name,
+      command: profile.command,
+      args: profile.args,
+      cwd: profileCwd,
+      env: profile.env,
+      ...(allowedTools ? { allowedTools } : {}),
+      deniedTools,
+    });
+    return new McpProxyServer({
+      attachment: {
+        name: attachment.name,
+        ...(allowedTools ? { allowed_tools: allowedTools } : {}),
+        ...(deniedTools.length > 0 ? { denied_tools: deniedTools } : {}),
+      },
+      upstream,
+    });
   }
 
   async #closeMcpClients(session: HarnessSession): Promise<void> {
@@ -661,7 +735,7 @@ function defaultMcpClientFactory(request: HarnessMcpClientRequest): HarnessMcpCl
     },
     proofSigner: request.proofSigner,
   });
-  if (request.driverKind === "codex" || request.driverKind === "claude") {
+  if (request.driverKind === "codex" || request.driverKind === "claude" || request.driverKind === "opencode") {
     return new McpProxyServer({
       attachment: request.attachment,
       upstream,
@@ -669,6 +743,24 @@ function defaultMcpClientFactory(request: HarnessMcpClientRequest): HarnessMcpCl
   }
 
   return upstream;
+}
+
+function toAdapterMcpServer(attachment: StreamableHttpMcpServerAttachment): HarnessAdapterMcpServer {
+  return {
+    name: attachment.name,
+    transport: "streamable_http",
+    url: attachment.url,
+    headers: attachment.headers,
+    ...(attachment.allowed_tools ? { allowed_tools: attachment.allowed_tools } : {}),
+    ...(attachment.denied_tools ? { denied_tools: attachment.denied_tools } : {}),
+  };
+}
+
+function intersectAllowedTools(profileTools: string[] | undefined, requestedTools: string[] | undefined): string[] | undefined {
+  if (!profileTools) return requestedTools;
+  if (!requestedTools) return profileTools;
+  const requested: ReadonlySet<string> = new Set(requestedTools);
+  return profileTools.filter((tool: string): boolean => requested.has(tool));
 }
 
 async function realpathOrWorkspaceError(path: string): Promise<string> {

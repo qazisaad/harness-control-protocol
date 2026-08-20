@@ -13,9 +13,19 @@ export type HarnessAdapterSession = {
   adapter_session_id: string;
 };
 
+export type HarnessAdapterMcpServer = {
+  name: string;
+  transport: "streamable_http";
+  url: string;
+  headers: Record<string, string>;
+  allowed_tools?: string[];
+  denied_tools?: string[];
+};
+
 export type HarnessAdapterStartInput = {
   payload: HcpSessionStartPayload;
   provider: ProviderInstanceConfig;
+  mcpServers?: HarnessAdapterMcpServer[];
 };
 
 export type HarnessAdapterTurnInput = {
@@ -23,6 +33,8 @@ export type HarnessAdapterTurnInput = {
   session: HarnessAdapterSession;
   startPayload: HcpSessionStartPayload;
   provider: ProviderInstanceConfig;
+  mcpServers?: HarnessAdapterMcpServer[];
+  emitEvent?: (event: HarnessAdapterEvent) => void;
 };
 
 export type HarnessAdapterCancelInput = {

@@ -1,6 +1,6 @@
 # MCP Stdio And Cursor
 
-HCP currently supports backend-supplied MCP attachments only when the attachment uses Streamable HTTP:
+HCP supports proof-bound Streamable HTTP attachments and references to runner-owned stdio profiles. A Streamable HTTP attachment is supplied as:
 
 ```json
 {
@@ -21,20 +21,24 @@ HCP currently supports backend-supplied MCP attachments only when the attachment
 
 The protocol intentionally rejects backend payloads that include `transport: "stdio"`, `command`, `args`, or other executable config fields. A hosted control plane should not be able to push arbitrary local process execution into a developer machine through an MCP attachment.
 
-## What Works Today
+## Named Stdio Profiles
 
 ```text
+Runner config
+  -> defines profile id, command, args, environment, workspace-relative cwd, provider bindings, and tool policy
 Control plane
-  -> harness.session.start with streamable_http MCP attachment
-  -> local runner validates lease and proof requirements
-  -> runner connects to the remote Streamable HTTP MCP server
-  -> runner injects proof-of-possession headers on every upstream request
-  -> Codex/Claude receive a runner-owned loopback MCP endpoint when needed
+  -> requests only { transport: runner_stdio_profile, profile_id: sample-tools }
+Runner
+  -> resolves the local profile and intersects tool policy
+  -> launches stdio MCP inside the selected workspace
+  -> bridges it through a session-owned loopback endpoint
+Provider
+  -> receives only the loopback URL
 ```
 
-For Codex and Claude Code, HCP does not pass the platform MCP URL or bearer/proof headers directly to the provider CLI. The runner creates a session-owned loopback proxy such as `http://127.0.0.1:<port>/mcp`, injects proof headers upstream, and passes only process-local MCP config to the provider command.
+The runner advertises profile ids and policy in `host.capabilities.updated`, but never advertises command, args, environment, or cwd. Codex, Claude Code, and OpenCode all receive the same runner-owned loopback shape.
 
-## What Does Not Work Today
+## Rejected Executable Injection
 
 This is not supported:
 
@@ -47,21 +51,7 @@ This is not supported:
 }
 ```
 
-The schema and tests reject that shape. Local filesystem, Git, shell, and dev-server operations are HCP-native local actions, not MCP tool calls.
-
-## Safe Future Stdio Design
-
-A safe `stdio` path should keep executable ownership local:
-
-```text
-local runner config defines named stdio MCP profile
-  -> control plane references profile id
-  -> runner checks local policy and launches the command locally
-  -> runner bridges stdio MCP to a loopback/proof-bound HCP-compatible endpoint
-  -> provider receives only the runner-owned loopback endpoint
-```
-
-The invariant is that command paths, arguments, environment, and working directory policy live in local runner configuration. The control plane can request a named profile, but it cannot supply raw executable config.
+The schema and conformance tests reject that shape. Local filesystem, Git, shell, and dev-server operations are HCP-native local actions, not MCP tool calls. The invariant is that executable ownership stays local. Profile cwd values must be workspace-relative and resolve inside the selected workspace; optional provider bindings prevent a profile from being used by an unintended provider instance.
 
 ## Cursor Status
 

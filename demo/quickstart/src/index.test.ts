@@ -79,6 +79,17 @@ describe("quickstart demo", () => {
       );
       assert.equal(mcpResult.status, "ok");
       assert.equal(mcpResult.data?.["provider"], "mock-provider");
+
+      const stdioResult = await postJson<Record<string, unknown>>(
+        `${server.url}/api/mcp/start`,
+        {
+          provider_instance_id: "mock-provider",
+          transport: "runner_stdio_profile",
+        },
+        snapshot.api_token,
+      );
+      assert.equal(stdioResult.status, "ok");
+      assert.equal(stdioResult.data?.["profile_id"], "sample-stdio-tools");
     } finally {
       await server.close();
     }

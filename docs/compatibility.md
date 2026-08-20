@@ -8,7 +8,7 @@ HCP has four main compatibility surfaces:
 
 - Protocol messages: envelopes, payload schemas, event types, local action contracts, and conformance fixtures.
 - Runner behavior: connection lifecycle, pairing, replay, local action enforcement, audit events, and MCP attachment handling.
-- Harness adapters: Codex, Claude Code, and future provider-specific process/config behavior.
+- Harness adapters: Codex, Claude Code, OpenCode, and future provider-specific process/config behavior.
 - Package APIs: TypeScript exports from `@harness-control/protocol` and `@harness-control/runner`.
 
 ## Protocol Compatibility
@@ -52,15 +52,16 @@ Breaking runner changes include:
 
 ## MCP Compatibility
 
-Current supported MCP attachment transport:
+Current supported MCP attachment transports:
 
 - `streamable_http`
+- `runner_stdio_profile`, which references executable configuration owned by the local runner
 
 Current unsupported transport from backend payloads:
 
 - `stdio`
 
-Backend-supplied stdio command/args are intentionally rejected. A future stdio design should use local runner-owned named profiles where command paths, args, environment, and working directory policy live in local config.
+Backend-supplied stdio command/args are intentionally rejected. Named profile references may select local runner configuration, but cannot override command paths, args, environment, or working directory policy.
 
 ## Package Compatibility
 

@@ -48,6 +48,9 @@ const LOCAL_SESSION_ID = "quickstart-local-actions";
 const LOCAL_TURN_ID = "quickstart-local-turn";
 const LOCAL_PROVIDER_ID = "mock-provider";
 const MCP_PROOF_SECRET = "quickstart-development-mcp-proof-secret";
+const SAMPLE_STDIO_PROFILE_ID = "sample-stdio-tools";
+const SAMPLE_STDIO_SOURCE_PATH = fileURLToPath(new URL("../../../apps/sample-mcp-server/src/stdio.ts", import.meta.url));
+const TSX_IMPORT_URL = import.meta.resolve("tsx");
 const DEMO_RUN_ID = "quickstart-run";
 const LOCAL_DEV_SERVER_ID = "quickstart-dev-server";
 const LOCAL_ACTION_TIMEOUT_MS = 30_000;
@@ -937,6 +940,9 @@ class QuickstartDemoApp {
   }
 
   async #runMcpAttachment(body: Record<string, unknown>): Promise<ApiResult> {
+    if (body["transport"] === "runner_stdio_profile") {
+      return await this.#runStdioProfileAttachment(body);
+    }
     const requestedProviderId: string | undefined = optionalString(body["provider_instance_id"]);
     const sendTurn: boolean = body["send_turn"] === true;
     const provider: HarnessProviderSnapshot = this.#selectMcpProvider(requestedProviderId, sendTurn);
@@ -1021,6 +1027,62 @@ class QuickstartDemoApp {
       } finally {
         await sampleMcp.close();
       }
+    }
+  }
+
+  async #runStdioProfileAttachment(body: Record<string, unknown>): Promise<ApiResult> {
+    const requestedProviderId: string | undefined = optionalString(body["provider_instance_id"]);
+    const sendTurn: boolean = body["send_turn"] === true;
+    const provider: HarnessProviderSnapshot = this.#selectMcpProvider(requestedProviderId, sendTurn);
+    const sessionId = `quickstart-stdio-${provider.driver_kind}-${shortId()}`;
+    let started = false;
+    try {
+      const attachment: McpServerAttachment = {
+        name: "sample-stdio",
+        transport: "runner_stdio_profile",
+        profile_id: SAMPLE_STDIO_PROFILE_ID,
+        allowed_tools: ["echo", "server_status"],
+      };
+      const sessionStart: HcpSessionStartPayload = createProviderSessionStart({
+        sessionId,
+        provider,
+        workspaceRoot: this.#workspaceRoot,
+        mcpServers: [attachment],
+      });
+      const commandId: string = this.#controlPlane.send("harness.session.start", sessionStart);
+      await assertCommandAccepted(await this.#controlPlane.waitForCommand(commandId));
+      started = true;
+      await this.#controlPlane.waitForMcpStatus(sessionId, "connected");
+      await this.#controlPlane.waitForMcpStatus(sessionId, "tools_discovered");
+
+      let terminalEvent: HcpHarnessEventPayload | undefined;
+      if (sendTurn) {
+        if (provider.availability !== "available") {
+          throw new DemoHttpError(409, "Provider must be available before sending an MCP-backed prompt.", provider);
+        }
+        const turnId = `turn-${shortId()}`;
+        const turnCommandId: string = this.#controlPlane.send("harness.turn.send", {
+          session_id: sessionId,
+          turn_id: turnId,
+          input: "Use the attached sample MCP server if available and reply with the server_status result.",
+          model_selection: { model: defaultModelFor(provider) },
+        });
+        await assertCommandAccepted(await this.#controlPlane.waitForCommand(turnCommandId));
+        terminalEvent = await this.#controlPlane.waitForTurnTerminalEvent(turnId);
+      }
+
+      return {
+        status: "ok",
+        message: "Runner-owned stdio profile connected through a session-owned loopback MCP endpoint.",
+        data: {
+          provider: provider.provider_instance_id,
+          driver_kind: provider.driver_kind,
+          profile_id: SAMPLE_STDIO_PROFILE_ID,
+          ...(terminalEvent ? { terminal_event: terminalEvent } : {}),
+        },
+      };
+    } finally {
+      if (started) await this.#stopSession(sessionId, "quickstart-stdio-complete");
     }
   }
 
@@ -1149,6 +1211,18 @@ export async function startQuickstartDemo(options: QuickstartDemoOptions = {}): 
 function createRunnerConfig(workspaceRoot: string, controlPlaneUrl: string): RunnerConfig {
   return {
     runner_id: RUNNER_ID,
+    mcp_stdio_profiles: [
+      {
+        id: SAMPLE_STDIO_PROFILE_ID,
+        command: process.execPath,
+        args: ["--import", TSX_IMPORT_URL, SAMPLE_STDIO_SOURCE_PATH],
+        env: {},
+        workspace_relative_cwd: ".",
+        provider_instance_ids: [LOCAL_PROVIDER_ID, "codex-local", "claude-local", "opencode-local"],
+        allowed_tools: ["echo", "server_status"],
+        denied_tools: ["secret_admin"],
+      },
+    ],
     host_id: HOST_ID,
     control_plane_url: controlPlaneUrl,
     workspaces: [{ id: WORKSPACE_ID, path: workspaceRoot }],
@@ -1180,6 +1254,13 @@ function createRunnerConfig(workspaceRoot: string, controlPlaneUrl: string): Run
         displayName: "Claude Code Local",
         modelId: "sonnet",
         modelLabel: "Claude Sonnet",
+      }),
+      providerConfig({
+        id: "opencode-local",
+        driverKind: "opencode",
+        displayName: "OpenCode Local",
+        modelId: "anthropic/claude-sonnet-4",
+        modelLabel: "Claude Sonnet 4 via OpenCode",
       }),
     ],
   };

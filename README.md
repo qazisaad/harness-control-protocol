@@ -24,9 +24,9 @@ Implemented today:
 - At-least-once command handling with immediate ACK/NACK responses and durable duplicate-command idempotency.
 - Atomic runner state for retained events, command receipts, and local-action receipts across process restarts.
 - Complete/partial session event snapshots with explicit replacement, preservation, and tombstone semantics.
-- Adapter-based session lifecycle with deterministic mock, Codex, and Claude Code adapters.
+- Adapter-based session lifecycle with deterministic mock, Codex, Claude Code, and streaming OpenCode adapters.
 - Local capability leases and real filesystem, Git, shell, and dev-server executors.
-- MCP Streamable HTTP attachment client using the official Model Context Protocol TypeScript SDK.
+- MCP Streamable HTTP attachments and runner-owned named stdio profiles using the official Model Context Protocol TypeScript SDK.
 - Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
 - Sample Streamable HTTP MCP server with server-side proof verification.
 - Mock control plane and end-to-end example for local development and integration testing.
@@ -195,6 +195,17 @@ A runner config describes the local host, allowed workspaces, provider instances
       "local_capabilities": ["filesystem", "git", "shell", "dev_server"]
     }
   ],
+  "mcp_stdio_profiles": [
+    {
+      "id": "sample-tools",
+      "command": "node",
+      "args": ["/absolute/path/to/hcp-runner/apps/sample-mcp-server/dist/stdio.js"],
+      "workspace_relative_cwd": ".",
+      "provider_instance_ids": ["codex-local"],
+      "allowed_tools": ["echo", "server_status"],
+      "denied_tools": ["secret_admin"]
+    }
+  ],
   "local_capabilities": [
     {
       "id": "filesystem",
@@ -224,7 +235,11 @@ A runner config describes the local host, allowed workspaces, provider instances
 }
 ```
 
-Provider executable paths, home directories, launch arguments, and persistent environment variables stay in the local runner config. They are not sent to the control plane as part of capability snapshots.
+Provider and MCP executable paths, arguments, home directories, and environment variables stay in local runner config. Capability snapshots advertise only stdio profile ids, provider bindings, and tool policy.
+
+For OpenCode, configure `driver_kind: "opencode"` and use OpenCode model ids in `provider/model` form, for example `anthropic/claude-sonnet-4`. The adapter starts a session-owned `opencode serve` process, creates a server session, subscribes to `/event` before prompting, emits text and reasoning deltas immediately, and waits for `session.idle` before publishing the terminal HCP event. `harness.turn.cancel` aborts the OpenCode session and session stop terminates the server process.
+
+Build and run the reference stdio server directly with `npm run build --workspace @harness-control/sample-mcp-server` followed by `node apps/sample-mcp-server/dist/stdio.js`. In normal HCP use, put that command in `mcp_stdio_profiles` and let the control plane request only its profile id.
 
 ## Protocol Model
 
@@ -256,9 +271,9 @@ The runner enforces:
 - Event emission for connection, discovery, tool calls, denial, and failure.
 - Client close and cleanup when the harness session ends.
 
-For Codex and Claude Code sessions, the runner creates a session-owned loopback MCP proxy for each attachment. The proxy talks to the platform MCP server through `McpAttachmentClient`, injects the required proof-of-possession headers, and exposes a local `http://127.0.0.1:<port>/mcp` endpoint to the provider CLI through process-local config overlays. Codex receives `-c mcp_servers.<name>.url=...`; Claude Code receives `--mcp-config ... --strict-mcp-config`. The adapters reject unproxied MCP attachments, so platform URLs and bearer/proof headers are not passed directly to provider CLIs and permanent user config is not mutated.
+For Codex, Claude Code, and OpenCode sessions, the runner creates a session-owned loopback MCP proxy for each attachment. Remote attachments use `McpAttachmentClient`, which injects proof-of-possession headers upstream. Named stdio profiles launch only commands already present in local runner config and bridge their stdio transport to the same loopback interface. Provider CLIs receive only a temporary `http://127.0.0.1:<port>/mcp` endpoint; platform credentials and local process configuration never cross that boundary.
 
-HCP does not currently accept backend-supplied `stdio` MCP attachments. Payloads with `transport: "stdio"`, `command`, or `args` are rejected by protocol validation. The recommended future design is local runner-owned named stdio MCP profiles that a control plane can reference without supplying executable config. See [MCP Stdio And Cursor](docs/mcp-stdio-and-cursor.md).
+The control plane selects a configured profile with `{ "transport": "runner_stdio_profile", "profile_id": "sample-tools" }`. Raw `{ "transport": "stdio", "command": ..., "args": ... }` payloads and executable fields on profile references remain protocol-invalid. Profile and request tool allowlists are intersected, denylists are combined, provider bindings are checked, and profile working directories must resolve inside the selected workspace. See [MCP Stdio And Cursor](docs/mcp-stdio-and-cursor.md).
 
 ## Local Capability Leases
 
