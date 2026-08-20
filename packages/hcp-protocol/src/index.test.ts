@@ -92,15 +92,15 @@ function localLease(overrides: Partial<LocalCapabilityLease> = {}): LocalCapabil
   };
 }
 
-test("parses valid host hello envelopes with resume cursors", () => {
+test("parses runner-owned retained event ranges in host hello", () => {
   const payload: HcpHostHelloPayload = {
     runner_id: "runner-local",
     host_id: "host-local",
     runner_version: "0.0.0",
     supported_protocol_versions: [HCP_VERSION],
     capabilities: ["providers", "mcp_streamable_http"],
-    resume: {
-      sessions: [{ session_id: "session-1", last_event_sequence: 12 }],
+    retained_events: {
+      sessions: [{ session_id: "session-1", first_event_sequence: 3, last_event_sequence: 12 }],
     },
   };
 
@@ -109,7 +109,7 @@ test("parses valid host hello envelopes with resume cursors", () => {
 
   assert.equal(parsed.type, "host.hello");
   if (parsed.type === "host.hello") {
-    assert.equal(parsed.payload.resume?.sessions[0]?.last_event_sequence, 12);
+    assert.equal(parsed.payload.retained_events?.sessions[0]?.first_event_sequence, 3);
   }
 });
 

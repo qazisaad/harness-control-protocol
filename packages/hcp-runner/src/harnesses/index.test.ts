@@ -744,15 +744,19 @@ describe("HarnessSessionManager", () => {
         sessions: [{ session_id: "session-1", last_event_sequence: 3 }],
       });
       assert.deepEqual(
-        replayed.map((event) => event.event_type),
+        replayed.events.map((event) => event.event_type),
         ["turn.started", "turn.completed"],
       );
 
       const unavailable = manager.replayEventsAfter({
         sessions: [{ session_id: "session-1", last_event_sequence: 0 }],
       });
-      assert.equal(unavailable[0]?.event_type, "session.replay_unavailable");
-      assert.equal((unavailable[0]?.data as Record<string, unknown> | undefined)?.reason, "cursor_outside_retention");
+      assert.equal(unavailable.events.length, 0);
+      assert.equal(unavailable.unavailable[0]?.reason, "cursor_outside_retention");
+      assert.deepEqual(unavailable.unavailable[0]?.retained_range, {
+        first_event_sequence: 2,
+        last_event_sequence: 5,
+      });
     } finally {
       await workspace.cleanup();
     }

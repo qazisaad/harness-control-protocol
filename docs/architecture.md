@@ -46,3 +46,9 @@ Runner responsibilities:
 The SDK should sit behind a small runner-owned wrapper so SDK version changes do not leak into harness adapters.
 
 The sample MCP server uses the official SDK server transport and verifies HCP proof headers before handing requests to the SDK transport. It is a reference path for local tests, not a production authorization service.
+
+## Reliability Boundary
+
+The runner owns local acceptance, idempotency receipts, per-session event sequencing, retained replay windows, and session event snapshots. The control plane owns the sequence it has durably applied and sends that cursor in `host.accepted`.
+
+The runner does not own product thread/message history or workflow queues. A hosted application persists HCP events through its canonical production reducer and stores its cursor in the same transaction as the resulting projection. See [Reliability And Snapshots](reliability-and-snapshots.md).

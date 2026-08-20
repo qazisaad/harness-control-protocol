@@ -11,6 +11,7 @@ import { RunnerConnection } from "./connection/index.js";
 import { HarnessSessionManager } from "./harnesses/index.js";
 import { consoleLogger } from "./logs/index.js";
 import { createDevelopmentHmacProofSigner } from "./mcp/McpAttachmentClient.js";
+import { JsonRunnerStateStore, defaultRunnerStatePath } from "./state/index.js";
 import {
   defaultCredentialsPath,
   loadRunnerCredential,
@@ -109,8 +110,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
     const config = await loadRunnerConfig(configPath);
     const credential: RunnerCredential | undefined = await loadRunnerCredential(config);
+    const stateStore = new JsonRunnerStateStore(config.state_path ?? defaultRunnerStatePath(config.runner_id));
     const harnessSessions = new HarnessSessionManager(config, {
       auditLogger: new JsonlAuditLogger(defaultAuditLogPath()),
+      stateStore,
       ...(credential
         ? { mcpProofSigner: createDevelopmentHmacProofSigner(credential.mcp_proof_secret ?? credential.credential_secret) }
         : {}),

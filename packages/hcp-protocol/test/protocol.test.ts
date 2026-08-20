@@ -51,8 +51,8 @@ const helloPayload: HcpHostHelloPayload = {
   runner_version: "0.0.0",
   supported_protocol_versions: [HCP_VERSION],
   capabilities: ["sessions", "mcp.attachments"],
-  resume: {
-    sessions: [{ session_id: "session-1", last_event_sequence: 12 }],
+  retained_events: {
+    sessions: [{ session_id: "session-1", first_event_sequence: 1, last_event_sequence: 12 }],
   },
 };
 

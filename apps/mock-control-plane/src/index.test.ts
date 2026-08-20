@@ -235,8 +235,61 @@ test("dispatches harness commands to a connected runner", async () => {
     assert.equal(command.id, commandId);
     assert.equal(command.type, "harness.session.start");
     assert.equal(command.payload.session_id, "session-1");
+
+    const snapshotCommandId: string = server.requestSessionSnapshot({ session_id: "session-1" });
+    const snapshotCommand: ReceivedEnvelope = await nextEnvelope(socket);
+    assert.equal(snapshotCommand.id, snapshotCommandId);
+    assert.equal(snapshotCommand.type, "harness.session.snapshot.request");
+    assert.equal(snapshotCommand.payload.session_id, "session-1");
   } finally {
     await closeClient(socket);
+    await server.close();
+  }
+});
+
+test("returns the control plane's durably applied cursor on reconnect", async () => {
+  const server: MockControlPlaneServer = await startMockControlPlane({ port: 0 });
+  const firstSocket: WebSocket = await openClient(server);
+
+  try {
+    firstSocket.send(JSON.stringify(makeEnvelope("host.hello", {
+      runner_id: "runner-test",
+      host_id: "host-test",
+      runner_version: "0.0.0-test",
+      supported_protocol_versions: [HCP_VERSION],
+      capabilities: ["durable_at_least_once"],
+    })));
+    await nextEnvelope(firstSocket);
+    firstSocket.send(JSON.stringify(makeEnvelope("harness.event", {
+      session_id: "session-1",
+      sequence: 1,
+      event_type: "session.started",
+      created_at: new Date().toISOString(),
+      data: { provider_instance_id: "provider-1" },
+    })));
+    await waitForState((): boolean => server.state.events.length === 1);
+    await closeClient(firstSocket);
+
+    const secondSocket: WebSocket = await openClient(server);
+    try {
+      secondSocket.send(JSON.stringify(makeEnvelope("host.hello", {
+        runner_id: "runner-test",
+        host_id: "host-test",
+        runner_version: "0.0.0-test",
+        supported_protocol_versions: [HCP_VERSION],
+        capabilities: ["durable_at_least_once"],
+        retained_events: {
+          sessions: [{ session_id: "session-1", first_event_sequence: 1, last_event_sequence: 1 }],
+        },
+      })));
+      const accepted: ReceivedEnvelope = await nextEnvelope(secondSocket);
+      assert.deepEqual(accepted.payload.resume, {
+        sessions: [{ session_id: "session-1", last_event_sequence: 1 }],
+      });
+    } finally {
+      await closeClient(secondSocket);
+    }
+  } finally {
     await server.close();
   }
 });

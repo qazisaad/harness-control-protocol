@@ -20,8 +20,10 @@ Implemented today:
 - Public JSON Schema export, conformance fixtures, and a conformance CLI.
 - Runner CLI commands for `version`, `pair`, and `run`.
 - Reference pairing with single-use pairing codes, local credential storage, and short-lived connection tokens.
-- Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, replay, and capability snapshots.
-- Control-plane command handling with ACK/NACK responses and duplicate-command idempotency.
+- Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, control-plane-owned replay cursors, and capability snapshots.
+- At-least-once command handling with immediate ACK/NACK responses and durable duplicate-command idempotency.
+- Atomic runner state for retained events, command receipts, and local-action receipts across process restarts.
+- Complete/partial session event snapshots with explicit replacement, preservation, and tombstone semantics.
 - Adapter-based session lifecycle with deterministic mock, Codex, and Claude Code adapters.
 - Local capability leases and real filesystem, Git, shell, and dev-server executors.
 - MCP Streamable HTTP attachment client using the official Model Context Protocol TypeScript SDK.
@@ -69,6 +71,7 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | `examples/claude-runner-flow.ts` | Live-smoke reference flow for local Claude Code readiness, proxied MCP setup, and one Claude Code turn. |
 | `docs/architecture.md` | Architecture boundary and MCP SDK responsibility split. |
 | `docs/compatibility.md` | Compatibility policy for protocol, runner, MCP, and package surfaces. |
+| `docs/reliability-and-snapshots.md` | At-least-once delivery, cursor ownership, durable receipts, and snapshot omission rules. |
 | `docs/release.md` | Pre-1.0 release and package publishing checklist. |
 | `docs/license-decision.md` | Apache-2.0 licensing rationale. |
 | `CONTRIBUTING.md` | Development setup, validation, and pull request expectations. |
@@ -229,12 +232,15 @@ HCP messages are JSON envelopes with an id, type, protocol version, timestamp, p
 
 Core message families:
 
-- Host lifecycle: `host.hello`, `host.accepted`, `host.rejected`, `host.heartbeat`, `host.capabilities.updated`.
-- Control-plane commands: `harness.session.start`, `harness.turn.send`, `harness.turn.cancel`, `harness.session.stop`, `harness.approval.respond`, `harness.input.respond`, `tool_servers.detach`.
+- Host lifecycle: `host.hello`, `host.accepted`, `host.rejected`, `host.heartbeat`, `host.capabilities.updated`, `host.replay.unavailable`.
+- Control-plane commands: `harness.session.start`, `harness.session.snapshot.request`, `harness.turn.send`, `harness.turn.cancel`, `harness.session.stop`, `harness.approval.respond`, `harness.input.respond`, `tool_servers.detach`.
 - Command results: `hcp.command.ack`, `hcp.command.nack`.
+- Session recovery: `harness.session.snapshot`.
 - Runtime events: `harness.event` with known event types such as `session.started`, `turn.completed`, `mcp_tool.started`, and `local_capability.action.failed`.
 
 The protocol package exposes both TypeScript types and runtime schemas so control planes, runners, and tests can validate the same contract.
+
+The CLI persists replay events and settled idempotency receipts at `~/.hcp-runner/state/<runner-id>.json`. Set `state_path` in runner config to choose another location. See [Reliability And Snapshots](docs/reliability-and-snapshots.md) for the normative delivery flow.
 
 ## MCP Attachments
 

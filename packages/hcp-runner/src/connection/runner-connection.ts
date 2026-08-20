@@ -13,9 +13,9 @@ import {
   type HcpHostHeartbeatPayload,
   type HcpHostHelloPayload,
   type HcpMessage,
+  type HcpSessionSnapshotPayload,
   type HcpAckPayload,
   type HcpNackPayload,
-  type HostResumeCursor,
   type ControlPlaneCommandMessageType,
   type LocalActionErrorPayload,
   type LocalActionResponsePayload,
@@ -24,10 +24,15 @@ import WebSocket from "ws";
 
 import type { RunnerConfig } from "../config/index.js";
 import { HarnessAdapterError } from "../harnesses/adapters.js";
-import { HarnessSessionError, HarnessSessionManager } from "../harnesses/index.js";
+import { HarnessSessionError, HarnessSessionManager, type HarnessReplayResult } from "../harnesses/index.js";
 import { ProviderInstanceRegistry } from "../host/provider-registry.js";
 import { LocalActionDispatcher, type LocalActionDispatchOutcome } from "../local-actions/dispatcher.js";
 import { LocalCapabilityExecutor } from "../local-actions/executors.js";
+import type {
+  PersistedCommandReceipt,
+  PersistedLocalActionReceipt,
+  RunnerStateStore,
+} from "../state/index.js";
 
 type CommandRecord =
   | {
@@ -38,6 +43,7 @@ type CommandRecord =
   | {
       payloadHash: string;
       outcome: "ack";
+      snapshotPayload?: HcpSessionSnapshotPayload;
     }
   | {
       payloadHash: string;
@@ -46,6 +52,11 @@ type CommandRecord =
     };
 
 type SettledCommandRecord = Exclude<CommandRecord, { outcome: "pending" }>;
+
+type CommandExecutionResult = {
+  events: HcpHarnessEventPayload[];
+  snapshotPayload?: HcpSessionSnapshotPayload;
+};
 
 type LocalActionRecord =
   | {
@@ -77,8 +88,6 @@ export type RunnerReconnectOptions = {
 export type RunnerConnectionOptions = {
   config: RunnerConfig;
   runnerVersion: string;
-  lastEventSequence?: number;
-  resumeCursor?: HostResumeCursor;
   connectionTokenProvider?: () => Promise<string | undefined>;
   onLog?: (message: string) => void;
   harnessSessions?: HarnessSessionManager;
@@ -88,10 +97,10 @@ export type RunnerConnectionOptions = {
 export class RunnerConnection {
   readonly #config: RunnerConfig;
   readonly #runnerVersion: string;
-  readonly #resumeCursor: HostResumeCursor | undefined;
   readonly #connectionTokenProvider: (() => Promise<string | undefined>) | undefined;
   readonly #onLog: (message: string) => void;
   readonly #harnessSessions: HarnessSessionManager;
+  readonly #stateStore: RunnerStateStore;
   readonly #localActionDispatcher: LocalActionDispatcher;
   readonly #reconnectInitialDelayMs: number;
   readonly #reconnectMaxDelayMs: number;
@@ -107,16 +116,10 @@ export class RunnerConnection {
   constructor(options: RunnerConnectionOptions) {
     this.#config = options.config;
     this.#runnerVersion = options.runnerVersion;
-    this.#resumeCursor =
-      options.resumeCursor ??
-      (options.lastEventSequence === undefined
-        ? undefined
-        : {
-            sessions: [{ session_id: "default", last_event_sequence: options.lastEventSequence }],
-          });
     this.#connectionTokenProvider = options.connectionTokenProvider;
     this.#onLog = options.onLog ?? (() => undefined);
     this.#harnessSessions = options.harnessSessions ?? new HarnessSessionManager(options.config);
+    this.#stateStore = this.#harnessSessions.stateStore();
     this.#localActionDispatcher = new LocalActionDispatcher({
       executor: new LocalCapabilityExecutor(this.#harnessSessions.localCapabilityEngine()),
       resolveContext: (payload) => this.#harnessSessions.resolveLocalActionContext(payload),
@@ -192,6 +195,7 @@ export class RunnerConnection {
   }
 
   #sendHello(): void {
+    const retainedEvents = this.#harnessSessions.retainedEventRanges();
     const payload: HcpHostHelloPayload = {
       runner_id: this.#config.runner_id,
       host_id: this.#config.host_id ?? this.#config.runner_id,
@@ -205,8 +209,10 @@ export class RunnerConnection {
         "local_git",
         "local_shell",
         "local_dev_server",
+        "durable_at_least_once",
+        "session_snapshots",
       ],
-      ...(this.#resumeCursor ? { resume: this.#resumeCursor } : {}),
+      ...(retainedEvents ? { retained_events: retainedEvents } : {}),
     };
 
     this.#send(createHcpEnvelope("host.hello", payload));
@@ -241,6 +247,12 @@ export class RunnerConnection {
       case "harness.session.start":
         await this.#handleCommand(envelope, (message) => this.#handleSessionStart(message));
         return;
+      case "harness.session.snapshot.request":
+        await this.#handleCommand(envelope, (message) => ({
+          events: [],
+          snapshotPayload: this.#harnessSessions.sessionSnapshot(message.id, message.payload.session_id),
+        }));
+        return;
       case "harness.turn.send":
         await this.#handleCommand(envelope, (message) => this.#handleTurnSend(message));
         return;
@@ -263,6 +275,8 @@ export class RunnerConnection {
       case "host.hello":
       case "host.heartbeat":
       case "host.capabilities.updated":
+      case "host.replay.unavailable":
+      case "harness.session.snapshot":
       case "local.action.response":
       case "local.action.error":
       case "harness.event":
@@ -281,27 +295,34 @@ export class RunnerConnection {
   async #handleAccepted(envelope: HcpHostAcceptedMessage): Promise<void> {
     this.#onLog(`Control plane accepted ${envelope.payload.protocol_version}.`);
     await this.#sendCapabilities();
-    this.#replayRequestedEvents();
+    this.#replayRequestedEvents(envelope.payload.resume);
     this.#startHeartbeat(envelope.payload.heartbeat_interval_seconds);
   }
 
-  #replayRequestedEvents(): void {
-    if (!this.#resumeCursor) {
+  #replayRequestedEvents(cursor: HcpHostAcceptedMessage["payload"]["resume"]): void {
+    if (!cursor) {
       return;
     }
-    const events: HcpHarnessEventPayload[] = this.#harnessSessions.replayEventsAfter(this.#resumeCursor);
-    for (const event of events) {
+    const replay: HarnessReplayResult = this.#harnessSessions.replayEventsAfter(cursor);
+    for (const unavailable of replay.unavailable) {
+      this.#send(createHcpEnvelope("host.replay.unavailable", unavailable));
+    }
+    for (const event of replay.events) {
       this.#send(createHcpEnvelope("harness.event", event));
     }
   }
 
   async #handleCommand<TMessage extends Extract<HcpMessage, { type: ControlPlaneCommandMessageType }>>(
     envelope: TMessage,
-    handler: (message: TMessage) => HcpHarnessEventPayload[] | Promise<HcpHarnessEventPayload[]>,
+    handler: (
+      message: TMessage,
+    ) => HcpHarnessEventPayload[] | CommandExecutionResult | Promise<HcpHarnessEventPayload[] | CommandExecutionResult>,
   ): Promise<void> {
     const commandId: string = commandIdFor(envelope);
     const commandHash: string = hashCommandPayload(envelope);
-    const existingRecord: CommandRecord | undefined = this.#commandRecords.get(commandId);
+    const persistedReceipt: PersistedCommandReceipt | undefined = this.#stateStore.getCommandReceipt(commandId);
+    const existingRecord: CommandRecord | undefined =
+      this.#commandRecords.get(commandId) ?? (persistedReceipt ? commandRecordFromReceipt(persistedReceipt) : undefined);
 
     if (existingRecord !== undefined) {
       if (existingRecord.payloadHash === commandHash) {
@@ -309,6 +330,9 @@ export class RunnerConnection {
           const settledRecord: SettledCommandRecord = await existingRecord.completion;
           if (settledRecord.outcome === "ack") {
             this.#sendAck(commandId, true);
+            if (settledRecord.snapshotPayload) {
+              this.#send(createHcpEnvelope("harness.session.snapshot", settledRecord.snapshotPayload));
+            }
           } else {
             this.#sendNackPayload(settledRecord.nackPayload);
           }
@@ -316,6 +340,9 @@ export class RunnerConnection {
         }
         if (existingRecord.outcome === "ack") {
           this.#sendAck(commandId, true);
+          if (existingRecord.snapshotPayload) {
+            this.#send(createHcpEnvelope("harness.session.snapshot", existingRecord.snapshotPayload));
+          }
         } else {
           this.#sendNackPayload(existingRecord.nackPayload);
         }
@@ -341,15 +368,27 @@ export class RunnerConnection {
     });
 
     try {
-      const events: HcpHarnessEventPayload[] = await handler(envelope);
+      const execution: HcpHarnessEventPayload[] | CommandExecutionResult = await handler(envelope);
+      const result: CommandExecutionResult = Array.isArray(execution) ? { events: execution } : execution;
+      const settledAt: string = new Date().toISOString();
       const record: SettledCommandRecord = {
         payloadHash: commandHash,
         outcome: "ack",
+        ...(result.snapshotPayload ? { snapshotPayload: result.snapshotPayload } : {}),
       };
       this.#commandRecords.set(commandId, record);
+      this.#stateStore.setCommandReceipt(commandId, {
+        payloadHash: commandHash,
+        outcome: "ack",
+        settledAt,
+        ...(result.snapshotPayload ? { snapshotPayload: result.snapshotPayload } : {}),
+      });
       settleCommand!(record);
       this.#sendAck(commandId, false);
-      for (const event of events) {
+      if (result.snapshotPayload) {
+        this.#send(createHcpEnvelope("harness.session.snapshot", result.snapshotPayload));
+      }
+      for (const event of result.events) {
         this.#send(createHcpEnvelope("harness.event", event));
       }
     } catch (error: unknown) {
@@ -360,6 +399,12 @@ export class RunnerConnection {
         nackPayload,
       };
       this.#commandRecords.set(commandId, record);
+      this.#stateStore.setCommandReceipt(commandId, {
+        payloadHash: commandHash,
+        outcome: "nack",
+        settledAt: new Date().toISOString(),
+        nackPayload,
+      });
       settleCommand!(record);
       this.#sendNackPayload(nackPayload);
     }
@@ -370,8 +415,26 @@ export class RunnerConnection {
     return await this.#harnessSessions.startSession(envelope.payload);
   }
 
-  #handleTurnSend(envelope: Extract<HcpMessage, { type: "harness.turn.send" }>): Promise<HcpHarnessEventPayload[]> {
-    return this.#harnessSessions.sendTurn(envelope.payload);
+  #handleTurnSend(envelope: Extract<HcpMessage, { type: "harness.turn.send" }>): HcpHarnessEventPayload[] {
+    const completion: Promise<HcpHarnessEventPayload[]> = this.#harnessSessions.sendTurn(
+      envelope.payload,
+      (event: HcpHarnessEventPayload): void => this.#sendEventIfConnected(event),
+    );
+    completion
+      .then((events: HcpHarnessEventPayload[]): void => {
+        for (const event of events) {
+          this.#sendEventIfConnected(event);
+        }
+      })
+      .catch((error: unknown): void => {
+        const failedEvent: HcpHarnessEventPayload = this.#harnessSessions.recordTurnFailure(
+          envelope.payload.session_id,
+          envelope.payload.turn_id,
+          error,
+        );
+        this.#sendEventIfConnected(failedEvent);
+      });
+    return [];
   }
 
   #handleTurnCancel(envelope: Extract<HcpMessage, { type: "harness.turn.cancel" }>): Promise<HcpHarnessEventPayload[]> {
@@ -390,7 +453,10 @@ export class RunnerConnection {
   async #handleLocalAction(envelope: Extract<HcpMessage, { type: "local.action.request" }>): Promise<void> {
     const requestId: string = envelope.payload.request_id;
     const payloadHash: string = hashCommandPayload(envelope);
-    const existingRecord: LocalActionRecord | undefined = this.#localActionRecords.get(requestId);
+    const persistedReceipt: PersistedLocalActionReceipt | undefined = this.#stateStore.getLocalActionReceipt(requestId);
+    const existingRecord: LocalActionRecord | undefined =
+      this.#localActionRecords.get(requestId) ??
+      (persistedReceipt ? localActionRecordFromReceipt(persistedReceipt) : undefined);
 
     if (existingRecord !== undefined) {
       if (existingRecord.payloadHash === payloadHash) {
@@ -460,6 +526,23 @@ export class RunnerConnection {
             payload: outcome.payload,
           };
     this.#localActionRecords.set(requestId, record);
+    const persistedRecord: PersistedLocalActionReceipt =
+      record.outcome === "response"
+        ? {
+            payloadHash,
+            requestPayload: envelope.payload,
+            outcome: "response",
+            settledAt: new Date().toISOString(),
+            payload: record.payload,
+          }
+        : {
+            payloadHash,
+            requestPayload: envelope.payload,
+            outcome: "error",
+            settledAt: new Date().toISOString(),
+            payload: record.payload,
+          };
+    this.#stateStore.setLocalActionReceipt(requestId, persistedRecord);
     settleLocalAction!(record);
     for (const event of outcome.events) {
       this.#send(createHcpEnvelope("harness.event", event));
@@ -532,6 +615,13 @@ export class RunnerConnection {
     this.#socket.send(JSON.stringify(envelope));
   }
 
+  #sendEventIfConnected(event: HcpHarnessEventPayload): void {
+    if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.#socket.send(JSON.stringify(createHcpEnvelope("harness.event", event)));
+  }
+
   #sendNack(commandId: string, error: HcpError): void {
     this.#sendNackPayload(createNackPayload(commandId, error));
   }
@@ -578,9 +668,16 @@ export class RunnerConnection {
       retryable: false,
     });
     if (payloadHash !== undefined) {
-      this.#commandRecords.set(receivedMessageId, {
+      const record: SettledCommandRecord = {
         payloadHash,
         outcome: "nack",
+        nackPayload,
+      };
+      this.#commandRecords.set(receivedMessageId, record);
+      this.#stateStore.setCommandReceipt(receivedMessageId, {
+        payloadHash,
+        outcome: "nack",
+        settledAt: new Date().toISOString(),
         nackPayload,
       });
     }
@@ -618,6 +715,36 @@ function toHcpError(error: unknown): HcpError {
     message: "Runner command failed.",
     retryable: false,
   };
+}
+
+function commandRecordFromReceipt(receipt: PersistedCommandReceipt): SettledCommandRecord {
+  return receipt.outcome === "ack"
+    ? {
+        payloadHash: receipt.payloadHash,
+        outcome: "ack",
+        ...(receipt.snapshotPayload ? { snapshotPayload: receipt.snapshotPayload } : {}),
+      }
+    : {
+        payloadHash: receipt.payloadHash,
+        outcome: "nack",
+        nackPayload: receipt.nackPayload,
+      };
+}
+
+function localActionRecordFromReceipt(receipt: PersistedLocalActionReceipt): SettledLocalActionRecord {
+  return receipt.outcome === "response"
+    ? {
+        payloadHash: receipt.payloadHash,
+        requestPayload: receipt.requestPayload,
+        outcome: "response",
+        payload: receipt.payload,
+      }
+    : {
+        payloadHash: receipt.payloadHash,
+        requestPayload: receipt.requestPayload,
+        outcome: "error",
+        payload: receipt.payload,
+      };
 }
 
 function createNackPayload(commandId: string, error: HcpError): HcpNackPayload {

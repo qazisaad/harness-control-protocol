@@ -29,6 +29,8 @@ Breaking protocol changes include:
 - Changing MCP attachment transport policy.
 - Changing event terminality or replay cursor semantics.
 
+The pre-release cursor contract changed before package publication: `host.hello` now advertises runner-owned `retained_events`, while `host.accepted.resume` carries the control plane's last durably applied sequence. Consumers must not send the old `host.hello.resume` shape.
+
 Every breaking protocol change should update conformance fixtures and release notes.
 
 ## Runner Compatibility

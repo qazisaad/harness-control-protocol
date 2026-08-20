@@ -1,0 +1,15 @@
+{
+  "id": "message-host-replay-unavailable",
+  "type": "host.replay.unavailable",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:01.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "requested_after_sequence": 12,
+    "reason": "cursor_outside_retention",
+    "retained_range": {
+      "first_event_sequence": 20,
+      "last_event_sequence": 40
+    }
+  }
+}

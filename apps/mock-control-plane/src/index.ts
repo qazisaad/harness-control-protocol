@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   HCP_VERSION,
+  HcpSessionEventReducer,
   parseHcpMessage,
   type HcpAckPayload,
   type HcpEnvelope,
@@ -11,10 +12,13 @@ import {
   type HcpHostAcceptedPayload,
   type HcpHostCapabilitiesUpdatedPayload,
   type HcpHostHelloPayload,
+  type HcpHostReplayUnavailablePayload,
   type HcpHarnessEventPayload,
   type HcpMessage,
   type HcpNackPayload,
   type HcpSessionStartPayload,
+  type HcpSessionSnapshotPayload,
+  type HcpSessionSnapshotRequestPayload,
   type HcpSessionStopPayload,
   type HcpTurnCancelPayload,
   type HcpTurnSendPayload,
@@ -31,11 +35,14 @@ type KnownIncomingType =
   | "host.hello"
   | "host.heartbeat"
   | "host.capabilities.updated"
+  | "host.replay.unavailable"
   | "hcp.command.ack"
   | "hcp.command.nack"
-  | "harness.event";
+  | "harness.event"
+  | "harness.session.snapshot";
 type MockControlPlaneCommandType =
   | "harness.session.start"
+  | "harness.session.snapshot.request"
   | "harness.turn.send"
   | "harness.turn.cancel"
   | "harness.session.stop";
@@ -62,7 +69,10 @@ export type MockControlPlaneState = {
   rejectedConnections: string[];
   commandAcks: HcpAckPayload[];
   commandNacks: HcpNackPayload[];
+  protocolErrors: HcpError[];
   events: HcpHarnessEventPayload[];
+  replayUnavailable: HcpHostReplayUnavailablePayload[];
+  sessionSnapshots: HcpSessionSnapshotPayload[];
   receivedMessageCount: number;
 };
 
@@ -72,6 +82,7 @@ export type MockControlPlaneServer = {
   url: string;
   state: MockControlPlaneState;
   sendSessionStart: (payload: HcpSessionStartPayload) => string;
+  requestSessionSnapshot: (payload: HcpSessionSnapshotRequestPayload) => string;
   sendTurn: (payload: HcpTurnSendPayload) => string;
   cancelTurn: (payload: HcpTurnCancelPayload) => string;
   stopSession: (payload: HcpSessionStopPayload) => string;
@@ -163,9 +174,11 @@ function validateEnvelope(raw: unknown): ValidationResult<IncomingEnvelope> {
     envelope.type !== "host.hello" &&
     envelope.type !== "host.heartbeat" &&
     envelope.type !== "host.capabilities.updated" &&
+    envelope.type !== "host.replay.unavailable" &&
     envelope.type !== "hcp.command.ack" &&
     envelope.type !== "hcp.command.nack" &&
-    envelope.type !== "harness.event"
+    envelope.type !== "harness.event" &&
+    envelope.type !== "harness.session.snapshot"
   ) {
     return {
       ok: false,
@@ -460,6 +473,7 @@ function parseJsonMessage(data: WebSocket.RawData): ValidationResult<unknown> {
 function handleMessage(
   socket: WebSocket,
   state: MockControlPlaneState,
+  eventReducer: HcpSessionEventReducer,
   heartbeatIntervalSeconds: number,
   authenticatedConnection: AuthenticatedConnection | undefined,
   data: WebSocket.RawData,
@@ -496,9 +510,11 @@ function handleMessage(
     state.acceptedRunnerId = helloPayload.runner_id;
     state.acceptedHostId = helloPayload.host_id;
 
+    const resume = eventReducer.resumeCursor();
     const accepted: HcpHostAcceptedPayload = {
       protocol_version: HCP_VERSION,
       heartbeat_interval_seconds: heartbeatIntervalSeconds,
+      ...(resume ? { resume } : {}),
     };
 
     sendEnvelope(socket, "host.accepted", accepted);
@@ -521,7 +537,32 @@ function handleMessage(
   }
 
   if (envelope.type === "harness.event") {
-    state.events.push(envelope.payload);
+    const result = eventReducer.applyEvent(envelope.payload);
+    if (result.outcome === "applied") {
+      state.events = eventReducer.events();
+    } else if (result.outcome === "gap" || result.outcome === "conflict") {
+      state.protocolErrors.push(
+        validationError(`event_sequence_${result.outcome}`, `Harness event sequence ${result.outcome}.`, result),
+      );
+    }
+    return;
+  }
+
+  if (envelope.type === "host.replay.unavailable") {
+    state.replayUnavailable.push(envelope.payload);
+    return;
+  }
+
+  if (envelope.type === "harness.session.snapshot") {
+    state.sessionSnapshots.push(envelope.payload);
+    const result = eventReducer.applySnapshot(envelope.payload);
+    if (result.outcome === "applied") {
+      state.events = eventReducer.events();
+    } else {
+      state.protocolErrors.push(
+        validationError(`snapshot_${result.outcome}`, `Harness session snapshot ${result.outcome}.`, result),
+      );
+    }
     return;
   }
 
@@ -573,7 +614,10 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
     rejectedConnections: [],
     commandAcks: [],
     commandNacks: [],
+    protocolErrors: [],
     events: [],
+    replayUnavailable: [],
+    sessionSnapshots: [],
     receivedMessageCount: 0,
   };
   const store: ReferenceCredentialStore = {
@@ -581,6 +625,7 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
     credentials: new Map(),
     connectionTokens: new Map(),
   };
+  const eventReducer = new HcpSessionEventReducer();
   let boundPort = port;
   const httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
     handlePairingHttpRequest(
@@ -653,7 +698,7 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
       }
     });
     socket.on("message", (data: WebSocket.RawData) =>
-      handleMessage(socket, state, heartbeatIntervalSeconds, authenticatedConnection, data),
+      handleMessage(socket, state, eventReducer, heartbeatIntervalSeconds, authenticatedConnection, data),
     );
   });
 
@@ -669,6 +714,8 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
     url: `ws://${host}:${boundPort}`,
     state,
     sendSessionStart: (payload: HcpSessionStartPayload): string => sendCommand("harness.session.start", payload),
+    requestSessionSnapshot: (payload: HcpSessionSnapshotRequestPayload): string =>
+      sendCommand("harness.session.snapshot.request", payload),
     sendTurn: (payload: HcpTurnSendPayload): string => sendCommand("harness.turn.send", payload),
     cancelTurn: (payload: HcpTurnCancelPayload): string => sendCommand("harness.turn.cancel", payload),
     stopSession: (payload: HcpSessionStopPayload): string => sendCommand("harness.session.stop", payload),

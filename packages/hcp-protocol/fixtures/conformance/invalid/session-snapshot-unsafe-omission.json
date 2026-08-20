@@ -1,0 +1,26 @@
+{
+  "id": "message-session-snapshot-partial",
+  "type": "harness.session.snapshot",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:01.000Z",
+  "payload": {
+    "command_id": "message-session-snapshot-request",
+    "session_id": "session-1",
+    "generated_at": "2026-01-01T00:00:01.000Z",
+    "completeness": "partial",
+    "omission_semantics": "replace",
+    "reason": "retention_gap",
+    "from_sequence": 2,
+    "through_sequence": 2,
+    "events": [
+      {
+        "session_id": "session-1",
+        "sequence": 2,
+        "event_type": "session.state.changed",
+        "created_at": "2026-01-01T00:00:00.500Z",
+        "data": { "state": "running" }
+      }
+    ],
+    "tombstones": []
+  }
+}

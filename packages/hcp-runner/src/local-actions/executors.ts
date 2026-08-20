@@ -1106,6 +1106,15 @@ async function waitForDevServerNoFailure(
     }, timeoutMs);
     child.once("exit", onExit);
     child.once("error", onError);
+    try {
+      assertDevServerStillRunning(child, request.server_id);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        settle(error);
+        return;
+      }
+      throw error;
+    }
   });
 }
 

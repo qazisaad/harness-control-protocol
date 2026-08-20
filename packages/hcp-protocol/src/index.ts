@@ -13,10 +13,12 @@ export const HOST_LIFECYCLE_MESSAGE_TYPES = [
   "host.rejected",
   "host.heartbeat",
   "host.capabilities.updated",
+  "host.replay.unavailable",
 ] as const;
 
 export const CONTROL_PLANE_COMMAND_MESSAGE_TYPES = [
   "harness.session.start",
+  "harness.session.snapshot.request",
   "harness.turn.send",
   "harness.turn.cancel",
   "harness.session.stop",
@@ -34,13 +36,13 @@ export const LOCAL_ACTION_MESSAGE_TYPES = [
 ] as const;
 
 export const RUNTIME_EVENT_MESSAGE_TYPES = ["harness.event"] as const;
+export const SESSION_SNAPSHOT_MESSAGE_TYPES = ["harness.session.snapshot"] as const;
 
 export const KNOWN_HCP_EVENT_TYPES = [
   "session.started",
   "session.configured",
   "session.state.changed",
   "session.exited",
-  "session.replay_unavailable",
   "thread.started",
   "thread.state.changed",
   "thread.metadata.updated",
@@ -112,6 +114,7 @@ export type ControlPlaneCommandMessageType = (typeof CONTROL_PLANE_COMMAND_MESSA
 export type CommandAckMessageType = (typeof COMMAND_ACK_MESSAGE_TYPES)[number];
 export type LocalActionMessageType = (typeof LOCAL_ACTION_MESSAGE_TYPES)[number];
 export type RuntimeEventMessageType = (typeof RUNTIME_EVENT_MESSAGE_TYPES)[number];
+export type SessionSnapshotMessageType = (typeof SESSION_SNAPSHOT_MESSAGE_TYPES)[number];
 export type KnownHcpEventType = (typeof KNOWN_HCP_EVENT_TYPES)[number];
 export type ProviderExtensionEventType = `provider.${string}`;
 export type AppExtensionEventType = `extension.${string}`;
@@ -157,18 +160,27 @@ export type HostResumeCursor = {
   }>;
 };
 
+export type HostRetainedEventRanges = {
+  sessions: Array<{
+    session_id: string;
+    first_event_sequence: number;
+    last_event_sequence: number;
+  }>;
+};
+
 export type HcpHostHelloPayload = {
   runner_id: string;
   host_id: string;
   runner_version: string;
   supported_protocol_versions: HcpVersion[];
   capabilities: string[];
-  resume?: HostResumeCursor;
+  retained_events?: HostRetainedEventRanges;
 };
 
 export type HcpHostAcceptedPayload = {
   protocol_version: HcpVersion;
   heartbeat_interval_seconds: number;
+  resume?: HostResumeCursor;
 };
 
 export type HcpHostRejectedPayload = {
@@ -258,6 +270,16 @@ export type HcpHostCapabilitiesUpdatedPayload = {
   providers: HarnessProviderSnapshot[];
   local_capabilities: LocalCapabilitySnapshot[];
   workspaces: HcpWorkspaceSnapshot[];
+};
+
+export type HcpHostReplayUnavailablePayload = {
+  session_id: string;
+  requested_after_sequence: number;
+  reason: "no_retained_events" | "cursor_outside_retention";
+  retained_range?: {
+    first_event_sequence: number;
+    last_event_sequence: number;
+  };
 };
 
 export type HarnessProviderReference = {
@@ -362,6 +384,10 @@ export type HcpSessionStartPayload = {
   workspace_preflight?: WorkspacePreflight;
   local_capability_lease?: LocalCapabilityLease;
   mcp_servers: McpServerAttachment[];
+};
+
+export type HcpSessionSnapshotRequestPayload = {
+  session_id: string;
 };
 
 export type HcpTurnSendPayload = {
@@ -788,6 +814,32 @@ export type HcpHarnessEventPayload = {
   raw?: HcpRawDiagnosticPayload;
 };
 
+type HcpSessionSnapshotBase = {
+  command_id: string;
+  session_id: string;
+  generated_at: string;
+  from_sequence: number;
+  through_sequence: number;
+  events: HcpHarnessEventPayload[];
+  tombstones: Array<{
+    entity_type: "session" | "turn" | "item";
+    entity_id: string;
+    deleted_at: string;
+  }>;
+};
+
+export type HcpSessionSnapshotPayload =
+  | (HcpSessionSnapshotBase & {
+      completeness: "complete";
+      omission_semantics: "replace";
+      from_sequence: 1;
+    })
+  | (HcpSessionSnapshotBase & {
+      completeness: "partial";
+      omission_semantics: "preserve";
+      reason: "retention_gap" | "size_limit";
+    });
+
 const nonEmptyStringSchema = z.string().min(1);
 const timestampSchema = z.string().datetime({ offset: true });
 const metadataSchema = z.record(z.string(), z.unknown());
@@ -854,6 +906,25 @@ export const hcpHostResumeCursorSchema = z
   })
   .strict();
 
+export const hcpHostRetainedEventRangesSchema = z
+  .object({
+    sessions: z
+      .array(
+        z
+          .object({
+            session_id: nonEmptyStringSchema,
+            first_event_sequence: z.number().int().positive(),
+            last_event_sequence: z.number().int().positive(),
+          })
+          .strict()
+          .refine((range): boolean => range.first_event_sequence <= range.last_event_sequence, {
+            message: "Retained event range must not end before it starts.",
+          }),
+      )
+      .default([]),
+  })
+  .strict();
+
 export const hcpHostHelloPayloadSchema = z
   .object({
     runner_id: nonEmptyStringSchema,
@@ -861,7 +932,7 @@ export const hcpHostHelloPayloadSchema = z
     runner_version: nonEmptyStringSchema,
     supported_protocol_versions: z.array(hcpVersionSchema).min(1),
     capabilities: z.array(nonEmptyStringSchema),
-    resume: hcpHostResumeCursorSchema.optional(),
+    retained_events: hcpHostRetainedEventRangesSchema.optional(),
   })
   .strict();
 
@@ -869,6 +940,7 @@ export const hcpHostAcceptedPayloadSchema = z
   .object({
     protocol_version: hcpVersionSchema,
     heartbeat_interval_seconds: z.number().int().positive(),
+    resume: hcpHostResumeCursorSchema.optional(),
   })
   .strict();
 
@@ -993,6 +1065,21 @@ export const hcpHostCapabilitiesUpdatedPayloadSchema = z
     providers: z.array(harnessProviderSnapshotSchema),
     local_capabilities: z.array(localCapabilitySnapshotSchema),
     workspaces: z.array(hcpWorkspaceSchema),
+  })
+  .strict();
+
+export const hcpHostReplayUnavailablePayloadSchema = z
+  .object({
+    session_id: nonEmptyStringSchema,
+    requested_after_sequence: z.number().int().nonnegative(),
+    reason: z.enum(["no_retained_events", "cursor_outside_retention"]),
+    retained_range: z
+      .object({
+        first_event_sequence: z.number().int().positive(),
+        last_event_sequence: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -1123,6 +1210,12 @@ export const hcpSessionStartPayloadSchema = z
     workspace_preflight: workspacePreflightSchema.optional(),
     local_capability_lease: localCapabilityLeaseSchema.optional(),
     mcp_servers: z.array(mcpServerAttachmentSchema),
+  })
+  .strict();
+
+export const hcpSessionSnapshotRequestPayloadSchema = z
+  .object({
+    session_id: nonEmptyStringSchema,
   })
   .strict();
 
@@ -2472,6 +2565,78 @@ export const hcpHarnessEventPayloadSchema = z
     }
   });
 
+const hcpSessionSnapshotTombstoneSchema = z
+  .object({
+    entity_type: z.enum(["session", "turn", "item"]),
+    entity_id: nonEmptyStringSchema,
+    deleted_at: timestampSchema,
+  })
+  .strict();
+
+const hcpSessionSnapshotBaseShape = {
+  command_id: nonEmptyStringSchema,
+  session_id: nonEmptyStringSchema,
+  generated_at: timestampSchema,
+  through_sequence: z.number().int().positive(),
+  events: z.array(hcpHarnessEventPayloadSchema).min(1),
+  tombstones: z.array(hcpSessionSnapshotTombstoneSchema),
+};
+
+export const hcpSessionSnapshotPayloadSchema = z
+  .discriminatedUnion("completeness", [
+    z
+      .object({
+        ...hcpSessionSnapshotBaseShape,
+        completeness: z.literal("complete"),
+        omission_semantics: z.literal("replace"),
+        from_sequence: z.literal(1),
+      })
+      .strict(),
+    z
+      .object({
+        ...hcpSessionSnapshotBaseShape,
+        completeness: z.literal("partial"),
+        omission_semantics: z.literal("preserve"),
+        reason: z.enum(["retention_gap", "size_limit"]),
+        from_sequence: z.number().int().positive(),
+      })
+      .strict(),
+  ])
+  .superRefine((snapshot, context) => {
+    if (snapshot.through_sequence < snapshot.from_sequence) {
+      context.addIssue({
+        code: "custom",
+        path: ["through_sequence"],
+        message: "Snapshot range must not end before it starts.",
+      });
+    }
+    for (let index = 0; index < snapshot.events.length; index += 1) {
+      const event = snapshot.events[index];
+      const expectedSequence: number = snapshot.from_sequence + index;
+      if (event?.session_id !== snapshot.session_id) {
+        context.addIssue({
+          code: "custom",
+          path: ["events", index, "session_id"],
+          message: "Snapshot events must belong to the requested session.",
+        });
+      }
+      if (event?.sequence !== expectedSequence) {
+        context.addIssue({
+          code: "custom",
+          path: ["events", index, "sequence"],
+          message: "Snapshot events must form one contiguous sequence.",
+        });
+      }
+    }
+    if (snapshot.events.at(-1)?.sequence !== snapshot.through_sequence) {
+      context.addIssue({
+        code: "custom",
+        path: ["through_sequence"],
+        message: "Snapshot through_sequence must equal the final event sequence.",
+      });
+    }
+  });
+
 export const hcpEnvelopeSchema = z
   .object({
     id: nonEmptyStringSchema,
@@ -2513,9 +2678,21 @@ export const hcpHostCapabilitiesUpdatedMessageSchema = hcpTypedEnvelopeSchema(
   "host.capabilities.updated",
   hcpHostCapabilitiesUpdatedPayloadSchema,
 );
+export const hcpHostReplayUnavailableMessageSchema = hcpTypedEnvelopeSchema(
+  "host.replay.unavailable",
+  hcpHostReplayUnavailablePayloadSchema,
+);
 export const hcpSessionStartMessageSchema = hcpTypedEnvelopeSchema(
   "harness.session.start",
   hcpSessionStartPayloadSchema,
+);
+export const hcpSessionSnapshotRequestMessageSchema = hcpTypedEnvelopeSchema(
+  "harness.session.snapshot.request",
+  hcpSessionSnapshotRequestPayloadSchema,
+);
+export const hcpSessionSnapshotMessageSchema = hcpTypedEnvelopeSchema(
+  "harness.session.snapshot",
+  hcpSessionSnapshotPayloadSchema,
 );
 export const hcpTurnSendMessageSchema = hcpTypedEnvelopeSchema("harness.turn.send", hcpTurnSendPayloadSchema);
 export const hcpTurnCancelMessageSchema = hcpTypedEnvelopeSchema("harness.turn.cancel", hcpTurnCancelPayloadSchema);
@@ -2554,7 +2731,10 @@ export const hcpMessageSchema = z.discriminatedUnion("type", [
   hcpHostRejectedMessageSchema,
   hcpHostHeartbeatMessageSchema,
   hcpHostCapabilitiesUpdatedMessageSchema,
+  hcpHostReplayUnavailableMessageSchema,
   hcpSessionStartMessageSchema,
+  hcpSessionSnapshotRequestMessageSchema,
+  hcpSessionSnapshotMessageSchema,
   hcpTurnSendMessageSchema,
   hcpTurnCancelMessageSchema,
   hcpSessionStopMessageSchema,
@@ -2579,7 +2759,16 @@ export type HcpHostCapabilitiesUpdatedMessage = HcpEnvelope<
   "host.capabilities.updated",
   HcpHostCapabilitiesUpdatedPayload
 >;
+export type HcpHostReplayUnavailableMessage = HcpEnvelope<
+  "host.replay.unavailable",
+  HcpHostReplayUnavailablePayload
+>;
 export type HcpSessionStartMessage = HcpEnvelope<"harness.session.start", HcpSessionStartPayload>;
+export type HcpSessionSnapshotRequestMessage = HcpEnvelope<
+  "harness.session.snapshot.request",
+  HcpSessionSnapshotRequestPayload
+>;
+export type HcpSessionSnapshotMessage = HcpEnvelope<"harness.session.snapshot", HcpSessionSnapshotPayload>;
 export type HcpTurnSendMessage = HcpEnvelope<"harness.turn.send", HcpTurnSendPayload>;
 export type HcpTurnCancelMessage = HcpEnvelope<"harness.turn.cancel", HcpTurnCancelPayload>;
 export type HcpSessionStopMessage = HcpEnvelope<"harness.session.stop", HcpSessionStopPayload>;
@@ -2599,7 +2788,10 @@ export type HcpMessage =
   | HcpHostRejectedMessage
   | HcpHostHeartbeatMessage
   | HcpHostCapabilitiesUpdatedMessage
+  | HcpHostReplayUnavailableMessage
   | HcpSessionStartMessage
+  | HcpSessionSnapshotRequestMessage
+  | HcpSessionSnapshotMessage
   | HcpTurnSendMessage
   | HcpTurnCancelMessage
   | HcpSessionStopMessage
@@ -2661,6 +2853,10 @@ export function parseHcpHostCapabilitiesUpdatedPayload(input: unknown): HcpHostC
   return hcpHostCapabilitiesUpdatedPayloadSchema.parse(input) as HcpHostCapabilitiesUpdatedPayload;
 }
 
+export function parseHcpHostReplayUnavailablePayload(input: unknown): HcpHostReplayUnavailablePayload {
+  return hcpHostReplayUnavailablePayloadSchema.parse(input) as HcpHostReplayUnavailablePayload;
+}
+
 export function parseHarnessProviderSnapshot(input: unknown): HarnessProviderSnapshot {
   return harnessProviderSnapshotSchema.parse(input) as HarnessProviderSnapshot;
 }
@@ -2675,6 +2871,14 @@ export function parseMcpServerAttachment(input: unknown): McpServerAttachment {
 
 export function parseHcpSessionStartPayload(input: unknown): HcpSessionStartPayload {
   return hcpSessionStartPayloadSchema.parse(input) as HcpSessionStartPayload;
+}
+
+export function parseHcpSessionSnapshotRequestPayload(input: unknown): HcpSessionSnapshotRequestPayload {
+  return hcpSessionSnapshotRequestPayloadSchema.parse(input) as HcpSessionSnapshotRequestPayload;
+}
+
+export function parseHcpSessionSnapshotPayload(input: unknown): HcpSessionSnapshotPayload {
+  return hcpSessionSnapshotPayloadSchema.parse(input) as HcpSessionSnapshotPayload;
 }
 
 export function parseHcpTurnSendPayload(input: unknown): HcpTurnSendPayload {
@@ -2696,3 +2900,9 @@ export function parseLocalActionErrorPayload(input: unknown): LocalActionErrorPa
 export function parseHcpHarnessEventPayload(input: unknown): HcpHarnessEventPayload {
   return hcpHarnessEventPayloadSchema.parse(input) as HcpHarnessEventPayload;
 }
+
+export {
+  HcpSessionEventReducer,
+  type HcpEventApplyResult,
+  type HcpSnapshotApplyResult,
+} from "./session-reducer.js";

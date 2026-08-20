@@ -1,0 +1,9 @@
+{
+  "id": "message-session-snapshot-request",
+  "type": "harness.session.snapshot.request",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1"
+  }
+}

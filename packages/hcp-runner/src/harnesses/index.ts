@@ -3,7 +3,10 @@ import { isAbsolute, relative } from "node:path";
 
 import type {
   HcpHarnessEventPayload,
+  HcpHostReplayUnavailablePayload,
+  HcpSessionSnapshotPayload,
   HostResumeCursor,
+  HostRetainedEventRanges,
   HcpSessionStartPayload,
   HcpTurnSendPayload,
   LocalActionRequestPayload,
@@ -25,7 +28,9 @@ import type {
 } from "../local-actions/executors.js";
 import { McpAttachmentClient, type McpProofSigner, type McpToolDescriptor } from "../mcp/McpAttachmentClient.js";
 import { McpProxyServer } from "../mcp/McpProxyServer.js";
+import { MemoryRunnerStateStore, type RunnerStateStore } from "../state/index.js";
 import {
+  HarnessAdapterError,
   HarnessAdapterRegistry,
   createDefaultHarnessAdapterRegistry,
   type HarnessAdapter,
@@ -93,7 +98,13 @@ export type HarnessSessionManagerOptions = {
   mcpClientFactory?: HarnessMcpClientFactory;
   auditLogger?: AuditLogger;
   replayRetentionEventsPerSession?: number;
+  stateStore?: RunnerStateStore;
   adapterRegistry?: HarnessAdapterRegistry;
+};
+
+export type HarnessReplayResult = {
+  events: HcpHarnessEventPayload[];
+  unavailable: HcpHostReplayUnavailablePayload[];
 };
 
 export class HarnessSessionError extends Error {
@@ -114,11 +125,10 @@ export class HarnessSessionManager {
   readonly #mcpProofSigner: McpProofSigner | undefined;
   readonly #mcpClientFactory: HarnessMcpClientFactory;
   readonly #auditLogger: AuditLogger | undefined;
-  readonly #replayRetentionEventsPerSession: number;
+  readonly #stateStore: RunnerStateStore;
   readonly #adapterRegistry: HarnessAdapterRegistry;
   readonly #sessions = new Map<string, HarnessSession>();
-  readonly #nextSequences = new Map<string, number>();
-  readonly #replayBuffers = new Map<string, HcpHarnessEventPayload[]>();
+  readonly #turnIdsBySession = new Map<string, Set<string>>();
 
   constructor(config: RunnerConfig, options: string | HarnessSessionManagerOptions = {}) {
     const resolvedOptions: HarnessSessionManagerOptions = typeof options === "string" ? { hostId: options } : options;
@@ -129,7 +139,13 @@ export class HarnessSessionManager {
     this.#mcpProofSigner = resolvedOptions.mcpProofSigner;
     this.#mcpClientFactory = resolvedOptions.mcpClientFactory ?? defaultMcpClientFactory;
     this.#auditLogger = resolvedOptions.auditLogger;
-    this.#replayRetentionEventsPerSession = resolvedOptions.replayRetentionEventsPerSession ?? 512;
+    this.#stateStore =
+      resolvedOptions.stateStore ??
+      new MemoryRunnerStateStore(
+        resolvedOptions.replayRetentionEventsPerSession === undefined
+          ? {}
+          : { eventRetentionPerSession: resolvedOptions.replayRetentionEventsPerSession },
+      );
     this.#adapterRegistry = resolvedOptions.adapterRegistry ?? createDefaultHarnessAdapterRegistry();
   }
 
@@ -145,44 +161,56 @@ export class HarnessSessionManager {
     return this.#localCapabilityEngine;
   }
 
-  resumeCursor(): HostResumeCursor | undefined {
-    const sessions = Array.from(this.#replayBuffers.entries())
-      .map(([sessionId, events]) => {
-        const lastEvent: HcpHarnessEventPayload | undefined = events.at(-1);
-        return lastEvent ? { session_id: sessionId, last_event_sequence: lastEvent.sequence } : undefined;
-      })
-      .filter((entry): entry is { session_id: string; last_event_sequence: number } => entry !== undefined);
-    return sessions.length > 0 ? { sessions } : undefined;
+  stateStore(): RunnerStateStore {
+    return this.#stateStore;
   }
 
-  replayEventsAfter(cursor: HostResumeCursor): HcpHarnessEventPayload[] {
+  retainedEventRanges(): HostRetainedEventRanges | undefined {
+    return this.#stateStore.retainedEventRanges();
+  }
+
+  replayEventsAfter(cursor: HostResumeCursor): HarnessReplayResult {
     const events: HcpHarnessEventPayload[] = [];
+    const unavailable: HcpHostReplayUnavailablePayload[] = [];
+    const retainedRanges: HostRetainedEventRanges = this.#stateStore.retainedEventRanges() ?? { sessions: [] };
     for (const sessionCursor of cursor.sessions) {
-      const buffer: HcpHarnessEventPayload[] | undefined = this.#replayBuffers.get(sessionCursor.session_id);
-      if (!buffer || buffer.length === 0) {
-        events.push(this.#replayUnavailableEvent(sessionCursor.session_id, sessionCursor.last_event_sequence, "no_replay_buffer"));
+      const replayed: HcpHarnessEventPayload[] | undefined = this.#stateStore.replayEventsAfter(
+        sessionCursor.session_id,
+        sessionCursor.last_event_sequence,
+      );
+      if (!replayed) {
+        const retainedRange = retainedRanges.sessions.find(
+          (range): boolean => range.session_id === sessionCursor.session_id,
+        );
+        unavailable.push({
+          session_id: sessionCursor.session_id,
+          requested_after_sequence: sessionCursor.last_event_sequence,
+          reason: retainedRange ? "cursor_outside_retention" : "no_retained_events",
+          ...(retainedRange
+            ? {
+                retained_range: {
+                  first_event_sequence: retainedRange.first_event_sequence,
+                  last_event_sequence: retainedRange.last_event_sequence,
+                },
+              }
+            : {}),
+        });
         continue;
       }
+      events.push(...replayed);
+    }
+    return { events, unavailable };
+  }
 
-      const firstSequence: number | undefined = buffer[0]?.sequence;
-      const lastSequence: number | undefined = buffer.at(-1)?.sequence;
-      if (
-        firstSequence === undefined ||
-        lastSequence === undefined ||
-        sessionCursor.last_event_sequence < firstSequence - 1 ||
-        sessionCursor.last_event_sequence > lastSequence
-      ) {
-        events.push(this.#replayUnavailableEvent(sessionCursor.session_id, sessionCursor.last_event_sequence, "cursor_outside_retention"));
-        continue;
-      }
-
-      events.push(
-        ...buffer.filter(
-          (event: HcpHarnessEventPayload): boolean => event.sequence > sessionCursor.last_event_sequence,
-        ),
+  sessionSnapshot(commandId: string, sessionId: string): HcpSessionSnapshotPayload {
+    const snapshot: HcpSessionSnapshotPayload | undefined = this.#stateStore.sessionSnapshot(commandId, sessionId);
+    if (!snapshot) {
+      throw new HarnessSessionError(
+        "session_snapshot_unavailable",
+        `Session '${sessionId}' has no retained events from which to build a snapshot.`,
       );
     }
-    return events;
+    return snapshot;
   }
 
   async resolveLocalActionContext(payload: LocalActionRequestPayload): Promise<LocalCapabilityExecutionContext> {
@@ -244,7 +272,7 @@ export class HarnessSessionManager {
   }
 
   async startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
-    if (this.#sessions.has(payload.session_id)) {
+    if (this.#sessions.has(payload.session_id) || this.#stateStore.hasSessionEvents(payload.session_id)) {
       throw new HarnessSessionError("session_exists", `Session '${payload.session_id}' already exists.`);
     }
 
@@ -283,9 +311,7 @@ export class HarnessSessionManager {
       mcpClients: mcpAttachments.clients,
     };
     this.#sessions.set(payload.session_id, session);
-    this.#nextSequences.set(payload.session_id, 1);
-    this.#replayBuffers.set(payload.session_id, []);
-
+    this.#turnIdsBySession.set(payload.session_id, new Set<string>());
     const events: HcpHarnessEventPayload[] = [
       this.#event(payload.session_id, undefined, "session.started", {
         provider_instance_id: provider.id,
@@ -352,10 +378,43 @@ export class HarnessSessionManager {
     return events;
   }
 
-  async sendTurn(payload: HcpTurnSendPayload): Promise<HcpHarnessEventPayload[]> {
+  sendTurn(
+    payload: HcpTurnSendPayload,
+    onEvent?: (event: HcpHarnessEventPayload) => void,
+  ): Promise<HcpHarnessEventPayload[]> {
     const session: HarnessSession | undefined = this.#sessions.get(payload.session_id);
     if (!session) {
       throw new HarnessSessionError("session_not_found", `Session '${payload.session_id}' is not active.`);
+    }
+
+    const turnIds: Set<string> = this.#turnIdsBySession.get(payload.session_id) ?? new Set<string>();
+    if (turnIds.has(payload.turn_id)) {
+      throw new HarnessSessionError(
+        "turn_exists",
+        `Turn '${payload.turn_id}' already exists in session '${payload.session_id}'.`,
+      );
+    }
+    turnIds.add(payload.turn_id);
+    this.#turnIdsBySession.set(payload.session_id, turnIds);
+    return this.#runTurn(payload, session, onEvent);
+  }
+
+  async #runTurn(
+    payload: HcpTurnSendPayload,
+    session: HarnessSession,
+    onEvent: ((event: HcpHarnessEventPayload) => void) | undefined,
+  ): Promise<HcpHarnessEventPayload[]> {
+    await Promise.resolve();
+    const events: HcpHarnessEventPayload[] = [];
+    const startedEvent: HcpHarnessEventPayload = this.#event(payload.session_id, payload.turn_id, "turn.started", {
+      provider_instance_id: session.providerInstanceId,
+      input_length: payload.input.length,
+      model_selection: payload.model_selection ?? session.startPayload.model_selection,
+    });
+    if (onEvent) {
+      onEvent(startedEvent);
+    } else {
+      events.push(startedEvent);
     }
 
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.sendTurn({
@@ -364,9 +423,22 @@ export class HarnessSessionManager {
       startPayload: session.startPayload,
       provider: this.#requireProvider(session.providerInstanceId, session.driverKind),
     });
-    const events: HcpHarnessEventPayload[] = adapterEvents.map((event: HarnessAdapterEvent): HcpHarnessEventPayload =>
-      this.#event(payload.session_id, event.turn_id ?? payload.turn_id, event.event_type, event.data),
-    );
+    for (const adapterEvent of adapterEvents) {
+      if (adapterEvent.event_type === "turn.started") {
+        continue;
+      }
+      const event: HcpHarnessEventPayload = this.#event(
+        payload.session_id,
+        adapterEvent.turn_id ?? payload.turn_id,
+        adapterEvent.event_type,
+        adapterEvent.data,
+      );
+      if (onEvent) {
+        onEvent(event);
+      } else {
+        events.push(event);
+      }
+    }
     await this.#recordAudit({
       event: "turn.completed",
       session_id: payload.session_id,
@@ -378,6 +450,17 @@ export class HarnessSessionManager {
       },
     });
     return events;
+  }
+
+  recordTurnFailure(sessionId: string, turnId: string, error: unknown): HcpHarnessEventPayload {
+    const message: string = error instanceof Error ? error.message : "Harness turn failed.";
+    const code: string =
+      error instanceof HarnessSessionError || error instanceof HarnessAdapterError ? error.code : "harness_turn_failed";
+    return this.#event(sessionId, turnId, "turn.failed", {
+      status: "failed",
+      final_output: { exit_reason: code },
+      error: { code, message, retryable: false },
+    });
   }
 
   async cancelTurn(sessionId: string, turnId: string): Promise<HcpHarnessEventPayload[]> {
@@ -425,7 +508,7 @@ export class HarnessSessionManager {
       }),
     );
     this.#sessions.delete(sessionId);
-    this.#nextSequences.delete(sessionId);
+    this.#turnIdsBySession.delete(sessionId);
     await this.#recordAudit({
       event: "session.exited",
       session_id: sessionId,
@@ -536,7 +619,7 @@ export class HarnessSessionManager {
     eventType: HcpHarnessEventPayload["event_type"],
     data: Record<string, unknown>,
   ): HcpHarnessEventPayload {
-    const sequence: number = this.#nextSequences.get(sessionId) ?? 1;
+    const sequence: number = this.#stateStore.nextEventSequence(sessionId);
     const payload: HcpHarnessEventPayload = {
       session_id: sessionId,
       sequence,
@@ -544,42 +627,12 @@ export class HarnessSessionManager {
       created_at: new Date().toISOString(),
       data,
     };
-    this.#nextSequences.set(sessionId, sequence + 1);
-
     if (turnId) {
       payload.turn_id = turnId;
     }
 
-    this.#storeReplayEvent(payload);
+    this.#stateStore.appendEvent(payload);
     return payload;
-  }
-
-  #storeReplayEvent(event: HcpHarnessEventPayload): void {
-    const buffer: HcpHarnessEventPayload[] = this.#replayBuffers.get(event.session_id) ?? [];
-    buffer.push(event);
-    while (buffer.length > this.#replayRetentionEventsPerSession) {
-      buffer.shift();
-    }
-    this.#replayBuffers.set(event.session_id, buffer);
-  }
-
-  #replayUnavailableEvent(
-    sessionId: string,
-    requestedAfterSequence: number,
-    reason: string,
-  ): HcpHarnessEventPayload {
-    const event: HcpHarnessEventPayload = {
-      session_id: sessionId,
-      sequence: (this.#replayBuffers.get(sessionId)?.at(-1)?.sequence ?? 0) + 1,
-      event_type: "session.replay_unavailable",
-      created_at: new Date().toISOString(),
-      data: {
-        requested_after_sequence: requestedAfterSequence,
-        reason,
-      },
-    };
-    this.#storeReplayEvent(event);
-    return event;
   }
 
   async #recordAudit(event: Parameters<AuditLogger["record"]>[0]): Promise<void> {

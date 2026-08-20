@@ -22,6 +22,7 @@ import {
 import { RunnerConnection } from "./runner-connection.js";
 import type { RunnerConfig } from "../config/index.js";
 import { HarnessSessionManager } from "../harnesses/index.js";
+import { JsonRunnerStateStore } from "../state/index.js";
 
 type TestWorkspace = {
   root: string;
@@ -357,7 +358,9 @@ describe("RunnerConnection", () => {
       });
       socket.send(JSON.stringify(command));
       await harnessSessions.turnStarted;
+      await waitForAck(messages, command.id);
       socket.send(JSON.stringify(command));
+      await waitForDuplicateAck(messages, command.id);
       harnessSessions.releaseTurn();
     });
     const connection = new RunnerConnection({
@@ -574,12 +577,15 @@ describe("RunnerConnection", () => {
     });
     const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
       const hello = await waitForMessage(messages, "host.hello");
-      assert.deepEqual(hello.payload.resume?.sessions, [{ session_id: "session-1", last_event_sequence: 3 }]);
+      assert.deepEqual(hello.payload.retained_events?.sessions, [
+        { session_id: "session-1", first_event_sequence: 1, last_event_sequence: 5 },
+      ]);
       socket.send(
         JSON.stringify(
           createHcpEnvelope("host.accepted", {
             protocol_version: HCP_VERSION,
             heartbeat_interval_seconds: 60,
+            resume: { sessions: [{ session_id: "session-1", last_event_sequence: 3 }] },
           }),
         ),
       );
@@ -588,7 +594,6 @@ describe("RunnerConnection", () => {
       config: { ...config, control_plane_url: server.url },
       runnerVersion: "0.0.0-test",
       harnessSessions,
-      resumeCursor: { sessions: [{ session_id: "session-1", last_event_sequence: 3 }] },
     });
 
     try {
@@ -602,6 +607,161 @@ describe("RunnerConnection", () => {
     } finally {
       await connection.close();
       await server.close();
+      await workspace.cleanup();
+    }
+  });
+
+  it("reports unavailable replay out of band without inventing a regressing session sequence", async () => {
+    const workspace = await createWorkspace();
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+            resume: { sessions: [{ session_id: "missing-session", last_event_sequence: 42 }] },
+          }),
+        ),
+      );
+    });
+    const connection = new RunnerConnection({
+      config: { ...createConfigBase(workspace.root), control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+    });
+
+    try {
+      await connection.connect();
+      const unavailable = await waitForMessage(server.messages, "host.replay.unavailable");
+      assert.equal(unavailable.payload.session_id, "missing-session");
+      assert.equal(unavailable.payload.requested_after_sequence, 42);
+      assert.equal(unavailable.payload.reason, "no_retained_events");
+      assert.equal(server.messages.some((message) => message.type === "harness.event"), false);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+    }
+  });
+
+  it("returns replayable complete session snapshots and replays the same snapshot for duplicate requests", async () => {
+    const workspace = await createWorkspace();
+    const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: "ws://placeholder.invalid" };
+    const harnessSessions = new HarnessSessionManager(config);
+    await harnessSessions.startSession(createSessionStartPayload(workspace.project));
+    const snapshotRequest = createHcpEnvelope("harness.session.snapshot.request", { session_id: "session-1" });
+    const server = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(
+        JSON.stringify(
+          createHcpEnvelope("host.accepted", {
+            protocol_version: HCP_VERSION,
+            heartbeat_interval_seconds: 60,
+          }),
+        ),
+      );
+      socket.send(JSON.stringify(snapshotRequest));
+      await waitForSnapshotCount(messages, snapshotRequest.id, 1);
+      socket.send(JSON.stringify(snapshotRequest));
+    });
+    const connection = new RunnerConnection({
+      config: { ...config, control_plane_url: server.url },
+      runnerVersion: "0.0.0-test",
+      harnessSessions,
+    });
+
+    try {
+      await connection.connect();
+      const secondSnapshot = await waitForSnapshotCount(server.messages, snapshotRequest.id, 2);
+      await waitForDuplicateAck(server.messages, snapshotRequest.id);
+      const snapshots = server.messages.filter((message) => message.type === "harness.session.snapshot");
+      assert.equal(secondSnapshot.payload.completeness, "complete");
+      assert.equal(secondSnapshot.payload.omission_semantics, "replace");
+      assert.equal(secondSnapshot.payload.from_sequence, 1);
+      assert.equal(secondSnapshot.payload.through_sequence, 3);
+      assert.deepEqual(snapshots[0]?.payload, snapshots[1]?.payload);
+    } finally {
+      await connection.close();
+      await server.close();
+      await workspace.cleanup();
+    }
+  });
+
+  it("does not re-execute settled commands or local actions after a runner restart", async () => {
+    const workspace = await createWorkspace();
+    await writeFile(join(workspace.project, "notes.txt"), "persisted response", "utf8");
+    const statePath: string = join(workspace.root, "runner-state.json");
+    const sessionStart = createHcpEnvelope("harness.session.start", {
+      ...createSessionStartPayload(workspace.project),
+      local_capability_lease: createLocalCapabilityLease(),
+    });
+    const localAction = createHcpEnvelope("local.action.request", createFilesystemReadRequest(workspace));
+    let firstResponse!: Extract<HcpMessage, { type: "local.action.response" }>;
+
+    const firstServer = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(JSON.stringify(createHcpEnvelope("host.accepted", {
+        protocol_version: HCP_VERSION,
+        heartbeat_interval_seconds: 60,
+      })));
+      socket.send(JSON.stringify(sessionStart));
+      await waitForAck(messages, sessionStart.id);
+      socket.send(JSON.stringify(localAction));
+    });
+    const firstConfig: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: firstServer.url };
+    const firstConnection = new RunnerConnection({
+      config: firstConfig,
+      runnerVersion: "0.0.0-test",
+      harnessSessions: new HarnessSessionManager(firstConfig, {
+        stateStore: new JsonRunnerStateStore(statePath),
+      }),
+    });
+
+    try {
+      await firstConnection.connect();
+      firstResponse = await waitForLocalActionResponseCount(firstServer.messages, localAction.payload.request_id, 1);
+    } finally {
+      await firstConnection.close();
+      await firstServer.close();
+    }
+
+    const secondServer = await startServer(async (socket: WebSocket, messages: HcpMessage[]) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(JSON.stringify(createHcpEnvelope("host.accepted", {
+        protocol_version: HCP_VERSION,
+        heartbeat_interval_seconds: 60,
+      })));
+      socket.send(JSON.stringify(sessionStart));
+      await waitForDuplicateAck(messages, sessionStart.id);
+      socket.send(JSON.stringify(localAction));
+    });
+    const secondConfig: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: secondServer.url };
+    const secondConnection = new RunnerConnection({
+      config: secondConfig,
+      runnerVersion: "0.0.0-test",
+      harnessSessions: new HarnessSessionManager(secondConfig, {
+        stateStore: new JsonRunnerStateStore(statePath),
+      }),
+    });
+
+    try {
+      await secondConnection.connect();
+      const replayedResponse = await waitForLocalActionResponseCount(
+        secondServer.messages,
+        localAction.payload.request_id,
+        1,
+      );
+      assert.deepEqual(replayedResponse.payload, firstResponse.payload);
+      assert.equal(
+        secondServer.messages.some(
+          (message) =>
+            message.type === "harness.event" && message.payload.event_type === "local_capability.action.started",
+        ),
+        false,
+      );
+    } finally {
+      await secondConnection.close();
+      await secondServer.close();
       await workspace.cleanup();
     }
   });
@@ -709,6 +869,18 @@ async function waitForEventCount(messages: HcpMessage[], count: number) {
     (message): message is Extract<HcpMessage, { type: "harness.event" }> =>
       message.type === "harness.event" &&
       messages.filter((candidate) => candidate.type === "harness.event").length >= count,
+  );
+}
+
+async function waitForSnapshotCount(messages: HcpMessage[], commandId: string, count: number) {
+  return waitFor(
+    messages,
+    (message): message is Extract<HcpMessage, { type: "harness.session.snapshot" }> =>
+      message.type === "harness.session.snapshot" &&
+      message.payload.command_id === commandId &&
+      messages.filter(
+        (candidate) => candidate.type === "harness.session.snapshot" && candidate.payload.command_id === commandId,
+      ).length >= count,
   );
 }
 

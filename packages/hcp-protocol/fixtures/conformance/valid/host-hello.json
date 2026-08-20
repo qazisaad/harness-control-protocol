@@ -9,10 +9,11 @@
     "runner_version": "0.0.0",
     "supported_protocol_versions": ["hcp.v0"],
     "capabilities": ["providers", "mcp_streamable_http"],
-    "resume": {
+    "retained_events": {
       "sessions": [
         {
           "session_id": "session-1",
+          "first_event_sequence": 1,
           "last_event_sequence": 12
         }
       ]

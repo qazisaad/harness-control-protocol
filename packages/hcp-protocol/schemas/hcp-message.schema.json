@@ -197,7 +197,7 @@
                 "minLength": 1
               }
             },
-            "resume": {
+            "retained_events": {
               "type": "object",
               "properties": {
                 "sessions": {
@@ -210,14 +210,20 @@
                         "type": "string",
                         "minLength": 1
                       },
+                      "first_event_sequence": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
                       "last_event_sequence": {
                         "type": "integer",
-                        "minimum": 0,
+                        "exclusiveMinimum": 0,
                         "maximum": 9007199254740991
                       }
                     },
                     "required": [
                       "session_id",
+                      "first_event_sequence",
                       "last_event_sequence"
                     ],
                     "additionalProperties": false
@@ -287,6 +293,38 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
+            },
+            "resume": {
+              "type": "object",
+              "properties": {
+                "sessions": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "session_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "last_event_sequence": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "session_id",
+                      "last_event_sequence"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "sessions"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -860,6 +898,90 @@
         },
         "type": {
           "type": "string",
+          "const": "host.replay.unavailable"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requested_after_sequence": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "no_retained_events",
+                "cursor_outside_retention"
+              ]
+            },
+            "retained_range": {
+              "type": "object",
+              "properties": {
+                "first_event_sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "last_event_sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "first_event_sequence",
+                "last_event_sequence"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "session_id",
+            "requested_after_sequence",
+            "reason"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
           "const": "harness.session.start"
         },
         "version": {
@@ -1267,6 +1389,382 @@
             "mcp_servers"
           ],
           "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "harness.session.snapshot.request"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "harness.session.snapshot"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "command_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "session_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "generated_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "through_sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "events": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "session_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "turn_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sequence": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "event_type": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      },
+                      "data": {},
+                      "raw": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "payload": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "payload"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "session_id",
+                      "sequence",
+                      "event_type",
+                      "created_at",
+                      "data"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "tombstones": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "entity_type": {
+                        "type": "string",
+                        "enum": [
+                          "session",
+                          "turn",
+                          "item"
+                        ]
+                      },
+                      "entity_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "deleted_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      }
+                    },
+                    "required": [
+                      "entity_type",
+                      "entity_id",
+                      "deleted_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "completeness": {
+                  "type": "string",
+                  "const": "complete"
+                },
+                "omission_semantics": {
+                  "type": "string",
+                  "const": "replace"
+                },
+                "from_sequence": {
+                  "type": "number",
+                  "const": 1
+                }
+              },
+              "required": [
+                "command_id",
+                "session_id",
+                "generated_at",
+                "through_sequence",
+                "events",
+                "tombstones",
+                "completeness",
+                "omission_semantics",
+                "from_sequence"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "command_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "session_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "generated_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "through_sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "events": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "session_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "turn_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sequence": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "event_type": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      },
+                      "data": {},
+                      "raw": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "payload": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {}
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "payload"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "session_id",
+                      "sequence",
+                      "event_type",
+                      "created_at",
+                      "data"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "tombstones": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "entity_type": {
+                        "type": "string",
+                        "enum": [
+                          "session",
+                          "turn",
+                          "item"
+                        ]
+                      },
+                      "entity_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "deleted_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      }
+                    },
+                    "required": [
+                      "entity_type",
+                      "entity_id",
+                      "deleted_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "completeness": {
+                  "type": "string",
+                  "const": "partial"
+                },
+                "omission_semantics": {
+                  "type": "string",
+                  "const": "preserve"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "retention_gap",
+                    "size_limit"
+                  ]
+                },
+                "from_sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "command_id",
+                "session_id",
+                "generated_at",
+                "through_sequence",
+                "events",
+                "tombstones",
+                "completeness",
+                "omission_semantics",
+                "reason",
+                "from_sequence"
+              ],
+              "additionalProperties": false
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -7345,199 +7843,6 @@
             "event_type": {
               "type": "string",
               "const": "session.exited"
-            },
-            "created_at": {
-              "type": "string",
-              "format": "date-time",
-              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-            },
-            "data": {
-              "type": "object",
-              "properties": {
-                "provider_instance_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "driver_kind": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspace_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "cwd": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "sandbox_mode": {
-                  "type": "string",
-                  "enum": [
-                    "read_only",
-                    "workspace_write",
-                    "danger_full_access"
-                  ]
-                },
-                "state": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "reason": {
-                  "type": "string"
-                },
-                "exit_code": {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                "model_selection": {
-                  "type": "object",
-                  "properties": {
-                    "model": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "options": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "value": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "boolean"
-                              },
-                              {
-                                "type": "number"
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "value"
-                        ],
-                        "additionalProperties": false
-                      }
-                    }
-                  },
-                  "required": [
-                    "model"
-                  ],
-                  "additionalProperties": false
-                },
-                "mcp_server_count": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "local_capabilities": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "message": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            },
-            "raw": {
-              "type": "object",
-              "properties": {
-                "source": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "payload": {
-                  "type": "object",
-                  "propertyNames": {
-                    "type": "string"
-                  },
-                  "additionalProperties": {}
-                }
-              },
-              "required": [
-                "source",
-                "payload"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "session_id",
-            "sequence",
-            "event_type",
-            "created_at",
-            "data"
-          ],
-          "additionalProperties": false
-        },
-        "metadata": {
-          "type": "object",
-          "propertyNames": {
-            "type": "string"
-          },
-          "additionalProperties": {}
-        }
-      },
-      "required": [
-        "id",
-        "type",
-        "version",
-        "sent_at",
-        "payload"
-      ],
-      "additionalProperties": false
-    },
-    {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "type": {
-          "type": "string",
-          "const": "harness.event"
-        },
-        "version": {
-          "type": "string",
-          "const": "hcp.v0"
-        },
-        "sent_at": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-        },
-        "payload": {
-          "type": "object",
-          "properties": {
-            "session_id": {
-              "type": "string",
-              "minLength": 1
-            },
-            "turn_id": {
-              "type": "string",
-              "minLength": 1
-            },
-            "sequence": {
-              "type": "integer",
-              "exclusiveMinimum": 0,
-              "maximum": 9007199254740991
-            },
-            "event_type": {
-              "type": "string",
-              "const": "session.replay_unavailable"
             },
             "created_at": {
               "type": "string",
