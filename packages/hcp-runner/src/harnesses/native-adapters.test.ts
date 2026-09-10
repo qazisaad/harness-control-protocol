@@ -154,12 +154,15 @@ for (const mode of [
     });
     const events: HarnessAdapterEvent[] = [];
     let running = true;
-    const terminal = await adapter.sendTurn(
-      turn(payload, selected, (event) => {
+    const terminal = await adapter.sendTurn({
+      ...turn(payload, selected, (event) => {
         assert.equal(running, true);
         events.push(event);
       }),
-    );
+      mcpServers: mode === "success" ? [{
+        name: "selected", transport: "streamable_http", url: "http://127.0.0.1:12345/mcp", headers: {}, allowed_tools: ["echo"],
+      }] : [],
+    });
     running = false;
     events.push(...terminal);
     assert.equal(
@@ -189,8 +192,10 @@ for (const mode of [
           },
       );
     const configuration = requests.find((r) => r.method === "thread/start")
-      ?.params.config as { mcp_servers: { inherited: { enabled: boolean } } };
+      ?.params.config as { mcp_servers: { inherited: { enabled: boolean; default_tools_approval_mode?: string }; selected?: { default_tools_approval_mode: string } } };
     assert.equal(configuration.mcp_servers.inherited.enabled, false);
+    assert.equal(configuration.mcp_servers.inherited.default_tools_approval_mode, undefined);
+    if (mode === "success") assert.equal(configuration.mcp_servers.selected?.default_tools_approval_mode, "approve");
     if (mode !== "policy" && mode !== "mcp-leak")
       assert.equal(
         requests.find((r) => r.method === "turn/start")?.params.effort,

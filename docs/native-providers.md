@@ -28,6 +28,8 @@ Native drivers reject nonempty `launch_args`, unsupported/duplicate model option
 
 Codex reads effective MCP configuration and disables inherited servers using configuration overrides; it does not copy serialized config values or modify the user's config file. Selected names cannot collide with inherited names. Before the prompt, it checks the thread MCP inventory: unselected servers must be explicitly disabled and expose no tools. Missing inventory support or unverifiable scope fails closed.
 
+For the supported `full_access` approval policy, selected proxy servers use Codex's `default_tools_approval_mode = "approve"`. Native `never` alone can refuse an MCP call that requires approval. This override is local to the fresh thread and selected servers; the proxy still enforces the attachment allowlist and upstream lease, and the filesystem sandbox remains unchanged. See the [official MCP configuration reference](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
 Claude uses `strictMcpConfig: true` even with zero attachments and `settingSources: []`. User/project/local settings, hooks, and settings-dependent customizations are intentionally not loaded into this execution profile. The Claude Code system-prompt preset is used. Interactive question/plan tools and child-agent tools are disabled in this first profile. Codex multi-agent and apps integration are disabled for this profile.
 
 Both runtimes receive only runner-loopback MCP proxies. Platform proof credentials stay in the runner. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` retain provider-instance authentication scope; a connection token is not provider authentication.

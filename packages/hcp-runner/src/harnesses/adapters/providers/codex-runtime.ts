@@ -91,7 +91,11 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
           "An attachment conflicts with an inherited MCP server name.",
         );
       }
-      servers[attachment.name] = { url: attachment.url, enabled: true };
+      servers[attachment.name] = {
+        url: attachment.url,
+        enabled: true,
+        default_tools_approval_mode: "approve",
+      };
     }
     const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
     const started = startedSchema.parse(
