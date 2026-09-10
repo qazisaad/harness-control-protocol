@@ -22,6 +22,7 @@ try {
     hostId: "claude-example-host",
   });
   const config: RunnerConfig = {
+    mcp_stdio_profiles: [],
     runner_id: "claude-example-runner",
     host_id: "claude-example-host",
     control_plane_url: pairing.controlPlaneUrl,
@@ -77,6 +78,7 @@ try {
   const connection = new RunnerConnection({
     config,
     runnerVersion: "0.0.0-example",
+    onLog: (message) => console.error(message),
     harnessSessions,
     connectionTokenProvider: async () => requestConnectionToken(config, pairing.credential),
   });
@@ -105,8 +107,8 @@ try {
       provider_instance_id: "claude-local",
       driver_kind: "claude",
       cwd: workspaceRoot,
-      sandbox_mode: "workspace_write",
-      approval_policy: "ask",
+      sandbox_mode: "danger_full_access",
+      approval_policy: "full_access",
       continue_session: false,
       model_selection: { model: "sonnet" },
       mcp_servers: [
@@ -142,7 +144,7 @@ try {
           provider_instance_id: "claude-local",
           driver_kind: "claude",
           cwd: workspaceRoot,
-          sandbox_mode: "workspace_write",
+          sandbox_mode: "danger_full_access",
           approval_policy: "full_access",
           continue_session: false,
           model_selection: { model: "sonnet" },

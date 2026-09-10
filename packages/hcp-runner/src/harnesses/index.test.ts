@@ -101,6 +101,16 @@ async function createWorkspace(): Promise<{ root: string; project: string; clean
 }
 
 describe("HarnessSessionManager", () => {
+  it("rejects unimplemented workspace expectations before reporting preflight success", async () => {
+    const workspace = await createWorkspace();
+    try {
+      const manager = new HarnessSessionManager(createConfig(workspace.root));
+      await assert.rejects(manager.startSession({ session_id: "preflight", workspace_id: "repo", provider_instance_id: "mock-provider", driver_kind: "mock",
+        cwd: workspace.root, sandbox_mode: "workspace_write", approval_policy: "ask", continue_session: false,
+        model_selection: { model: "mock" }, mcp_servers: [], workspace_preflight: { workspace_id: "repo", required_paths: ["missing"] } }),
+        (error: unknown) => error instanceof HarnessSessionError && error.code === "preflight_unsupported");
+    } finally { await workspace.cleanup(); }
+  });
   it("starts sessions and accepts turns with HCP events", async () => {
     const workspace = await createWorkspace();
     const manager = new HarnessSessionManager(createConfig(workspace.root));
@@ -622,7 +632,7 @@ describe("HarnessSessionManager", () => {
         driver_kind: "codex",
         cwd: workspace.root,
         sandbox_mode: "workspace_write",
-        approval_policy: "ask",
+        approval_policy: "full_access",
         continue_session: false,
         model_selection: { model: "gpt-test" },
         mcp_servers: [
@@ -679,7 +689,7 @@ describe("HarnessSessionManager", () => {
             driver_kind: "codex",
             cwd: workspace.root,
             sandbox_mode: "workspace_write",
-            approval_policy: "ask",
+            approval_policy: "full_access",
             continue_session: false,
             model_selection: { model: "gpt-test" },
             mcp_servers: [
@@ -737,8 +747,8 @@ describe("HarnessSessionManager", () => {
         provider_instance_id: "claude-local",
         driver_kind: "claude",
         cwd: workspace.root,
-        sandbox_mode: "workspace_write",
-        approval_policy: "ask",
+        sandbox_mode: "danger_full_access",
+        approval_policy: "full_access",
         continue_session: false,
         model_selection: { model: "sonnet" },
         mcp_servers: [

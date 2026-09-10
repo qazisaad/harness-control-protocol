@@ -24,7 +24,7 @@ Implemented today:
 - At-least-once command handling with immediate ACK/NACK responses and durable duplicate-command idempotency.
 - Atomic runner state for retained events, command receipts, and local-action receipts across process restarts.
 - Complete/partial session event snapshots with explicit replacement, preservation, and tombstone semantics.
-- Adapter-based session lifecycle with deterministic mock, Codex, Claude Code, and streaming OpenCode adapters.
+- Adapter-based session lifecycle with deterministic mock, native Codex app-server, Claude Agent SDK, and streaming OpenCode adapters. See [provider support](docs/native-providers.md) for the exact supported policies and remaining gaps.
 - Local capability leases and real filesystem, Git, shell, and dev-server executors.
 - MCP Streamable HTTP attachments and runner-owned named stdio profiles using the official Model Context Protocol TypeScript SDK.
 - Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
@@ -144,7 +144,7 @@ Run the Codex live-smoke reference flow:
 npx tsx examples/codex-runner-flow.ts
 ```
 
-This flow pairs with the mock control plane, connects a local runner, probes the configured Codex provider, and starts a real Codex turn only when `codex --version` and `codex login status` succeed. The example uses runner-local `launch_args` to pass a process-scoped `service_tier=fast` override for current Codex CLI compatibility; it does not edit `~/.codex/config.toml`. The live turn uses HCP `approval_policy: "full_access"` so `codex exec` can run non-interactively while the sandbox remains `workspace_write`. If Codex is unavailable or unauthenticated, the example prints the provider snapshot and exits without sending a turn.
+This flow pairs with the mock control plane, connects a local runner, validates proxied MCP setup, and runs a fresh Codex app-server turn over local stdio. It uses `approval_policy: "full_access"` (no interactive approval) with `sandbox_mode: "workspace_write"`. Native adapters reject raw `launch_args`; use structured model options. When no model catalog is configured, Codex models and reasoning efforts come from native `model/list`.
 
 Run the Claude Code live-smoke reference flow:
 
@@ -152,7 +152,7 @@ Run the Claude Code live-smoke reference flow:
 npx tsx examples/claude-runner-flow.ts
 ```
 
-This flow pairs with the mock control plane, connects a local runner, probes the configured Claude Code provider, validates proxied MCP setup, and starts a real Claude Code turn only when `claude --version` and `claude auth status --json` succeed. The live turn uses `claude -p --output-format json --no-session-persistence` with HCP `approval_policy: "full_access"` so the provider can run non-interactively without creating a persisted Claude session.
+This flow pairs with the mock control plane, connects a local runner, validates proxied MCP setup, and runs a fresh Claude Agent SDK turn with partial messages and session persistence disabled. It explicitly uses `danger_full_access` and `full_access`: Claude filesystem containment is not implemented by this adapter. The browser quickstart retains its workspace-write policy, so it cannot run Claude under this profile. No client should silently widen its requested sandbox to make a provider available.
 
 Run the public protocol conformance fixtures:
 

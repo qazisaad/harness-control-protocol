@@ -230,6 +230,25 @@ function createFilesystemReadRequest(workspace: TestWorkspace, path = "project/n
 }
 
 describe("RunnerConnection", () => {
+  it("nacks unsupported controls without acknowledging a successful no-op", async () => {
+    const workspace = await createWorkspace();
+    const commands = [
+      createHcpEnvelope("harness.approval.respond", { request_id: "r", session_id: "s", turn_id: "t", action_hash: "hash", decision: "accept", actor_id: "actor" }),
+      createHcpEnvelope("harness.input.respond", { request_id: "r", session_id: "s", turn_id: "t", actor_id: "actor", value: "answer" }),
+      createHcpEnvelope("tool_servers.detach", { session_id: "s", names: ["server"] }),
+    ];
+    const server = await startServer(async (socket, messages) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(JSON.stringify(createHcpEnvelope("host.accepted", { protocol_version: HCP_VERSION, heartbeat_interval_seconds: 60 })));
+      for (const command of commands) socket.send(JSON.stringify(command));
+    });
+    const connection = new RunnerConnection({ config: { ...createConfigBase(workspace.root), control_plane_url: server.url }, runnerVersion: "test" });
+    try {
+      await connection.connect();
+      for (const command of commands) assert.equal((await waitForNack(server.messages, command.id)).payload.error.code, "unsupported_command");
+      assert.equal(server.messages.some(message => message.type === "hcp.command.ack"), false);
+    } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
+  });
   it("handles accepted, harness.session.start, and harness.turn.send with events and command acks", async () => {
     const workspace = await createWorkspace();
     const sessionStartPayload: HcpSessionStartPayload = createSessionStartPayload(workspace.project);

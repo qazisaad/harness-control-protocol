@@ -276,6 +276,9 @@ export class HarnessSessionManager {
   }
 
   async startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
+    if (payload.workspace_preflight !== undefined) {
+      throw new HarnessSessionError("preflight_unsupported", "Workspace preflight expectations are not implemented by this runner.");
+    }
     if (this.#sessions.has(payload.session_id) || this.#stateStore.hasSessionEvents(payload.session_id)) {
       throw new HarnessSessionError("session_exists", `Session '${payload.session_id}' already exists.`);
     }
@@ -423,9 +426,13 @@ export class HarnessSessionManager {
       events.push(startedEvent);
     }
 
+    let terminalEventType: string | undefined;
     const emitAdapterEvent = (adapterEvent: HarnessAdapterEvent): void => {
       if (adapterEvent.event_type === "turn.started") {
         return;
+      }
+      if (["turn.completed", "turn.failed", "turn.cancelled", "turn.aborted"].includes(adapterEvent.event_type)) {
+        terminalEventType = adapterEvent.event_type;
       }
       const event: HcpHarnessEventPayload = this.#event(
         payload.session_id,
@@ -450,8 +457,8 @@ export class HarnessSessionManager {
     for (const adapterEvent of adapterEvents) {
       emitAdapterEvent(adapterEvent);
     }
-    await this.#recordAudit({
-      event: "turn.completed",
+    if (terminalEventType) await this.#recordAudit({
+      event: terminalEventType,
       session_id: payload.session_id,
       turn_id: payload.turn_id,
       provider_instance_id: session.providerInstanceId,

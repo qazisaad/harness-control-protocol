@@ -15,6 +15,7 @@ export type ProviderRegistrySnapshot = {
 };
 
 export type ProviderDriverStatus = {
+  execution_capabilities?: HarnessProviderSnapshot["execution_capabilities"];
   provider_instance_id?: string;
   driver_kind: string;
   installed: boolean;
@@ -109,6 +110,7 @@ export class ProviderInstanceRegistry {
       : "disabled";
 
     const snapshot: HarnessProviderSnapshot = {
+      ...(driver?.execution_capabilities ? { execution_capabilities: driver.execution_capabilities } : {}),
       provider_instance_id: provider.id,
       driver_kind: provider.driver_kind,
       ...(provider.display_name ? { display_name: provider.display_name } : {}),

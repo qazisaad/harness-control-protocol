@@ -1246,7 +1246,6 @@ function createRunnerConfig(workspaceRoot: string, controlPlaneUrl: string): Run
         displayName: "Codex Local",
         modelId: "gpt-5.5",
         modelLabel: "GPT-5.5",
-        launchArgs: ["-c", "service_tier=fast"],
       }),
       providerConfig({
         id: "claude-local",

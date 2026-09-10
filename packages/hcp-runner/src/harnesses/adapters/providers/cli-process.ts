@@ -78,6 +78,7 @@ export function startManagedCliProcess(options: CliManagedProcessOptions): CliMa
   });
 
   const terminate = (asTimeout: boolean): void => {
+    if (settled) return;
     if (asTimeout) {
       timedOut = true;
     }
@@ -85,14 +86,6 @@ export function startManagedCliProcess(options: CliManagedProcessOptions): CliMa
     if (!forceKill) {
       forceKill = setTimeout((): void => {
         handle.kill("SIGKILL");
-        settleProcess({
-          exitCode: null,
-          signal: "SIGKILL",
-          stdout: "",
-          stderr: "",
-          error: asTimeout ? options.timeoutErrorMessage : options.terminatedErrorMessage,
-          timedOut: asTimeout,
-        });
       }, options.processKillGraceMs);
     }
   };
@@ -213,7 +206,7 @@ function appendLimitedProcessOutput(existing: string, chunk: Buffer): string {
   return combined.subarray(0, MAX_CAPTURED_CLI_OUTPUT_BYTES).toString("utf8");
 }
 
-function killChildProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
+export function killChildProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   try {
     if (process.platform === "win32" && child.pid !== undefined) {
       const argv: string[] = ["/pid", String(child.pid), "/T"];

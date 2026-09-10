@@ -265,7 +265,9 @@ export class RunnerConnection {
       case "harness.approval.respond":
       case "harness.input.respond":
       case "tool_servers.detach":
-        await this.#handleCommand(envelope, () => []);
+        await this.#handleCommand(envelope, () => {
+          throw new HarnessAdapterError("unsupported_command", `${envelope.type} is not implemented by this runner.`);
+        });
         return;
       case "local.action.request":
         await this.#handleLocalAction(envelope);

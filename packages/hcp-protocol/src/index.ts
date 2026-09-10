@@ -230,7 +230,16 @@ export type HarnessModel = {
   };
 };
 
+export type HarnessExecutionCapabilities = {
+  streaming: boolean;
+  multi_turn: boolean;
+  session_continuation: boolean;
+  sandbox_modes: Array<"read_only" | "workspace_write" | "danger_full_access">;
+  approval_policies: Array<"ask" | "auto_edits" | "full_access">;
+};
+
 export type HarnessProviderSnapshot = {
+  execution_capabilities?: HarnessExecutionCapabilities;
   provider_instance_id: string;
   driver_kind: string;
   display_name?: string;
@@ -1032,6 +1041,13 @@ export const harnessModelSchema = z
 
 export const harnessProviderSnapshotSchema = z
   .object({
+    execution_capabilities: z.object({
+      streaming: z.boolean(),
+      multi_turn: z.boolean(),
+      session_continuation: z.boolean(),
+      sandbox_modes: z.array(z.enum(["read_only", "workspace_write", "danger_full_access"])),
+      approval_policies: z.array(z.enum(["ask", "auto_edits", "full_access"])),
+    }).strict().optional(),
     provider_instance_id: nonEmptyStringSchema,
     driver_kind: nonEmptyStringSchema,
     display_name: nonEmptyStringSchema.optional(),

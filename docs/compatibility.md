@@ -33,6 +33,10 @@ The pre-release cursor contract changed before package publication: `host.hello`
 
 Every breaking protocol change should update conformance fixtures and release notes.
 
+The native-adapter update adds optional provider `execution_capabilities`. Its presence describes actual streaming, multi-turn/continuation, sandbox, and approval support; omission is unknown. Older strict parsers may reject the added field, so pre-release clients must use a matching schema/build.
+
+The native Codex/Claude drivers replace the old completion-only CLI paths. They reject `launch_args`, interactive policies, continuation, and second turns within a session. Claude also rejects restricted sandbox modes. `temporaryDirectoryRoot` is removed from Codex adapter options because final output files are no longer used. See [native provider support](native-providers.md) before updating a consumer. These restrictions replace previously ignored or unimplemented behavior; no compatibility fallback reruns work through the old drivers.
+
 ## Runner Compatibility
 
 Compatible runner changes include:

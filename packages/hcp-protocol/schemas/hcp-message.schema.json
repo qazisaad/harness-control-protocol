@@ -500,6 +500,50 @@
               "items": {
                 "type": "object",
                 "properties": {
+                  "execution_capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "streaming": {
+                        "type": "boolean"
+                      },
+                      "multi_turn": {
+                        "type": "boolean"
+                      },
+                      "session_continuation": {
+                        "type": "boolean"
+                      },
+                      "sandbox_modes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "read_only",
+                            "workspace_write",
+                            "danger_full_access"
+                          ]
+                        }
+                      },
+                      "approval_policies": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "ask",
+                            "auto_edits",
+                            "full_access"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "streaming",
+                      "multi_turn",
+                      "session_continuation",
+                      "sandbox_modes",
+                      "approval_policies"
+                    ],
+                    "additionalProperties": false
+                  },
                   "provider_instance_id": {
                     "type": "string",
                     "minLength": 1

@@ -22,6 +22,7 @@ try {
     hostId: "codex-example-host",
   });
   const config: RunnerConfig = {
+    mcp_stdio_profiles: [],
     runner_id: "codex-example-runner",
     host_id: "codex-example-host",
     control_plane_url: pairing.controlPlaneUrl,
@@ -38,7 +39,7 @@ try {
         driver_kind: "codex",
         display_name: "Codex Local",
         enabled: true,
-        launch_args: ["-c", "service_tier=fast"],
+        launch_args: [],
         env: {},
         models: [
           {
@@ -77,6 +78,7 @@ try {
   const connection = new RunnerConnection({
     config,
     runnerVersion: "0.0.0-example",
+    onLog: (message) => console.error(message),
     harnessSessions,
     connectionTokenProvider: async () => requestConnectionToken(config, pairing.credential),
   });
@@ -106,7 +108,7 @@ try {
       driver_kind: "codex",
       cwd: workspaceRoot,
       sandbox_mode: "workspace_write",
-      approval_policy: "ask",
+      approval_policy: "full_access",
       continue_session: false,
       model_selection: { model: "gpt-5.5" },
       mcp_servers: [
