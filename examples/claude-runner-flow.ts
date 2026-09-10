@@ -18,6 +18,7 @@ const mockControlPlane = await startMockControlPlane({ port: 0 });
 try {
   const pairing = await pairWithReferenceControlPlane({
     controlPlaneUrl: mockControlPlane.url,
+    onPairingCode: (code) => mockControlPlane.decidePairing(code.request_id, "approved"),
     runnerId: "claude-example-runner",
     hostId: "claude-example-host",
   });
@@ -56,7 +57,7 @@ try {
       },
     ],
   };
-  const mcpProofSecret: string = pairing.credential.mcp_proof_secret ?? pairing.credential.credential_secret;
+  const mcpProofSecret: string = pairing.credential.mcp_proof_secret;
   const sampleMcp = await startSampleMcpServer({
     port: 0,
     lease: {

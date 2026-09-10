@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WebSocket } from "ws";
@@ -299,6 +300,7 @@ test("pairs a runner with a single-use code and short-lived connection token", a
 
   try {
     const pairing = await postJson(`${httpUrl(server)}/pairing-codes`, {
+      exchange_secret_hash: createHash("sha256").update("test-exchange-secret-with-32-characters").digest("hex"),
       runner_id: "runner-paired",
       host_id: "host-paired",
       protocol_version: HCP_VERSION,
@@ -306,8 +308,20 @@ test("pairs a runner with a single-use code and short-lived connection token", a
     assert.equal(typeof pairing.pairing_code, "string");
     assert.equal(server.state.pairingCodesIssued, 1);
 
+    const pending = await postJson(`${httpUrl(server)}/pairing-exchange`, {
+      request_id: pairing.request_id, exchange_secret: "test-exchange-secret-with-32-characters",
+      runner_id: "runner-paired", host_id: "host-paired", protocol_version: HCP_VERSION,
+    });
+    assert.equal(pending.status, "pending");
+    assert.equal(server.state.credentialsIssued, 0);
+    await postJson(`${httpUrl(server)}/pairing-exchange`, {
+      request_id: pairing.request_id, exchange_secret: "wrong-exchange-secret-with-32-characters",
+      runner_id: "runner-paired", host_id: "host-paired", protocol_version: HCP_VERSION,
+    }, 403);
+    server.decidePairing(String(pairing.request_id), "approved");
     const exchange = await postJson(`${httpUrl(server)}/pairing-exchange`, {
-      pairing_code: pairing.pairing_code,
+      request_id: pairing.request_id,
+      exchange_secret: "test-exchange-secret-with-32-characters",
       runner_id: "runner-paired",
       host_id: "host-paired",
       protocol_version: HCP_VERSION,
@@ -316,7 +330,8 @@ test("pairs a runner with a single-use code and short-lived connection token", a
     assert.equal(server.state.credentialsIssued, 1);
 
     const replayExchange = await postJson(`${httpUrl(server)}/pairing-exchange`, {
-      pairing_code: pairing.pairing_code,
+      request_id: pairing.request_id,
+      exchange_secret: "test-exchange-secret-with-32-characters",
       runner_id: "runner-paired",
       host_id: "host-paired",
       protocol_version: HCP_VERSION,
@@ -331,6 +346,7 @@ test("pairs a runner with a single-use code and short-lived connection token", a
 
     const credential = exchange.credential as Record<string, unknown>;
     const tokenResponse = await postJson(`${httpUrl(server)}/runner-connection-token`, {
+      protocol_schema_sha256: "a".repeat(64),
       credential_id: credential.credential_id,
       credential_secret: credential.credential_secret,
       runner_id: "runner-paired",
@@ -370,12 +386,15 @@ test("rejects connection-token minting after credential revocation", async () =>
 
   try {
     const pairing = await postJson(`${httpUrl(server)}/pairing-codes`, {
+      exchange_secret_hash: createHash("sha256").update("test-exchange-secret-with-32-characters").digest("hex"),
       runner_id: "runner-revoked",
       host_id: "host-revoked",
       protocol_version: HCP_VERSION,
     });
+    server.decidePairing(String(pairing.request_id), "approved");
     const exchange = await postJson(`${httpUrl(server)}/pairing-exchange`, {
-      pairing_code: pairing.pairing_code,
+      request_id: pairing.request_id,
+      exchange_secret: "test-exchange-secret-with-32-characters",
       runner_id: "runner-revoked",
       host_id: "host-revoked",
       protocol_version: HCP_VERSION,
@@ -384,6 +403,7 @@ test("rejects connection-token minting after credential revocation", async () =>
     server.revokeCredential(String(credential.credential_id), "test");
 
     const rejected = await postJson(`${httpUrl(server)}/runner-connection-token`, {
+      protocol_schema_sha256: "a".repeat(64),
       credential_id: credential.credential_id,
       credential_secret: credential.credential_secret,
       runner_id: "runner-revoked",

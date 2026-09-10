@@ -1,9 +1,12 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   HCP_VERSION,
+  pairingCreateRequestSchema,
+  pairingExchangeRequestSchema,
+  connectionTokenRequestSchema,
   HcpSessionEventReducer,
   parseHcpMessage,
   type HcpAckPayload,
@@ -86,6 +89,7 @@ export type MockControlPlaneServer = {
   sendTurn: (payload: HcpTurnSendPayload) => string;
   cancelTurn: (payload: HcpTurnCancelPayload) => string;
   stopSession: (payload: HcpSessionStopPayload) => string;
+  decidePairing: (requestId: string, decision: "approved" | "declined") => void;
   revokeCredential: (credentialId: string, reason?: string) => void;
   close: () => Promise<void>;
 };
@@ -101,6 +105,8 @@ type ValidationResult<T> =
 
 type PairingCodeRecord = {
   code: string;
+  exchangeSecretHash: string;
+  state: "pending" | "approved" | "declined";
   runnerId: string;
   hostId: string;
   expiresAtMs: number;
@@ -280,19 +286,24 @@ async function handlePairingHttpRequest(
   const requestUrl = new URL(request.url ?? "/", normalizeControlPlaneHttpUrl(request, host, port));
   try {
     if (requestUrl.pathname === "/pairing-codes") {
-      const body: unknown = await readJsonBody(request);
-      const runnerId: string = requireStringField(body, "runner_id");
-      const hostId: string = requireStringField(body, "host_id");
+      const body = pairingCreateRequestSchema.parse(await readJsonBody(request));
+      const runnerId: string = body.runner_id;
+      const hostId: string = body.host_id;
+      const requestId: string = randomUUID();
       const code: string = createSecret("pair");
       const expiresAtMs: number = Date.now() + pairingCodeTtlMs;
-      store.pairingCodes.set(code, {
+      store.pairingCodes.set(requestId, {
         code,
+        exchangeSecretHash: body.exchange_secret_hash,
+        state: "pending",
         runnerId,
         hostId,
         expiresAtMs,
       });
       state.pairingCodesIssued += 1;
       jsonResponse(response, 200, {
+        request_id: requestId,
+        poll_interval_seconds: 1,
         pairing_code: code,
         pairing_url: `${normalizeControlPlaneHttpUrl(request, host, port)}/pair/${code}`,
         expires_at: new Date(expiresAtMs).toISOString(),
@@ -301,11 +312,10 @@ async function handlePairingHttpRequest(
     }
 
     if (requestUrl.pathname === "/pairing-exchange") {
-      const body: unknown = await readJsonBody(request);
-      const pairingCode: string = requireStringField(body, "pairing_code");
-      const runnerId: string = requireStringField(body, "runner_id");
-      const hostId: string = requireStringField(body, "host_id");
-      const pairingRecord: PairingCodeRecord | undefined = store.pairingCodes.get(pairingCode);
+      const body = pairingExchangeRequestSchema.parse(await readJsonBody(request));
+      const runnerId: string = body.runner_id;
+      const hostId: string = body.host_id;
+      const pairingRecord: PairingCodeRecord | undefined = store.pairingCodes.get(body.request_id);
       if (!pairingRecord) {
         jsonResponse(response, 404, { error: "Pairing code was not found." });
         return true;
@@ -318,11 +328,20 @@ async function handlePairingHttpRequest(
         jsonResponse(response, 410, { error: "Pairing code has expired." });
         return true;
       }
-      if (pairingRecord.runnerId !== runnerId || pairingRecord.hostId !== hostId) {
+      if (pairingRecord.runnerId !== runnerId || pairingRecord.hostId !== hostId
+        || pairingRecord.exchangeSecretHash !== createHash("sha256").update(body.exchange_secret).digest("hex")) {
         jsonResponse(response, 403, { error: "Pairing code is bound to a different runner or host." });
         return true;
       }
 
+      if (pairingRecord.state === "declined") {
+        jsonResponse(response, 403, { error: "Pairing was declined." });
+        return true;
+      }
+      if (pairingRecord.state === "pending") {
+        jsonResponse(response, 200, { status: "pending" });
+        return true;
+      }
       pairingRecord.usedAt = new Date().toISOString();
       const credential: CredentialRecord = {
         credentialId: createSecret("cred"),
@@ -336,6 +355,7 @@ async function handlePairingHttpRequest(
       store.credentials.set(credential.credentialId, credential);
       state.credentialsIssued += 1;
       jsonResponse(response, 200, {
+        status: "approved",
         control_plane_url: credential.controlPlaneUrl,
         credential: {
           credential_id: credential.credentialId,
@@ -351,9 +371,9 @@ async function handlePairingHttpRequest(
     }
 
     if (requestUrl.pathname === "/runner-connection-token") {
-      const body: unknown = await readJsonBody(request);
-      const credentialId: string = requireStringField(body, "credential_id");
-      const credentialSecret: string = requireStringField(body, "credential_secret");
+      const body = connectionTokenRequestSchema.parse(await readJsonBody(request));
+      const credentialId: string = body.credential_id;
+      const credentialSecret: string = body.credential_secret;
       const runnerId: string = requireStringField(body, "runner_id");
       const hostId: string = requireStringField(body, "host_id");
       const credential: CredentialRecord | undefined = store.credentials.get(credentialId);
@@ -719,6 +739,11 @@ export async function startMockControlPlane(options: MockControlPlaneOptions = {
     sendTurn: (payload: HcpTurnSendPayload): string => sendCommand("harness.turn.send", payload),
     cancelTurn: (payload: HcpTurnCancelPayload): string => sendCommand("harness.turn.cancel", payload),
     stopSession: (payload: HcpSessionStopPayload): string => sendCommand("harness.session.stop", payload),
+    decidePairing: (requestId, decision) => {
+      const record = store.pairingCodes.get(requestId);
+      if (!record || record.state !== "pending" || record.expiresAtMs <= Date.now()) throw new Error("Pairing is not pending.");
+      record.state = decision;
+    },
     revokeCredential: (credentialId: string, reason = "reference_control_plane_request"): void => {
       const credential: CredentialRecord | undefined = store.credentials.get(credentialId);
       if (!credential) {

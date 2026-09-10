@@ -19,7 +19,7 @@ Implemented today:
 - HCP v0 envelopes, message schemas, event types, local action contracts, and parser helpers.
 - Public JSON Schema export, conformance fixtures, and a conformance CLI.
 - Runner CLI commands for `version`, `pair`, and `run`.
-- Reference pairing with single-use pairing codes, local credential storage, and short-lived connection tokens.
+- Approval-gated reference pairing with a private exchange secret, atomic local credential storage, and short-lived connection tokens.
 - Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, control-plane-owned replay cursors, and capability snapshots.
 - At-least-once command handling with immediate ACK/NACK responses and durable duplicate-command idempotency.
 - Atomic runner state for retained events, command receipts, and local-action receipts across process restarts.
@@ -117,20 +117,21 @@ Start the mock control plane in one terminal:
 npm run dev:mock -- --host 127.0.0.1 --port 8787
 ```
 
-Create a paired local runner config and connect the runner in another terminal:
+For a local mock-only connection, create an offline config and connect the runner in another terminal:
 
 ```bash
 npm run dev:runner -- pair http://127.0.0.1:8787 \
   --runner-id local-runner \
   --host-id local-host \
+  --offline \
   --out ./runner.local.json
 
 npm run dev:runner -- run --config ./runner.local.json
 ```
 
-The `pair` command accepts `http`, `https`, `ws`, or `wss` control-plane URLs. With the mock control plane it requests a single-use pairing code, exchanges it for a runner credential, stores credentials separately, and writes a runner config with a normalized WebSocket URL.
+For an authenticated control plane such as P2A, omit `--offline` and use its runner connection URL. The CLI displays a browser approval URL immediately, polls with a private runner-held secret, and stores credentials only after approval. Remote URLs require HTTPS/WSS; plain HTTP/WS is restricted to loopback. See [pairing](docs/pairing.md) for the shared HTTP contract and credential requirements.
 
-For tests that only need a config file and no reference credential exchange, pass `--offline`.
+The mock exposes an in-process `decidePairing` test hook, not a production browser authorization endpoint. Standalone examples below use that hook explicitly and exercise the same pending/approved exchange states.
 
 Run the standalone example:
 

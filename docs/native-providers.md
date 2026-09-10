@@ -51,7 +51,7 @@ node --import tsx examples/claude-runner-flow.ts
 node --import tsx examples/codex-policy-smoke.ts
 ```
 
-Live smoke examples use the local mock control plane and existing provider authentication. They prove real streamed turns through WebSocket/session handling and terminal cleanup, plus MCP proxy setup; they do not prove a provider-issued MCP tool call or production pairing. Browser-approved hosted pairing and production proof-secret provisioning remain separate work.
+Live smoke examples use the local mock control plane and existing provider authentication. They prove real streamed turns through WebSocket/session handling and terminal cleanup, plus MCP proxy setup; they do not prove a provider-issued MCP tool call or production pairing. The [approval-gated pairing client](pairing.md) is implemented; hosted approval and proof storage must be verified in the consuming control plane.
 
 The Codex policy smoke uses temporary files to check workspace writes, outside/symlink denials, and read-only behavior. It also invokes the native command sandbox directly so model refusal alone cannot pass the read-only enforcement check.
 

@@ -2965,3 +2965,5 @@ export {
   type HcpEventApplyResult,
   type HcpSnapshotApplyResult,
 } from "./session-reducer.js";
+
+export * from "./pairing.js";

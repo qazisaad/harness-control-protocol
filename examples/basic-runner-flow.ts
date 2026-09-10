@@ -18,6 +18,7 @@ const mockControlPlane = await startMockControlPlane({ port: 0 });
 try {
   const pairing = await pairWithReferenceControlPlane({
     controlPlaneUrl: mockControlPlane.url,
+    onPairingCode: (code) => mockControlPlane.decidePairing(code.request_id, "approved"),
     runnerId: "example-runner",
     hostId: "example-host",
   });
@@ -26,6 +27,7 @@ try {
     host_id: "example-host",
     control_plane_url: pairing.controlPlaneUrl,
     workspaces: [{ id: "workspace-1", path: workspaceRoot }],
+    mcp_stdio_profiles: [],
     local_capabilities: [
       { id: "filesystem", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
       { id: "git", status: "available", scopes: ["workspace_read", "workspace_write"], approval_required: false },
@@ -53,7 +55,7 @@ try {
     lease: {
       lease_id: "mcp_lease_example",
       key_id: "proof_key_example",
-      secret: pairing.credential.mcp_proof_secret ?? pairing.credential.credential_secret,
+      secret: pairing.credential.mcp_proof_secret,
       session_id: "session-1",
       host_id: "example-host",
       provider_instance_id: "mock-provider",
@@ -65,7 +67,7 @@ try {
   });
   const harnessSessions = new HarnessSessionManager(config, {
     mcpProofSigner: createDevelopmentHmacProofSigner(
-      pairing.credential.mcp_proof_secret ?? pairing.credential.credential_secret,
+      pairing.credential.mcp_proof_secret,
     ),
   });
   const connection = new RunnerConnection({

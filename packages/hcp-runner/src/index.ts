@@ -79,6 +79,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       controlPlaneUrl,
       runnerId: pairOptions.runnerId,
       hostId: pairOptions.hostId,
+      onPairingCode: (code) => { console.error(`Approve runner pairing at ${code.pairing_url} (code: ${code.pairing_code}). Waiting for approval…`); },
     });
     await writeRunnerCredentials(credentialsPath, pairing.credential);
     const config = {
@@ -115,7 +116,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       auditLogger: new JsonlAuditLogger(defaultAuditLogPath()),
       stateStore,
       ...(credential
-        ? { mcpProofSigner: createDevelopmentHmacProofSigner(credential.mcp_proof_secret ?? credential.credential_secret) }
+        ? { mcpProofSigner: createDevelopmentHmacProofSigner(credential.mcp_proof_secret) }
         : {}),
     });
     const connection = new RunnerConnection({

@@ -1,8 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { HCP_VERSION } from "@harness-control/protocol";
+import { HCP_VERSION, runnerCredentialSchema, pairingCodeResponseSchema, pairingExchangeResponseSchema, connectionTokenResponseSchema, type PairingCodeResponse } from "@harness-control/protocol";
 import { z } from "zod";
 
 import type { RunnerConfig } from "../config/index.js";
@@ -11,44 +15,10 @@ const CREDENTIALS_FILE_VERSION = 1;
 const DEFAULT_CONFIG_DIR = ".hcp-runner";
 const DEFAULT_CREDENTIALS_FILE = "credentials.json";
 
-const runnerCredentialSchema = z
-  .object({
-    credential_id: z.string().min(1),
-    credential_secret: z.string().min(1),
-    runner_id: z.string().min(1),
-    host_id: z.string().min(1),
-    control_plane_url: z.string().url(),
-    issued_at: z.string().datetime({ offset: true }),
-    mcp_proof_secret: z.string().min(1).optional(),
-  })
-  .strict();
-
 const runnerCredentialsFileSchema = z
   .object({
     version: z.literal(CREDENTIALS_FILE_VERSION),
     credentials: z.array(runnerCredentialSchema),
-  })
-  .strict();
-
-const pairingCodeResponseSchema = z
-  .object({
-    pairing_code: z.string().min(1),
-    pairing_url: z.string().url().optional(),
-    expires_at: z.string().datetime({ offset: true }),
-  })
-  .strict();
-
-const pairingExchangeResponseSchema = z
-  .object({
-    control_plane_url: z.string().url(),
-    credential: runnerCredentialSchema,
-  })
-  .strict();
-
-const connectionTokenResponseSchema = z
-  .object({
-    connection_token: z.string().min(1),
-    expires_at: z.string().datetime({ offset: true }),
   })
   .strict();
 
@@ -59,6 +29,8 @@ export type ReferencePairingOptions = {
   controlPlaneUrl: string;
   runnerId: string;
   hostId: string;
+  onPairingCode: (code: PairingCodeResponse) => void | Promise<void>;
+  signal?: AbortSignal;
 };
 
 export type ReferencePairingResult = {
@@ -74,32 +46,41 @@ export function defaultCredentialsPath(): string {
 
 export async function pairWithReferenceControlPlane(options: ReferencePairingOptions): Promise<ReferencePairingResult> {
   const baseUrl: URL = toHttpControlPlaneUrl(options.controlPlaneUrl);
-  const codeResponse = await postJson(
-    new URL("/pairing-codes", baseUrl),
-    {
+  const exchangeSecret: string = randomBytes(32).toString("base64url");
+  const codeResponse = await postJson(new URL("/pairing-codes", baseUrl), {
+    runner_id: options.runnerId,
+    host_id: options.hostId,
+    protocol_version: HCP_VERSION,
+    exchange_secret_hash: createHash("sha256").update(exchangeSecret).digest("hex"),
+  }, pairingCodeResponseSchema, options.signal);
+  await options.onPairingCode(codeResponse);
+  const deadline: number = Math.min(Date.parse(codeResponse.expires_at), Date.now() + 10 * 60_000);
+  while (Date.now() < deadline) {
+    const timeout = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    const exchange = await postJson(new URL("/pairing-exchange", baseUrl), {
+      request_id: codeResponse.request_id,
+      exchange_secret: exchangeSecret,
       runner_id: options.runnerId,
       host_id: options.hostId,
       protocol_version: HCP_VERSION,
-    },
-    pairingCodeResponseSchema,
-  );
-  const exchangeResponse = await postJson(
-    new URL("/pairing-exchange", baseUrl),
-    {
-      pairing_code: codeResponse.pairing_code,
-      runner_id: options.runnerId,
-      host_id: options.hostId,
-      protocol_version: HCP_VERSION,
-    },
-    pairingExchangeResponseSchema,
-  );
-
-  return {
-    controlPlaneUrl: exchangeResponse.control_plane_url,
-    credential: exchangeResponse.credential,
-    pairingCode: codeResponse.pairing_code,
-    ...(codeResponse.pairing_url ? { pairingUrl: codeResponse.pairing_url } : {}),
-  };
+    }, pairingExchangeResponseSchema, signal);
+    if (exchange.status === "approved") {
+      if (exchange.credential.runner_id !== options.runnerId || exchange.credential.host_id !== options.hostId
+        || normalizeControlPlaneUrl(exchange.control_plane_url) !== normalizeControlPlaneUrl(options.controlPlaneUrl)
+        || normalizeControlPlaneUrl(exchange.credential.control_plane_url) !== normalizeControlPlaneUrl(options.controlPlaneUrl)) {
+        throw new Error("Pairing credential does not match the requested runner, host, or control plane.");
+      }
+      return {
+        controlPlaneUrl: exchange.control_plane_url,
+        credential: exchange.credential,
+        pairingCode: codeResponse.pairing_code,
+        pairingUrl: codeResponse.pairing_url,
+      };
+    }
+    await delay(Math.min(codeResponse.poll_interval_seconds * 1000, Math.max(1, deadline - Date.now())), undefined, { signal: options.signal });
+  }
+  throw new Error("Pairing request expired. Start a new pairing request.");
 }
 
 export async function writeRunnerCredentials(path: string, credential: RunnerCredential): Promise<void> {
@@ -118,7 +99,13 @@ export async function writeRunnerCredentials(path: string, credential: RunnerCre
     version: CREDENTIALS_FILE_VERSION,
     credentials,
   };
-  await writeFile(path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+  const temporaryPath: string = `${path}.${randomBytes(12).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    await rename(temporaryPath, path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 export async function loadRunnerCredential(config: RunnerConfig): Promise<RunnerCredential | undefined> {
@@ -146,6 +133,7 @@ export async function requestConnectionToken(config: RunnerConfig, credential: R
       runner_id: config.runner_id,
       host_id: config.host_id ?? config.runner_id,
       protocol_version: HCP_VERSION,
+      protocol_schema_sha256: createHash("sha256").update(readFileSync(createRequire(import.meta.url).resolve("@harness-control/protocol/schema.json"))).digest("hex"),
     },
     connectionTokenResponseSchema,
   );
@@ -154,6 +142,9 @@ export async function requestConnectionToken(config: RunnerConfig, credential: R
 
 export function normalizeControlPlaneUrl(value: string): string {
   const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("Control plane URL must not contain credentials, query parameters, or a fragment.");
+  }
   if (url.protocol === "http:") {
     url.protocol = "ws:";
   } else if (url.protocol === "https:") {
@@ -161,12 +152,15 @@ export function normalizeControlPlaneUrl(value: string): string {
   } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
     throw new Error("Control plane URL must use http, https, ws, or wss.");
   }
+  if (url.protocol === "ws:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+    throw new Error("Remote control planes require HTTPS/WSS. Plain HTTP is allowed only on loopback.");
+  }
 
   return url.toString();
 }
 
 function toHttpControlPlaneUrl(value: string): URL {
-  const url = new URL(value);
+  const url = new URL(normalizeControlPlaneUrl(value));
   if (url.protocol === "ws:") {
     url.protocol = "http:";
   } else if (url.protocol === "wss:") {
@@ -192,9 +186,11 @@ async function readRunnerCredentialsFileIfPresent(path: string): Promise<RunnerC
   }
 }
 
-async function postJson<T>(url: URL, body: unknown, schema: z.ZodType<T>): Promise<T> {
+async function postJson<T>(url: URL, body: unknown, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
   const response: Response = await fetch(url, {
     method: "POST",
+    redirect: "error",
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     headers: {
       "content-type": "application/json",
     },

@@ -35,6 +35,8 @@ Every breaking protocol change should update conformance fixtures and release no
 
 The native-adapter update adds optional provider `execution_capabilities`. Its presence describes actual streaming, multi-turn/continuation, sandbox, and approval support; omission is unknown. Older strict parsers may reject the added field, so pre-release clients must use a matching schema/build.
 
+The reference pairing HTTP contract now requires private exchange-secret binding, explicit pending/approved responses, and a dedicated MCP proof secret. Connection-token requests include the exported protocol schema digest. Upgrade the control plane and runner together; re-pair old development credentials. This does not change the WebSocket `hcp.v0` envelope schema. See [pairing](pairing.md).
+
 The native Codex/Claude drivers replace the old completion-only CLI paths. They reject `launch_args`, interactive policies, continuation, and second turns within a session. Claude also rejects restricted sandbox modes. `temporaryDirectoryRoot` is removed from Codex adapter options because final output files are no longer used. See [native provider support](native-providers.md) before updating a consumer. These restrictions replace previously ignored or unimplemented behavior; no compatibility fallback reruns work through the old drivers.
 
 ## Runner Compatibility
