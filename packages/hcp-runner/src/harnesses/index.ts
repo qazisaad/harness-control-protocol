@@ -153,6 +153,21 @@ export class HarnessSessionManager {
     this.#adapterRegistry = resolvedOptions.adapterRegistry ?? createDefaultHarnessAdapterRegistry();
   }
 
+  #workspaceQueue: Promise<unknown> = Promise.resolve();
+
+  #serializeWorkspace<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#workspaceQueue.then(operation);
+    this.#workspaceQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  updateWorkspaceConfiguration<T>(operation: () => Promise<T>): Promise<T> {
+    return this.#serializeWorkspace(async () => {
+      if (this.activeSessionCount() > 0) throw new HarnessSessionError("workspace_busy", "Stop active sessions before changing workspaces.");
+      return operation();
+    });
+  }
+
   activeSessionCount(): number {
     return this.#sessions.size;
   }
@@ -275,7 +290,11 @@ export class HarnessSessionManager {
     );
   }
 
-  async startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
+  startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
+    return this.#serializeWorkspace(() => this.#startSession(payload));
+  }
+
+  async #startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
     if (payload.workspace_preflight !== undefined) {
       throw new HarnessSessionError("preflight_unsupported", "Workspace preflight expectations are not implemented by this runner.");
     }

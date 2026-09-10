@@ -1,3 +1,4 @@
+import { WorkspaceManager } from "../workspaces/index.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -87,6 +88,7 @@ export type RunnerReconnectOptions = {
 
 export type RunnerConnectionOptions = {
   config: RunnerConfig;
+  configPath?: string;
   runnerVersion: string;
   connectionTokenProvider?: () => Promise<string | undefined>;
   onLog?: (message: string) => void;
@@ -96,6 +98,7 @@ export type RunnerConnectionOptions = {
 
 export class RunnerConnection {
   readonly #config: RunnerConfig;
+  readonly #workspaces: WorkspaceManager;
   readonly #runnerVersion: string;
   readonly #connectionTokenProvider: (() => Promise<string | undefined>) | undefined;
   readonly #onLog: (message: string) => void;
@@ -120,6 +123,7 @@ export class RunnerConnection {
     this.#onLog = options.onLog ?? (() => undefined);
     this.#harnessSessions = options.harnessSessions ?? new HarnessSessionManager(options.config);
     this.#stateStore = this.#harnessSessions.stateStore();
+    this.#workspaces = new WorkspaceManager(options.config, options.configPath, this.#harnessSessions);
     this.#localActionDispatcher = new LocalActionDispatcher({
       executor: new LocalCapabilityExecutor(this.#harnessSessions.localCapabilityEngine()),
       resolveContext: (payload) => this.#harnessSessions.resolveLocalActionContext(payload),
@@ -243,6 +247,14 @@ export class RunnerConnection {
       case "host.rejected":
         this.#onLog(`Control plane rejected runner: ${envelope.payload.reason}`);
         await this.close();
+        return;
+      case "host.workspaces.request": {
+        const result = await this.#workspaces.execute(envelope.id, envelope.payload);
+        this.#send(createHcpEnvelope("host.workspaces.result", result));
+        await this.#sendCapabilities();
+        return;
+      }
+      case "host.workspaces.result":
         return;
       case "harness.session.start":
         await this.#handleCommand(envelope, (message) => this.#handleSessionStart(message));
@@ -554,7 +566,7 @@ export class RunnerConnection {
 
   async #sendCapabilities(): Promise<void> {
     const registry = new ProviderInstanceRegistry(this.#config, await this.#harnessSessions.providerDriverStatuses());
-    const payload: HcpHostCapabilitiesUpdatedPayload = registry.snapshot();
+    const payload: HcpHostCapabilitiesUpdatedPayload = { ...registry.snapshot(), workspace_management: this.#workspaces.snapshot() };
     this.#send(createHcpEnvelope("host.capabilities.updated", payload));
   }
 

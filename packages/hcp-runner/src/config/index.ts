@@ -47,6 +47,7 @@ const HarnessModelConfigSchema = z.object({
 });
 
 export const RunnerWorkspaceConfigSchema = z.object({
+  display_name: z.string().trim().min(1).max(100).optional(),
   id: z.string().min(1),
   path: z.string().min(1),
   git_remote: z.string().optional(),
@@ -97,7 +98,9 @@ export const RunnerConfigSchema = z.object({
   control_plane_url: controlPlaneUrlSchema,
   credentials_path: z.string().min(1).optional(),
   state_path: z.string().min(1).optional(),
-  workspaces: z.array(RunnerWorkspaceConfigSchema).default([]),
+  workspaces: z.array(RunnerWorkspaceConfigSchema).max(128).default([]),
+  workspace_revision: z.string().min(1).optional(),
+  workspace_management: z.object({ allowed_roots: z.array(z.string().min(1).refine(isAbsolute, "Use an absolute folder path")).max(32) }).optional(),
   provider_instances: z.array(ProviderInstanceConfigSchema).default([]),
   mcp_stdio_profiles: z.array(McpStdioProfileConfigSchema).default([]),
   local_capabilities: z
@@ -109,6 +112,9 @@ export const RunnerConfigSchema = z.object({
       { id: "dev_server", status: "available", scopes: ["workspace"], approval_required: true },
     ]),
 }).superRefine((config, context): void => {
+  if (new Set(config.workspaces.map(workspace => workspace.id)).size !== config.workspaces.length) {
+    context.addIssue({ code: "custom", path: ["workspaces"], message: "Workspace ids must be unique" });
+  }
   const profileIds = new Set<string>();
   const providerIds: ReadonlySet<string> = new Set(config.provider_instances.map((provider): string => provider.id));
   for (const [index, profile] of config.mcp_stdio_profiles.entries()) {

@@ -70,6 +70,7 @@ export class ProviderInstanceRegistry {
       workspaces: this.#config.workspaces.map((workspace) => ({
         id: workspace.id,
         path: workspace.path,
+        ...(workspace.display_name ? { display_name: workspace.display_name } : {}),
         ...(workspace.git_remote ? { git_remote: workspace.git_remote } : {}),
       })),
       mcp_stdio_profiles: this.#config.mcp_stdio_profiles.map((profile) => ({

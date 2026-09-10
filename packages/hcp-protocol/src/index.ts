@@ -14,6 +14,8 @@ export const HOST_LIFECYCLE_MESSAGE_TYPES = [
   "host.heartbeat",
   "host.capabilities.updated",
   "host.replay.unavailable",
+  "host.workspaces.request",
+  "host.workspaces.result",
 ] as const;
 
 export const CONTROL_PLANE_COMMAND_MESSAGE_TYPES = [
@@ -270,6 +272,7 @@ export type HarnessProviderSnapshot = {
 };
 
 export type HcpWorkspaceSnapshot = {
+  display_name?: string;
   id: string;
   path: string;
   git_remote?: string;
@@ -286,6 +289,7 @@ export type HcpHostCapabilitiesUpdatedPayload = {
   providers: HarnessProviderSnapshot[];
   local_capabilities: LocalCapabilitySnapshot[];
   workspaces: HcpWorkspaceSnapshot[];
+  workspace_management?: HcpWorkspaceManagement;
   mcp_stdio_profiles?: HcpMcpStdioProfileSnapshot[];
 };
 
@@ -1091,6 +1095,7 @@ export const hcpWorkspaceSchema = z
     id: nonEmptyStringSchema,
     path: nonEmptyStringSchema,
     git_remote: nonEmptyStringSchema.optional(),
+    display_name: z.string().trim().min(1).max(100).optional(),
   })
   .strict();
 
@@ -1103,11 +1108,41 @@ export const hcpMcpStdioProfileSnapshotSchema = z
   })
   .strict();
 
+export const hcpWorkspaceManagementSchema = z.object({
+  revision: z.string().min(1).max(100),
+  allowed_roots: z.array(z.string().min(1).max(4096)).max(32),
+}).strict();
+export type HcpWorkspaceManagement = z.infer<typeof hcpWorkspaceManagementSchema>;
+export const hcpWorkspaceOperationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("list") }).strict(),
+  z.object({ kind: z.literal("add"), path: z.string().min(1).max(4096), display_name: z.string().trim().min(1).max(100) }).strict(),
+  z.object({ kind: z.literal("rename"), id: z.string().min(1).max(200), display_name: z.string().trim().min(1).max(100) }).strict(),
+  z.object({ kind: z.literal("remove"), id: z.string().min(1).max(200) }).strict(),
+]);
+export type HcpWorkspaceOperation = z.infer<typeof hcpWorkspaceOperationSchema>;
+export const hcpWorkspacesRequestPayloadSchema = z.object({
+  expected_revision: z.string().min(1).max(100),
+  expires_at: timestampSchema,
+  operation: hcpWorkspaceOperationSchema,
+}).strict();
+export type HcpWorkspacesRequestPayload = z.infer<typeof hcpWorkspacesRequestPayloadSchema>;
+export const hcpWorkspacesResultPayloadSchema = z.object({
+  request_id: nonEmptyStringSchema,
+  outcome: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("success") }).strict(),
+    z.object({ kind: z.literal("error"), message: z.string().min(1).max(1000) }).strict(),
+  ]),
+  management: hcpWorkspaceManagementSchema,
+  workspaces: z.array(hcpWorkspaceSchema).max(128),
+}).strict();
+export type HcpWorkspacesResultPayload = z.infer<typeof hcpWorkspacesResultPayloadSchema>;
+
 export const hcpHostCapabilitiesUpdatedPayloadSchema = z
   .object({
     providers: z.array(harnessProviderSnapshotSchema),
     local_capabilities: z.array(localCapabilitySnapshotSchema),
     workspaces: z.array(hcpWorkspaceSchema),
+    workspace_management: hcpWorkspaceManagementSchema.optional(),
     mcp_stdio_profiles: z.array(hcpMcpStdioProfileSnapshotSchema).optional(),
   })
   .strict();
@@ -2782,7 +2817,12 @@ export const localActionErrorMessageSchema = hcpTypedEnvelopeSchema(
 );
 export const hcpHarnessEventMessageSchema = hcpTypedEnvelopeSchema("harness.event", hcpHarnessEventPayloadSchema);
 
+export const hcpWorkspacesRequestMessageSchema = hcpTypedEnvelopeSchema("host.workspaces.request", hcpWorkspacesRequestPayloadSchema);
+export const hcpWorkspacesResultMessageSchema = hcpTypedEnvelopeSchema("host.workspaces.result", hcpWorkspacesResultPayloadSchema);
+
 export const hcpMessageSchema = z.discriminatedUnion("type", [
+  hcpWorkspacesRequestMessageSchema,
+  hcpWorkspacesResultMessageSchema,
   hcpCommandAckMessageSchema,
   hcpCommandNackMessageSchema,
   hcpHostHelloMessageSchema,
@@ -2840,6 +2880,8 @@ export type LocalActionErrorMessage = HcpEnvelope<"local.action.error", LocalAct
 export type HcpHarnessEventMessage = HcpEnvelope<"harness.event", HcpHarnessEventPayload>;
 
 export type HcpMessage =
+  | HcpEnvelope<"host.workspaces.request", HcpWorkspacesRequestPayload>
+  | HcpEnvelope<"host.workspaces.result", HcpWorkspacesResultPayload>
   | HcpCommandAckMessage
   | HcpCommandNackMessage
   | HcpHostHelloMessage

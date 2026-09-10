@@ -1156,3 +1156,30 @@ async function waitFor<T extends HcpMessage>(
 
   throw new Error(`Timed out waiting for runner message. Received: ${messages.map((message) => message.type).join(", ")}`);
 }
+
+it("manages folders over HCP and republishes the saved catalog", async () => {
+  const workspace = await createWorkspace();
+  const configPath = join(workspace.root, "runner.json");
+  const server = await startServer(async (socket, messages) => {
+    await waitForMessage(messages, "host.hello");
+    socket.send(JSON.stringify(createHcpEnvelope("host.accepted", { protocol_version: HCP_VERSION, heartbeat_interval_seconds: 60 })));
+    const capabilities = await waitForMessage(messages, "host.capabilities.updated");
+    socket.send(JSON.stringify(createHcpEnvelope("host.workspaces.request", {
+      expected_revision: capabilities.payload.workspace_management!.revision,
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+      operation: { kind: "add", path: workspace.project, display_name: "Project" },
+    })));
+  });
+  const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: server.url, workspaces: [], workspace_management: { allowed_roots: [workspace.root] } };
+  await writeFile(configPath, JSON.stringify(config));
+  const connection = new RunnerConnection({ config, configPath, runnerVersion: "test" });
+  try {
+    await connection.connect();
+    const result = await waitForMessage(server.messages, "host.workspaces.result");
+    assert.equal(result.payload.outcome.kind, "success");
+    assert.equal(result.payload.workspaces[0]!.display_name, "Project");
+    const capabilities = await waitForMessageCountAndGet(server.messages, "host.capabilities.updated", 2);
+    assert.deepEqual(capabilities.payload.workspaces, result.payload.workspaces);
+    assert.equal((await (await import("../config/index.js")).loadRunnerConfig(configPath)).workspaces[0]!.id, result.payload.workspaces[0]!.id);
+  } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
+});

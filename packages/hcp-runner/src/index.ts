@@ -122,6 +122,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     const connection = new RunnerConnection({
       config,
       runnerVersion: RUNNER_VERSION,
+      configPath,
       harnessSessions,
       ...(credential
         ? {

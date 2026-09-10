@@ -25,6 +25,7 @@ Implemented today:
 - Atomic runner state for retained events, command receipts, and local-action receipts across process restarts.
 - Complete/partial session event snapshots with explicit replacement, preservation, and tombstone semantics.
 - Adapter-based session lifecycle with deterministic mock, native Codex app-server, Claude Agent SDK, and streaming OpenCode adapters. See [provider support](docs/native-providers.md) for the exact supported policies and remaining gaps.
+- Live [workspace registration management](docs/workspace-management.md) with local root policy, stable ids, revision checks, and atomic configuration updates.
 - Local capability leases and real filesystem, Git, shell, and dev-server executors.
 - MCP Streamable HTTP attachments and runner-owned named stdio profiles using the official Model Context Protocol TypeScript SDK.
 - Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
