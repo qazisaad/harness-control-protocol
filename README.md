@@ -12,7 +12,7 @@ This repository contains the protocol package, runner implementation, MCP attach
 
 ## Project Status
 
-Harness Control Protocol is an early, pre-1.0 foundation. The protocol and runner core are implemented and covered by tests, but production harness adapters and hosted control-plane integration are still being built.
+Harness Control Protocol is an early, pre-1.0 foundation. The protocol, runner adapters, app-side SDK, and P2A integration are implemented. Provider support remains capability-dependent; see the provider support matrix before enabling execution.
 
 Implemented today:
 
@@ -37,8 +37,7 @@ Implemented today:
 Next major work:
 
 - Richer provider-native event normalization.
-- Published packages and release automation.
-- First public package release under the `@harness-control` scope.
+- Broader adoption of the public SDK across control-plane integrations.
 
 ## Why HCP Exists
 
@@ -63,6 +62,7 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | Path | Purpose |
 | --- | --- |
 | `packages/hcp-protocol` | Public TypeScript types, Zod schemas, HCP message envelopes, and parser helpers. |
+| `packages/hcp-sdk` | App-side typed commands, reply correlation, and connection event reduction. |
 | `packages/hcp-runner` | Local runner CLI, connection lifecycle, config loading, session management, MCP attachment client, and local action policies. |
 | `apps/mock-control-plane` | Local WebSocket control plane for development, tests, and third-party validation. |
 | `apps/sample-mcp-server` | Streamable HTTP MCP server that verifies HCP proof-of-possession headers. |
@@ -78,11 +78,26 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | `CONTRIBUTING.md` | Development setup, validation, and pull request expectations. |
 | `SECURITY.md` | Security boundary and vulnerability reporting policy. |
 
-## Quick Start
+## Use the public packages
+
+Applications install `@harness-control/sdk` and `@harness-control/protocol`; local users install `@harness-control/runner`. All three use the same release version.
+
+```sh
+npm install @harness-control/sdk @harness-control/protocol
+# On the local machine:
+npm install --global @harness-control/runner
+hcp-runner pair https://your-app.example/hcp/runner --out runner.json
+# Approve pairing and configure local providers/folders, then:
+hcp-runner run --config runner.json
+```
+
+Use the actual runner URL supplied by your app. There is no central HCP service. See the [public package contract](docs/public-packages.md), [SDK API](packages/hcp-sdk/README.md), and [standalone package example](examples/public-sdk.mjs). Before registry publication, `npm run release:check` builds and verifies installable release candidates.
+
+## Develop from source
 
 Prerequisites:
 
-- Node.js 20 or newer.
+- Node.js 22 or newer.
 - npm 10 or newer.
 
 Clone and validate the project:

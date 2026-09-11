@@ -79,12 +79,12 @@ Do not edit it by hand. Update protocol source and run:
 npm run schema:generate --workspace @harness-control/protocol
 ```
 
-## Publishing Notes
+## Publishing
 
-Before the first npm publish:
+`@harness-control/protocol`, `@harness-control/sdk`, and `@harness-control/runner` are released together. Set the same exact version in their manifests and internal dependencies, then refresh the root npm lockfile. The wire version remains `hcp.v0` until the wire contract itself changes. Apps, demos, and the monorepo remain private.
 
-- Confirm npm organization/package ownership for `@harness-control`.
-- Decide whether private example apps should remain unpublished.
-- Add provenance/signing configuration if available.
-- Confirm `exports`, `types`, and `bin` fields resolve from built packages.
-- Publish from a clean build artifact, not an unvalidated worktree.
+Run `npm run release:check`. It builds and tests the repo, packs an allowlist of runtime files with package documentation and licenses, installs all three archives in a clean external project, checks the installed CLI and public exports, and executes `examples/public-sdk.mjs` over a real loopback WebSocket. Successful candidates and their SHA-256 manifest are written to `dist/release`. No source-checkout imports are available to that consumer.
+
+After logging in to an npm account with publish access to `@harness-control`, run `npm run release:publish`. This repeats validation, verifies each artifact hash, and publishes protocol, SDK, and runner in dependency order. npm may require browser/2FA approval. Publication is not atomic: if interrupted, inspect each registry version and integrity before publishing only the missing artifacts; never replace an already published version. Use a new version if its contents must change.
+
+P2A pins exact npm versions and generates its Python wire schemas from the installed protocol package. Its lockfile owns package integrity. The packed mock-provider scenario verifies the package boundaries, not a live Codex/Claude account turn.

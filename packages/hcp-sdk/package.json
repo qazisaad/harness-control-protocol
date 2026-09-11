@@ -1,0 +1,42 @@
+{
+  "name": "@harness-control/sdk",
+  "version": "0.1.0",
+  "description": "App-side SDK for Harness Control Protocol runners",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "check": "tsc -b --pretty false",
+    "test": "node --import tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@harness-control/protocol": "0.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qazisaad/harness-control-protocol.git",
+    "directory": "packages/hcp-sdk"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/test/**",
+    "!dist/**/*.map",
+    "README.md",
+    "LICENSE"
+  ]
+}

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { readFileSync, realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 
@@ -22,7 +24,7 @@ import {
   type RunnerCredential,
 } from "./pairing/index.js";
 
-const RUNNER_VERSION = "0.0.0";
+const RUNNER_VERSION: string = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 type PairOptions = {
   controlPlaneUrl: string;
@@ -232,7 +234,7 @@ function parsePairOptions(args: string[]): PairOptions {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().then((exitCode: number) => {
     process.exitCode = exitCode;
   });
