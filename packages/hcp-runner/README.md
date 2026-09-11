@@ -5,16 +5,14 @@ Local runner for Harness Control Protocol, with Codex, Claude Code, OpenCode, an
 ```sh
 npm install --global @harness-control/runner
 hcp-runner version
-hcp-runner pair https://your-app.example/hcp/runner --out runner.json
+hcp-runner connect https://your-app.example/hcp/runner
 ```
 
-Open the approval URL printed by the CLI. Once approved, configure `provider_instances`, `workspaces`, and optionally `workspace_management.allowed_roots` in `runner.json`, then:
+Choose which detected agents to enable in the terminal, then approve this computer in the browser that opens. HCP saves its configuration and starts the connection. Keep the terminal open; run the same command to reconnect. Add existing project folders from your app after connecting.
 
-```sh
-hcp-runner run --config runner.json
-```
+Use your application's actual runner URL. Guided setup allows folder registration under the local filesystem root (the home drive on Windows), but adds no folders automatically. Custom roots and provider settings can be changed in the printed configuration path. Existing settings are preserved on reconnect. Credentials stay in the local credentials file; do not commit it. The runner connects outward, so the local machine needs no inbound port.
 
-Use your application's actual runner URL. Pairing does not automatically configure coding agents or authorize folders. Credentials stay in the local credentials file; do not commit it. The runner connects outward, so the local machine needs no inbound port.
+`connect` stores endpoint-specific configuration under `~/.hcp-runner/connections/`. Use `--config <path>` for an existing installation, `--providers codex,claude` for explicit noninteractive selection, `--no-browser` to open the printed link manually, or `--pair` to replace revoked credentials. Run `codex login` or `claude auth login` locally if needed, then restart HCP. The lower-level `pair --out runner.json` and `run --config runner.json` commands remain available for custom integrations.
 
 For embedding, public modules are available at `/connection`, `/config`, `/harnesses`, `/mcp`, `/state`, and `/pairing`. Importing the package does not start a runner. See [configuration and examples](https://github.com/qazisaad/harness-control-protocol#runner-configuration), [workspace management](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/workspace-management.md), and [provider support](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/native-providers.md).
 

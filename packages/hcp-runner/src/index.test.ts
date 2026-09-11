@@ -13,7 +13,7 @@ test("prints runner version", async () => {
   try {
     const exitCode: number = await main(["version"]);
     assert.equal(exitCode, 0);
-    assert.match(lines[0] ?? "", /^hcp-runner 0\.0\.0 \(hcp\.v0\)$/);
+    assert.match(lines[0] ?? "", /^hcp-runner \d+\.\d+\.\d+ \(hcp\.v0\)$/);
   } finally {
     console.log = originalLog;
   }

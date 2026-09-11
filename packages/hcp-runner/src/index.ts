@@ -12,6 +12,7 @@ import { loadRunnerConfig } from "./config/index.js";
 import { RunnerConnection } from "./connection/index.js";
 import { HarnessSessionManager } from "./harnesses/index.js";
 import { consoleLogger } from "./logs/index.js";
+import { connectMachine, parseConnectOptions } from "./connect.js";
 import { createDevelopmentHmacProofSigner } from "./mcp/McpAttachmentClient.js";
 import { JsonRunnerStateStore, defaultRunnerStatePath } from "./state/index.js";
 import {
@@ -37,6 +38,11 @@ type PairOptions = {
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const command: string | undefined = argv[0];
+
+  if (command === "connect") {
+    try { return await connectMachine(parseConnectOptions(argv.slice(1)), path => main(["run", "--config", path])); }
+    catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
+  }
 
   if (command === "version") {
     console.log(`hcp-runner ${RUNNER_VERSION} (${HCP_VERSION})`);
@@ -153,7 +159,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return new Promise<number>(() => undefined);
   }
 
-  console.log("Usage: hcp-runner <version|pair|run>");
+  console.log("Usage: hcp-runner <version|connect|pair|run>");
   return command ? 1 : 0;
 }
 

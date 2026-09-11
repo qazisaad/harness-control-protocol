@@ -86,12 +86,11 @@ Applications install `@harness-control/sdk` and `@harness-control/protocol`; loc
 npm install @harness-control/sdk @harness-control/protocol
 # On the local machine:
 npm install --global @harness-control/runner
-hcp-runner pair https://your-app.example/hcp/runner --out runner.json
-# Approve pairing and configure local providers/folders, then:
-hcp-runner run --config runner.json
+hcp-runner connect https://your-app.example/hcp/runner
+# Choose detected agents, approve in your browser, then add folders in your app.
 ```
 
-Use the actual runner URL supplied by your app. There is no central HCP service. See the [public package contract](docs/public-packages.md), [SDK API](packages/hcp-sdk/README.md), and [standalone package example](examples/public-sdk.mjs). Before registry publication, `npm run release:check` builds and verifies installable release candidates.
+Use the actual runner URL supplied by your app. There is no central HCP service. Guided setup saves endpoint-specific configuration, starts the runner, and reuses the same configuration on reconnect. Keep its terminal open. See the [public package contract](docs/public-packages.md), [SDK API](packages/hcp-sdk/README.md), and [standalone package example](examples/public-sdk.mjs). Before registry publication, `npm run release:check` builds and verifies installable release candidates.
 
 ## Develop from source
 

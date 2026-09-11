@@ -59,7 +59,7 @@ try {
     provider_instances: [{ id: "mock", driver_kind: "mock", display_name: "Mock", enabled: true }],
   });
   await writeFile(configPath, JSON.stringify(config));
-  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.1.0", harnessSessions: new HarnessSessionManager(config) });
+  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.2.0", harnessSessions: new HarnessSessionManager(config) });
   await runner.connect();
   await until(() => received.some(message => message.type === "host.capabilities.updated"));
   const capabilities = received.find(message => message.type === "host.capabilities.updated").payload;
