@@ -43,3 +43,19 @@ Use a new `HcpHostConnection` for each physical socket. Pass only your durably c
 For transactional or non-WebSocket code, import `createCommand` and `parseCommand` without constructing a connection. This is the API used by P2A's Convex integration.
 
 See [the public package contract](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/public-packages.md), [pairing](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/pairing.md), and [the standalone example](https://github.com/qazisaad/harness-control-protocol/blob/main/examples/public-sdk.mjs). Provider support is capability-dependent; unsupported policies are never widened automatically.
+
+## Account usage
+
+After authenticating the socket and accepting a hello with the `account_usage` capability:
+
+```ts
+const snapshot = await connection.readAccounts({ provider_instance_ids: ["work-codex"] });
+const accounts = connection.accounts.accounts(new Date(), 300_000);
+const sourcesToPersist = connection.accounts.snapshot();
+```
+
+Omit provider ids to read all configured instances. The default wait is 150 seconds for up to 32 providers collected four at a time; override it for smaller deployments. No harness session or prompt is involved. Only the correlated `host.accounts.snapshot` completes a read; an ACK does not. A response with a different host or requested provider set is rejected.
+
+`HcpAccountUsageReducer` can be restored from validated source snapshots and supplied as the connection's `accounts` option after reconnect. Persist it in the consuming app. Omitted providers are untouched; successful observations replace their source's whole limit list. Failures retain last-good history but suppress fresh decisions. Accounts observed on several sources are deduplicated by key, never summed. Remove retired sources explicitly with `removeSource(hostId, providerInstanceId)`.
+
+Employee mapping, billing scope verification, retention, polling, and authorization belong to the host. Use the optional `@harness-control/management` package for shared policy instead of copying rules into a UI. See the [account contract](../../docs/account-capacity.md).

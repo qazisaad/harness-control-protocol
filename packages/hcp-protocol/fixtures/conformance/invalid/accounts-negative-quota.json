@@ -1,0 +1,35 @@
+{
+  "id": "account-fixture",
+  "version": "hcp.v0",
+  "sent_at": "2026-09-12T00:00:00Z",
+  "type": "host.accounts.snapshot",
+  "payload": {
+    "request_id": "read-1",
+    "host_id": "host-1",
+    "providers": [
+      {
+        "provider_instance_id": "codex",
+        "observation": {
+          "status": "available",
+          "observed_at": "2026-09-12T00:00:00Z",
+          "account": {
+            "key": "account-1",
+            "provider": "codex",
+            "scope_source": "operator",
+            "label": "Work"
+          },
+          "source": "codex_app_server",
+          "limits": [
+            {
+              "id": "weekly",
+              "label": "Weekly",
+              "kind": "quota",
+              "used_percent": -1,
+              "resets_at": "2026-09-19T00:00:00Z"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

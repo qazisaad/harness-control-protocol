@@ -90,8 +90,8 @@ test("conformance fixture corpus validates expected valid and invalid messages",
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.validCount, 21);
-  assert.equal(result.invalidCount, 10);
+  assert.equal(result.validCount, 24);
+  assert.equal(result.invalidCount, 12);
 });
 
 test("JSON Schema validates the conformance fixture corpus", async () => {
@@ -129,7 +129,7 @@ test("conformance CLI validates fixture roots and direct files", async () => {
   const invalidFileResult = await runConformanceCli([join(invalidFixtureDir, "unknown-payload-field.json")]);
 
   assert.equal(fixtureResult.exitCode, 0);
-  assert.match(fixtureResult.output, /31 cases checked/);
+  assert.match(fixtureResult.output, /36 cases checked/);
   assert.equal(invalidFileResult.exitCode, 1);
   assert.match(invalidFileResult.output, /unknown-payload-field\.json/);
 });
@@ -146,7 +146,7 @@ test("conformance bin wrapper executes successfully", () => {
   );
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /31 cases checked/);
+  assert.match(result.stdout, /36 cases checked/);
 });
 
 test("committed JSON Schema is generated from the protocol source", async () => {

@@ -18,7 +18,7 @@ Implemented today:
 
 - HCP v0 envelopes, message schemas, event types, local action contracts, and parser helpers.
 - Public JSON Schema export, conformance fixtures, and a conformance CLI.
-- Runner CLI commands for `version`, `pair`, and `run`.
+- Runner CLI commands for `version`, `connect`, `pair`, `run`, and `accounts`.
 - Approval-gated reference pairing with a private exchange secret, atomic local credential storage, and short-lived connection tokens.
 - Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, control-plane-owned replay cursors, and capability snapshots.
 - At-least-once command handling with immediate ACK/NACK responses and durable duplicate-command idempotency.
@@ -33,6 +33,8 @@ Implemented today:
 - Mock control plane and end-to-end example for local development and integration testing.
 - Codex and Claude Code live-smoke examples that advertise real local provider readiness, validate proxied MCP setup, and run one real provider turn when local CLI config and auth are valid.
 - Browser quickstart demo for local action onboarding, Codex/Claude prompt checks, and sample Streamable HTTP MCP attachment setup.
+
+Account capacity is available as an independent [reference dashboard](demo/accounts/README.md) and optional [`@harness-control/management`](packages/hcp-management/README.md) package. It monitors account limits without sessions, deduplicates observations, and evaluates thresholds, budgets and actual renewal dates. Supported Enterprise spend-limit actions use a separate authorized backend service; subscription purchases and account creation are not implemented. See the [contract and validation record](docs/account-capacity.md).
 
 Next major work:
 
@@ -62,6 +64,8 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | Path | Purpose |
 | --- | --- |
 | `packages/hcp-protocol` | Public TypeScript types, Zod schemas, HCP message envelopes, and parser helpers. |
+| `packages/hcp-management` | Optional capacity/renewal policies and durable authorized spend-limit actions. |
+| `demo/accounts` | Standalone account monitoring and policy dashboard. |
 | `packages/hcp-sdk` | App-side typed commands, reply correlation, and connection event reduction. |
 | `packages/hcp-runner` | Local runner CLI, connection lifecycle, config loading, session management, MCP attachment client, and local action policies. |
 | `apps/mock-control-plane` | Local WebSocket control plane for development, tests, and third-party validation. |

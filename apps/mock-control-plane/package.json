@@ -12,7 +12,7 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@harness-control/protocol": "0.3.0",
+    "@harness-control/protocol": "0.4.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {

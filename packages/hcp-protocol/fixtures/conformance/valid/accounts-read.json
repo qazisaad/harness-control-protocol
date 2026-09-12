@@ -1,0 +1,11 @@
+{
+  "id": "account-fixture",
+  "version": "hcp.v0",
+  "sent_at": "2026-09-12T00:00:00Z",
+  "type": "host.accounts.read",
+  "payload": {
+    "provider_instance_ids": [
+      "codex"
+    ]
+  }
+}

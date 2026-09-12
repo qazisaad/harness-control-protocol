@@ -1,3 +1,5 @@
+import { hcpAccountsReadPayloadSchema, hcpAccountsSnapshotPayloadSchema, type HcpAccountsReadPayload, type HcpAccountsSnapshotPayload } from "./accounts.js";
+export * from "./accounts.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -8,6 +10,8 @@ export const HCP_MESSAGE_MAX_ENCODED_BYTES = HCP_METADATA_MAX_ENCODED_BYTES + HC
 export type HcpVersion = typeof HCP_VERSION;
 
 export const HOST_LIFECYCLE_MESSAGE_TYPES = [
+  "host.accounts.read",
+  "host.accounts.snapshot",
   "host.hello",
   "host.accepted",
   "host.rejected",
@@ -2826,7 +2830,12 @@ export const hcpHarnessEventMessageSchema = hcpTypedEnvelopeSchema("harness.even
 export const hcpWorkspacesRequestMessageSchema = hcpTypedEnvelopeSchema("host.workspaces.request", hcpWorkspacesRequestPayloadSchema);
 export const hcpWorkspacesResultMessageSchema = hcpTypedEnvelopeSchema("host.workspaces.result", hcpWorkspacesResultPayloadSchema);
 
+export const hcpAccountsReadMessageSchema = hcpTypedEnvelopeSchema("host.accounts.read", hcpAccountsReadPayloadSchema);
+export const hcpAccountsSnapshotMessageSchema = hcpTypedEnvelopeSchema("host.accounts.snapshot", hcpAccountsSnapshotPayloadSchema);
+
 export const hcpMessageSchema = z.discriminatedUnion("type", [
+  hcpAccountsReadMessageSchema,
+  hcpAccountsSnapshotMessageSchema,
   hcpWorkspacesRequestMessageSchema,
   hcpWorkspacesResultMessageSchema,
   hcpCommandAckMessageSchema,
@@ -2886,6 +2895,8 @@ export type LocalActionErrorMessage = HcpEnvelope<"local.action.error", LocalAct
 export type HcpHarnessEventMessage = HcpEnvelope<"harness.event", HcpHarnessEventPayload>;
 
 export type HcpMessage =
+  | HcpEnvelope<"host.accounts.read", HcpAccountsReadPayload>
+  | HcpEnvelope<"host.accounts.snapshot", HcpAccountsSnapshotPayload>
   | HcpEnvelope<"host.workspaces.request", HcpWorkspacesRequestPayload>
   | HcpEnvelope<"host.workspaces.result", HcpWorkspacesResultPayload>
   | HcpCommandAckMessage

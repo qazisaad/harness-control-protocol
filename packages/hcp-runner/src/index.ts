@@ -3,6 +3,8 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { AccountUsageReader } from "./accounts/index.js";
 import { hostname } from "node:os";
 
 import { HCP_VERSION } from "@harness-control/protocol";
@@ -107,6 +109,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     } else {
       console.log(serializedConfig.trimEnd());
     }
+    return 0;
+  }
+
+  if (command === "accounts") {
+    const configPath = parseConfigPath(argv.slice(1));
+    if (!configPath) { console.error("Usage: hcp-runner accounts --config <path>"); return 1; }
+    const reader = new AccountUsageReader(await loadRunnerConfig(configPath));
+    try { console.log(JSON.stringify(await reader.read(randomUUID(), {}), null, 2)); }
+    finally { await reader.close(); }
     return 0;
   }
 

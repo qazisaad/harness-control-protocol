@@ -12,7 +12,8 @@
     "dev:runner": "tsx packages/hcp-runner/src/index.ts",
     "dev:mock": "tsx apps/mock-control-plane/src/index.ts",
     "release:check": "node scripts/check-release.mjs",
-    "release:publish": "node scripts/publish-release.mjs"
+    "release:publish": "node scripts/publish-release.mjs",
+    "demo:accounts": "tsx demo/accounts/src/index.ts"
   },
   "workspaces": [
     "packages/*",

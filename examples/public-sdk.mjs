@@ -8,6 +8,8 @@ import { WebSocketServer } from "ws";
 import { HcpHostConnection } from "@harness-control/sdk";
 import { RunnerConnection } from "@harness-control/runner/connection";
 import { RunnerConfigSchema, loadRunnerConfig } from "@harness-control/runner/config";
+import { AccountUsageReader, normalizeCodexUsage } from "@harness-control/runner/accounts";
+import { capacityPolicySchema, evaluateCapacity } from "@harness-control/management";
 import { HarnessSessionManager } from "@harness-control/runner/harnesses";
 
 const directory = await realpath(await mkdtemp(join(tmpdir(), "hcp-public-sdk-")));
@@ -56,14 +58,18 @@ try {
     runner_id: "public-sdk-example", host_id: "public-sdk-example",
     control_plane_url: `ws://127.0.0.1:${address.port}`,
     workspaces: [], workspace_management: { allowed_roots: [directory] },
-    provider_instances: [{ id: "mock", driver_kind: "mock", display_name: "Mock", enabled: true }],
+    provider_instances: [{ id: "mock", driver_kind: "mock", display_name: "Mock", enabled: true, account_usage: {} }],
   });
   await writeFile(configPath, JSON.stringify(config));
-  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.3.0", harnessSessions: new HarnessSessionManager(config) });
+  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.4.0", accountUsage: new AccountUsageReader(config, { collectors: new Map([["mock", async context => normalizeCodexUsage(context, { account: { type: "chatgpt", email: "fixture@example.com", planType: "fixture" } }, { rateLimits: { primary: { usedPercent: 96, resetsAt: Math.ceil(Date.now() / 1000) + 86400 } } })]]) }), harnessSessions: new HarnessSessionManager(config) });
   await runner.connect();
   await until(() => received.some(message => message.type === "host.capabilities.updated"));
   const capabilities = received.find(message => message.type === "host.capabilities.updated").payload;
   assert.ok(capabilities.providers.some(provider => provider.provider_instance_id === "mock"));
+  const accountSnapshot = await peer.readAccounts();
+  assert.equal(accountSnapshot.payload.providers.length, 1);
+  const [accountView] = peer.accounts.accounts(new Date(), 300_000);
+  assert.equal(evaluateCapacity({ view: accountView, policy: capacityPolicySchema.parse({}), now: new Date() }).kind, "review_capacity");
   let revision = capabilities.workspace_management.revision;
   async function manage(operation) {
     const result = await peer.manageWorkspaces({ operation, expected_revision: revision, expires_at: new Date(Date.now() + 30_000).toISOString() });
@@ -93,7 +99,7 @@ try {
   assert.deepEqual(await manage({ kind: "remove", id: workspace.id }), []);
   assert.equal(await readFile(join(folder, "README.md"), "utf8"), "Package acceptance workspace\n");
   if (failure) throw failure;
-  console.log("Public packages: folder browse/list/add/rename/remove, persisted config, session start, terminal turn, snapshot, and session exit verified over WebSocket.");
+  console.log("Public packages: account read, SDK account reduction, management threshold decision, folder browse/list/add/rename/remove, persisted config, session start, terminal turn, snapshot, and session exit verified over WebSocket.");
 } finally {
   await runner?.close();
   peer?.disconnect();

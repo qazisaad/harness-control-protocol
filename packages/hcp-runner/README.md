@@ -21,3 +21,27 @@ Run `codex login` or `claude auth login` locally if needed, then restart HCP. Th
 For embedding, public modules are available at `/connection`, `/config`, `/harnesses`, `/mcp`, `/state`, and `/pairing`. Importing the package does not start a runner. See [configuration and examples](https://github.com/qazisaad/harness-control-protocol#runner-configuration), [workspace management](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/workspace-management.md), and [provider support](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/native-providers.md).
 
 Capabilities vary by provider. In particular, the current Claude adapter does not implement filesystem containment; an app requesting restricted execution must reject that combination instead of widening policy.
+
+## Account usage
+
+Account monitoring is independent of sessions and opt-in per provider instance:
+
+```json
+{
+  "id": "work-codex",
+  "driver_kind": "codex",
+  "account_usage": { "scope_id": "your-organization-workspace" }
+}
+```
+
+This is a provider entry inside your existing runner config, not a whole config. `scope_id` is an operator assertion used when the provider does not expose organization identity. Keep it consistent across machines only for the same billing scope. Without scope/subject, identities remain host-local. `home` selects an existing provider home; no login is created or switched.
+
+For Claude, use `driver_kind: "claude"` and explicitly set `account_usage.allow_experimental_claude: true`. The pinned SDK API is experimental; some accounts report quota data unavailable. Missing limits are never presented as zero.
+
+```sh
+hcp-runner accounts --config /absolute/path/runner.json
+```
+
+Prints one normalized JSON account snapshot without connecting to a control plane or submitting prompts. Exit success means collection completed; individual unavailable observations include reasons. Provider credentials stay local. Configure provider display names without private email addresses because labels are shared.
+
+Applications can import `AccountUsageReader` from `@harness-control/runner/accounts`, call `read(requestId, payload)`, then `close()` in a finally block. Reads coalesce per provider, cache for 30 seconds, bound process concurrency to four, and time out each collector after 15 seconds by default. Custom collectors must stop their native resources when the signal aborts. Wire reads require an accepted authenticated connection and advertise `account_usage`; local opt-in remains authoritative.

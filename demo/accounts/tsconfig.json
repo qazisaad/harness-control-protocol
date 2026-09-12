@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "composite": true, "rootDir": "src", "outDir": "dist" },
+  "references": [
+    { "path": "../../packages/hcp-protocol" }, { "path": "../../packages/hcp-sdk" },
+    { "path": "../../packages/hcp-runner" }, { "path": "../../packages/hcp-management" }
+  ],
+  "include": ["src/**/*.ts"]
+}

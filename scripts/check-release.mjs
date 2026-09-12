@@ -13,7 +13,7 @@ mkdirSync(output, { recursive: true });
 run("npm", ["run", "build"]);
 run("npm", ["test"]);
 const manifests = [];
-for (const directory of ["hcp-protocol", "hcp-sdk", "hcp-runner"]) {
+for (const directory of ["hcp-protocol", "hcp-sdk", "hcp-runner", "hcp-management"]) {
   const cwd = join(root, "packages", directory);
   const [packed] = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", output], { cwd, encoding: "utf8" }));
   assert.ok(packed.files.some(file => file.path === "LICENSE"));
@@ -28,7 +28,7 @@ try {
   writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...manifests.map(pkg => join(output, pkg.filename)), "ws@^8.21.0"], consumer);
   run(join(consumer, "node_modules/.bin/hcp-runner"), ["version"], consumer);
-  run(process.execPath, ["--input-type=module", "-e", "await import('@harness-control/runner'); await import('@harness-control/runner/pairing'); await import('@harness-control/protocol/json-schema'); await import('@harness-control/protocol/conformance'); console.log('Public exports imported without CLI side effects')"], consumer);
+  run(process.execPath, ["--input-type=module", "-e", "await import('@harness-control/management'); await import('@harness-control/management/node'); await import('@harness-control/runner/accounts'); await import('@harness-control/runner'); await import('@harness-control/runner/pairing'); await import('@harness-control/protocol/json-schema'); await import('@harness-control/protocol/conformance'); console.log('Public exports imported without CLI side effects')"], consumer);
   copyFileSync(join(root, "examples/public-sdk.mjs"), join(consumer, "example.mjs"));
   run(process.execPath, ["example.mjs"], consumer);
   writeFileSync(join(output, "manifest.json"), JSON.stringify({ packages: manifests }, null, 2) + "\n");

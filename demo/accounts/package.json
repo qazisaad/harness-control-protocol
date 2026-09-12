@@ -1,0 +1,19 @@
+{
+  "name": "@harness-control/accounts-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "test": "node --import tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@harness-control/protocol": "0.4.0",
+    "@harness-control/runner": "0.4.0",
+    "@harness-control/sdk": "0.4.0",
+    "@harness-control/management": "0.4.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": { "@types/ws": "^8.18.1" }
+}

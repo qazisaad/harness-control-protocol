@@ -1,3 +1,4 @@
+import { AccountUsageReader } from "../accounts/index.js";
 import { WorkspaceManager } from "../workspaces/index.js";
 import { createHash } from "node:crypto";
 
@@ -94,6 +95,7 @@ export type RunnerConnectionOptions = {
   onLog?: (message: string) => void;
   harnessSessions?: HarnessSessionManager;
   reconnect?: RunnerReconnectOptions;
+  accountUsage?: AccountUsageReader;
 };
 
 export class RunnerConnection {
@@ -107,6 +109,8 @@ export class RunnerConnection {
   readonly #localActionDispatcher: LocalActionDispatcher;
   readonly #reconnectInitialDelayMs: number;
   readonly #reconnectMaxDelayMs: number;
+  readonly #accountUsage: AccountUsageReader;
+  #accepted = false;
   #socket: WebSocket | undefined;
   #heartbeatTimer: NodeJS.Timeout | undefined;
   #reconnectTimer: NodeJS.Timeout | undefined;
@@ -118,6 +122,7 @@ export class RunnerConnection {
 
   constructor(options: RunnerConnectionOptions) {
     this.#config = options.config;
+    this.#accountUsage = options.accountUsage ?? new AccountUsageReader(options.config);
     this.#runnerVersion = options.runnerVersion;
     this.#connectionTokenProvider = options.connectionTokenProvider;
     this.#onLog = options.onLog ?? (() => undefined);
@@ -147,8 +152,10 @@ export class RunnerConnection {
       ...(connectionToken ? { headers: { authorization: `Bearer ${connectionToken}` } } : {}),
     });
     this.#socket = socket;
+    this.#accepted = false;
 
     socket.on("message", (data: WebSocket.RawData) => {
+      if (this.#socket !== socket) return;
       this.#handleMessage(data.toString()).catch((error: unknown) => {
         this.#onLog(error instanceof Error ? error.message : "Failed to handle control plane message.");
       });
@@ -157,6 +164,7 @@ export class RunnerConnection {
     socket.on("close", () => {
       if (this.#socket === socket) {
         this.#socket = undefined;
+        this.#accepted = false;
       }
       this.#stopHeartbeat();
       this.#onLog("Runner disconnected from control plane.");
@@ -183,6 +191,8 @@ export class RunnerConnection {
 
   async close(): Promise<void> {
     this.#closing = true;
+    this.#accepted = false;
+    await this.#accountUsage.close();
     this.#stopHeartbeat();
     this.#stopReconnect();
     await new Promise<void>((resolve) => {
@@ -207,6 +217,7 @@ export class RunnerConnection {
       supported_protocol_versions: [HCP_VERSION],
       capabilities: [
         "providers",
+        "account_usage",
         "workspaces",
         "mcp_streamable_http",
         "local_filesystem",
@@ -247,6 +258,23 @@ export class RunnerConnection {
       case "host.rejected":
         this.#onLog(`Control plane rejected runner: ${envelope.payload.reason}`);
         await this.close();
+        return;
+      case "host.accounts.read": {
+        const socket = this.#socket;
+        if (!this.#accepted) {
+          this.#sendNack(envelope.id, { code: "host_not_accepted", message: "Accept the host before reading account usage.", retryable: false });
+          return;
+        }
+        try {
+          const payload = await this.#accountUsage.read(envelope.id, envelope.payload);
+          if (socket === this.#socket && this.#accepted) this.#send(createHcpEnvelope("host.accounts.snapshot", payload));
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          if (socket === this.#socket && this.#accepted) this.#sendNack(envelope.id, { code: "account_read_failed", message: "Cannot read the requested provider accounts.", retryable: false });
+        }
+        return;
+      }
+      case "host.accounts.snapshot":
         return;
       case "host.workspaces.request": {
         const result = await this.#workspaces.execute(envelope.id, envelope.payload);
@@ -307,6 +335,7 @@ export class RunnerConnection {
   }
 
   async #handleAccepted(envelope: HcpHostAcceptedMessage): Promise<void> {
+    this.#accepted = true;
     this.#onLog(`Control plane accepted ${envelope.payload.protocol_version}.`);
     await this.#sendCapabilities();
     this.#replayRequestedEvents(envelope.payload.resume);

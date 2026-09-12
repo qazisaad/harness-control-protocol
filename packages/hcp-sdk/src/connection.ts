@@ -1,5 +1,5 @@
 import {
-  createHcpEnvelope, parseHcpMessage, HcpSessionEventReducer,
+  createHcpEnvelope, parseHcpMessage, HcpSessionEventReducer, HcpAccountUsageReducer,
   type HcpMessage, type HcpHostHelloPayload, type HcpHostAcceptedPayload,
   type HcpEventApplyResult, type HcpSnapshotApplyResult, type HcpCommandNackPayload,
 } from "@harness-control/protocol";
@@ -36,12 +36,14 @@ type State = { kind: "awaiting_hello" } | { kind: "awaiting_accept"; hello: HcpH
 /** One authenticated socket. The application owns authentication and durable replay cursors. */
 export class HcpHostConnection {
   readonly events: HcpSessionEventReducer;
+  readonly accounts: HcpAccountUsageReducer;
   readonly #pending = new Map<string, Pending>();
   #state: State = { kind: "awaiting_hello" };
 
   constructor(private readonly transport: { send: (message: HcpMessage) => void },
-    options: { events?: HcpSessionEventReducer } = {}) {
+    options: { events?: HcpSessionEventReducer; accounts?: HcpAccountUsageReducer } = {}) {
     this.events = options.events ?? new HcpSessionEventReducer();
+    this.accounts = options.accounts ?? new HcpAccountUsageReducer();
   }
 
   accept(payload: HcpHostAcceptedPayload): void {
@@ -62,6 +64,18 @@ export class HcpHostConnection {
     }
     if (this.#state.kind !== "accepted") throw new Error("Runner has not been accepted.");
     switch (message.type) {
+      case "host.accounts.snapshot": {
+        if (message.payload.host_id !== this.#state.hello.host_id) throw new Error("Account snapshot host identity mismatch.");
+        const pending = this.#pending.get(message.payload.request_id);
+        if (pending?.command.type !== "host.accounts.read") return { message };
+        const requested = pending.command.payload.provider_instance_ids;
+        if (requested && (requested.length !== message.payload.providers.length || message.payload.providers.some(p => !requested.includes(p.provider_instance_id)))) {
+          throw new Error("Account snapshot provider selection mismatch.");
+        }
+        this.accounts.apply(message.payload);
+        this.#settle(message);
+        return { message };
+      }
       case "host.heartbeat":
         if (message.payload.host_id !== this.#state.hello.host_id) throw new Error("Heartbeat host identity mismatch.");
         return { message };
@@ -129,7 +143,10 @@ export class HcpHostConnection {
     let pending: Pending | undefined;
     if (message.type === "hcp.command.ack" || message.type === "hcp.command.nack") {
       pending = this.#pending.get(message.payload.command_id);
-      if (message.type === "hcp.command.ack" && pending && ["host.workspaces.request", "harness.session.snapshot.request", "local.action.request"].includes(pending.command.type)) return;
+      if (message.type === "hcp.command.ack" && pending && ["host.accounts.read", "host.workspaces.request", "harness.session.snapshot.request", "local.action.request"].includes(pending.command.type)) return;
+    } else if (message.type === "host.accounts.snapshot") {
+      pending = this.#pending.get(message.payload.request_id);
+      if (pending?.command.type !== "host.accounts.read") return;
     } else if (message.type === "local.action.response" || message.type === "local.action.error") {
       pending = [...this.#pending.values()].find(p => p.command.type === "local.action.request"
         && p.command.payload.request_id === message.payload.request_id && p.command.payload.action === message.payload.action);
@@ -171,6 +188,10 @@ export class HcpHostConnection {
   }
   runLocalAction(payload: Payload<"local.action.request">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "local.action.request", payload }, command), wait);
+  }
+  readAccounts(payload: Payload<"host.accounts.read"> = {}, command?: CommandOptions, wait?: WaitOptions) {
+    if (this.#state.kind !== "accepted" || !this.#state.hello.capabilities.includes("account_usage")) throw new Error("Runner does not advertise account usage reads.");
+    return this.send(createCommand({ type: "host.accounts.read", payload }, command), { timeoutMs: 150_000, ...wait });
   }
   manageWorkspaces(payload: Payload<"host.workspaces.request">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "host.workspaces.request", payload }, command), wait);

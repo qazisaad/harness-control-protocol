@@ -1,0 +1,21 @@
+{
+  "id": "account-fixture",
+  "version": "hcp.v0",
+  "sent_at": "2026-09-12T00:00:00Z",
+  "type": "host.accounts.snapshot",
+  "payload": {
+    "request_id": "read-1",
+    "host_id": "host-1",
+    "providers": [
+      {
+        "provider_instance_id": "claude",
+        "observation": {
+          "status": "unavailable",
+          "observed_at": "2026-09-12T00:00:00Z",
+          "reason": "unsupported",
+          "message": "Opt-in required."
+        }
+      }
+    ]
+  }
+}

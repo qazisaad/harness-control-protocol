@@ -3,7 +3,7 @@ import { HCP_VERSION, parseHcpMessage, type HcpMessage, type HcpMetadata } from 
 const commandTypes = [
   "harness.session.start", "harness.session.snapshot.request", "harness.turn.send",
   "harness.turn.cancel", "harness.session.stop", "harness.approval.respond",
-  "harness.input.respond", "tool_servers.detach", "local.action.request", "host.workspaces.request",
+  "harness.input.respond", "tool_servers.detach", "local.action.request", "host.workspaces.request", "host.accounts.read",
 ] as const;
 export type HcpCommandType = typeof commandTypes[number];
 export type HcpCommand = Extract<HcpMessage, { type: HcpCommandType }>;
@@ -28,7 +28,8 @@ export function createCommand<C extends HcpCommandInput>(input: C, options: Comm
 }
 
 export type HcpCommandResponse<T extends HcpCommandType> = Extract<HcpMessage, {
-  type: T extends "host.workspaces.request" ? "host.workspaces.result"
+  type: T extends "host.accounts.read" ? "host.accounts.snapshot"
+    : T extends "host.workspaces.request" ? "host.workspaces.result"
     : T extends "harness.session.snapshot.request" ? "harness.session.snapshot"
     : T extends "local.action.request" ? "local.action.response" | "local.action.error"
     : "hcp.command.ack";

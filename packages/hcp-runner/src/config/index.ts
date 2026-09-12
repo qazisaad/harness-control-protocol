@@ -62,6 +62,10 @@ export const ProviderInstanceConfigSchema = z.object({
   accent_color: z.string().optional(),
   enabled: z.boolean().default(true),
   continuation_group_key: z.string().min(1).optional(),
+  account_usage: z.object({
+    scope_id: z.string().min(1).max(256).optional(),
+    allow_experimental_claude: z.boolean().default(false),
+  }).strict().optional(),
   executable_path: z.string().optional(),
   home: z.string().optional(),
   launch_args: z.array(z.string()).default([]),
@@ -101,7 +105,7 @@ export const RunnerConfigSchema = z.object({
   workspaces: z.array(RunnerWorkspaceConfigSchema).max(128).default([]),
   workspace_revision: z.string().min(1).optional(),
   workspace_management: z.object({ allowed_roots: z.array(z.string().min(1).refine(isAbsolute, "Use an absolute folder path")).max(32) }).optional(),
-  provider_instances: z.array(ProviderInstanceConfigSchema).default([]),
+  provider_instances: z.array(ProviderInstanceConfigSchema).max(32).default([]),
   mcp_stdio_profiles: z.array(McpStdioProfileConfigSchema).default([]),
   local_capabilities: z
     .array(LocalCapabilityConfigSchema)
@@ -114,6 +118,9 @@ export const RunnerConfigSchema = z.object({
 }).superRefine((config, context): void => {
   if (new Set(config.workspaces.map(workspace => workspace.id)).size !== config.workspaces.length) {
     context.addIssue({ code: "custom", path: ["workspaces"], message: "Workspace ids must be unique" });
+  }
+  if (new Set(config.provider_instances.map(provider => provider.id)).size !== config.provider_instances.length) {
+    context.addIssue({ code: "custom", path: ["provider_instances"], message: "Provider ids must be unique." });
   }
   const profileIds = new Set<string>();
   const providerIds: ReadonlySet<string> = new Set(config.provider_instances.map((provider): string => provider.id));
