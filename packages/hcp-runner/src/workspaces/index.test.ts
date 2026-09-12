@@ -8,6 +8,49 @@ import { loadRunnerConfig } from "../config/index.js";
 import { HarnessSessionManager } from "../harnesses/index.js";
 import { WorkspaceManager } from "./index.js";
 
+it("browses paginated directories during active sessions without changing registrations or escaping roots", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "hcp-browse-")));
+  try {
+    const allowed = join(root, "allowed");
+    const outside = join(root, "outside");
+    await mkdir(allowed); await mkdir(outside);
+    await Promise.all(Array.from({ length: 205 }, (_, index) => mkdir(join(allowed, `folder-${String(index).padStart(3, "0")}`))));
+    await writeFile(join(allowed, "file.txt"), "not a folder");
+    await symlink(outside, join(allowed, "escape"));
+    await symlink(join(allowed, "missing"), join(allowed, "broken"));
+    await symlink(join(allowed, "folder-000"), join(allowed, "alias"));
+    const file = join(root, "runner.json");
+    await writeFile(file, JSON.stringify({ runner_id: "test", control_plane_url: "ws://localhost:1", workspace_management: { allowed_roots: [allowed] } }));
+    const before = await readFile(file, "utf8");
+    const config = await loadRunnerConfig(file);
+    class BusySessions extends HarnessSessionManager { override activeSessionCount() { return 1; } }
+    const manager = new WorkspaceManager(config, file, new BusySessions(config));
+    const call = (operation: HcpWorkspaceOperation) => manager.execute(crypto.randomUUID(), { operation, expected_revision: "ignored-for-read", expires_at: new Date(Date.now() + 30_000).toISOString() });
+    const first = await call({ kind: "browse" });
+    assert.equal(first.outcome.kind, "directory");
+    if (first.outcome.kind !== "directory") throw new Error("Expected a directory listing");
+    assert.equal(first.outcome.path, allowed);
+    assert.equal(first.outcome.parent, undefined);
+    assert.equal(first.outcome.entries.length, 200);
+    assert.equal(first.outcome.entries[0]!.path, join(allowed, "folder-000"));
+    const next = await call({ kind: "browse", path: allowed, cursor: first.outcome.next_cursor });
+    assert.equal(next.outcome.kind, "directory");
+    if (next.outcome.kind !== "directory") throw new Error("Expected another page");
+    assert.equal(next.outcome.entries.length, 6);
+    assert.equal(next.outcome.next_cursor, undefined);
+    const child = await call({ kind: "browse", path: join(allowed, "folder-000") });
+    assert.equal(child.outcome.kind, "directory");
+    if (child.outcome.kind === "directory") assert.equal(child.outcome.parent, allowed);
+    for (const path of [outside, join(allowed, "escape"), "relative", join(allowed, "file.txt")]) assert.equal((await call({ kind: "browse", path })).outcome.kind, "error");
+    const expired = await manager.execute("expired", { operation: { kind: "browse" }, expected_revision: "ignored", expires_at: new Date(0).toISOString() });
+    assert.equal(expired.outcome.kind, "error");
+    assert.equal(await readFile(file, "utf8"), before);
+    assert.deepEqual(first.workspaces, []);
+    config.workspace_management = { allowed_roots: [] };
+    assert.equal((await call({ kind: "browse", path: allowed })).outcome.kind, "error");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 it("persists registration and stable-name changes; rejects escapes, duplicates, stale revisions and disabled writes", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "hcp-workspaces-")));
   try {

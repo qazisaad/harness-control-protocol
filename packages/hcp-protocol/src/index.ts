@@ -1111,10 +1111,12 @@ export const hcpMcpStdioProfileSnapshotSchema = z
 export const hcpWorkspaceManagementSchema = z.object({
   revision: z.string().min(1).max(100),
   allowed_roots: z.array(z.string().min(1).max(4096)).max(32),
+  directory_browsing: z.literal(true).optional(),
 }).strict();
 export type HcpWorkspaceManagement = z.infer<typeof hcpWorkspaceManagementSchema>;
 export const hcpWorkspaceOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("list") }).strict(),
+  z.object({ kind: z.literal("browse"), path: z.string().min(1).max(4096).optional(), cursor: z.string().min(1).max(4096).optional() }).strict(),
   z.object({ kind: z.literal("add"), path: z.string().min(1).max(4096), display_name: z.string().trim().min(1).max(100) }).strict(),
   z.object({ kind: z.literal("rename"), id: z.string().min(1).max(200), display_name: z.string().trim().min(1).max(100) }).strict(),
   z.object({ kind: z.literal("remove"), id: z.string().min(1).max(200) }).strict(),
@@ -1130,6 +1132,10 @@ export const hcpWorkspacesResultPayloadSchema = z.object({
   request_id: nonEmptyStringSchema,
   outcome: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("success") }).strict(),
+    z.object({ kind: z.literal("directory"), path: z.string().min(1).max(4096), parent: z.string().min(1).max(4096).optional(),
+      entries: z.array(z.object({ name: z.string().min(1).max(4096), path: z.string().min(1).max(4096) }).strict()).max(200),
+      next_cursor: z.string().min(1).max(4096).optional(),
+    }).strict(),
     z.object({ kind: z.literal("error"), message: z.string().min(1).max(1000) }).strict(),
   ]),
   management: hcpWorkspaceManagementSchema,

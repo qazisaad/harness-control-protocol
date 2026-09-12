@@ -4,7 +4,7 @@ HCP can manage registered folders over the existing authenticated control-plane 
 
 ## Enable on the machine
 
-Stop the runner, then set the parent folders your organization may register in `runner.json`:
+Stop the runner, then set the parent folders the control plane may browse and register in `runner.json`:
 
 ```json
 {
@@ -34,4 +34,24 @@ The runner returns `host.workspaces.result` with the originating `request_id`, a
 
 The runner checks existing directories, resolves symlinks against allowed roots, rejects duplicate paths, and compares revisions before committing. Configuration updates and session starts share a serialization boundary. Updates are rejected while a session is active. Saved configuration uses atomic replacement and survives runner restart.
 
-Control planes must restrict management to authorized administrators, bind dispatch and results to the authenticated connection, and expire queued requests. Send mutations once. If the connection drops or a result is lost, the outcome is uncertain: issue a fresh list request before deciding whether another mutation is needed. Do not blindly retry an add. Revisions change on every committed edit, and new registrations receive fresh ids.
+Control planes must restrict management to authorized machine owners, bind dispatch and results to the authenticated connection, and expire queued requests. Send mutations once. If the connection drops or a result is lost, the outcome is uncertain: issue a fresh list request before deciding whether another mutation is needed. Do not blindly retry an add. Revisions change on every committed edit, and new registrations receive fresh ids.
+
+## Browse folders
+
+Runners advertising `workspace_management.directory_browsing: true` accept
+`{"kind":"browse","path":"/absolute/folder","cursor":"last-name-from-previous-page"}`.
+Omit `path` to start at the home directory when allowed, otherwise the first
+allowed root. Omit `cursor` for the first page. The outcome is
+`{kind:"directory",path,parent?,entries:[{name,path}],next_cursor?}`. Paths are
+canonical, and parent navigation stops at the allowed root. Entries contain only
+directories and symlinks to allowed directories. Inaccessible or missing child
+links are skipped; failure to read the requested directory returns an error.
+Pages contain at most 200 entries and 64 KiB of entry data, sorted by name. Send
+`next_cursor` with the same path for the next page. A directory can change between
+reads; this is a live listing rather than a persistent filesystem snapshot.
+
+Browsing requires allowed roots and an unexpired request. It is available during
+active sessions and never changes configuration, revisions, or registrations.
+The result still contains the complete registered-workspace snapshot. Clients
+fill their form with the chosen path and send an explicit add operation to
+register it. No file content is read, uploaded, created, or deleted.

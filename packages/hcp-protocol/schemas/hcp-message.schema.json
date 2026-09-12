@@ -54,6 +54,29 @@
                   "properties": {
                     "kind": {
                       "type": "string",
+                      "const": "browse"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
                       "const": "add"
                     },
                     "path": {
@@ -192,6 +215,60 @@
                   "properties": {
                     "kind": {
                       "type": "string",
+                      "const": "directory"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "parent": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    },
+                    "entries": {
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          },
+                          "path": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "path"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "path",
+                    "entries"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
                       "const": "error"
                     },
                     "message": {
@@ -224,6 +301,10 @@
                     "minLength": 1,
                     "maxLength": 4096
                   }
+                },
+                "directory_browsing": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -1217,6 +1298,10 @@
                     "minLength": 1,
                     "maxLength": 4096
                   }
+                },
+                "directory_browsing": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [

@@ -1,6 +1,6 @@
 // Standalone package acceptance example. Only loopback, temporary files, and the mock provider.
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,7 +10,7 @@ import { RunnerConnection } from "@harness-control/runner/connection";
 import { RunnerConfigSchema, loadRunnerConfig } from "@harness-control/runner/config";
 import { HarnessSessionManager } from "@harness-control/runner/harnesses";
 
-const directory = await mkdtemp(join(tmpdir(), "hcp-public-sdk-"));
+const directory = await realpath(await mkdtemp(join(tmpdir(), "hcp-public-sdk-")));
 const folder = join(directory, "project");
 await mkdir(folder);
 await writeFile(join(folder, "README.md"), "Package acceptance workspace\n");
@@ -59,7 +59,7 @@ try {
     provider_instances: [{ id: "mock", driver_kind: "mock", display_name: "Mock", enabled: true }],
   });
   await writeFile(configPath, JSON.stringify(config));
-  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.2.0", harnessSessions: new HarnessSessionManager(config) });
+  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.3.0", harnessSessions: new HarnessSessionManager(config) });
   await runner.connect();
   await until(() => received.some(message => message.type === "host.capabilities.updated"));
   const capabilities = received.find(message => message.type === "host.capabilities.updated").payload;
@@ -72,6 +72,10 @@ try {
     return result.payload.workspaces;
   }
   assert.deepEqual(await manage({ kind: "list" }), []);
+  const browsed = await peer.manageWorkspaces({ operation: { kind: "browse", path: directory }, expected_revision: revision, expires_at: new Date(Date.now() + 30_000).toISOString() });
+  assert.equal(browsed.payload.outcome.kind, "directory");
+  assert.ok(browsed.payload.outcome.entries.some(entry => entry.path === folder));
+  assert.deepEqual(browsed.payload.workspaces, []);
   const [workspace] = await manage({ kind: "add", path: folder, display_name: "Project" });
   assert.ok(workspace);
   await manage({ kind: "rename", id: workspace.id, display_name: "Renamed project" });
@@ -89,7 +93,7 @@ try {
   assert.deepEqual(await manage({ kind: "remove", id: workspace.id }), []);
   assert.equal(await readFile(join(folder, "README.md"), "utf8"), "Package acceptance workspace\n");
   if (failure) throw failure;
-  console.log("Public packages: folder list/add/rename/remove, persisted config, session start, terminal turn, snapshot, and session exit verified over WebSocket.");
+  console.log("Public packages: folder browse/list/add/rename/remove, persisted config, session start, terminal turn, snapshot, and session exit verified over WebSocket.");
 } finally {
   await runner?.close();
   peer?.disconnect();

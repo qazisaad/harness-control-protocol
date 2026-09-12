@@ -13,8 +13,8 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@harness-control/protocol": "0.2.0",
-    "@harness-control/runner": "0.2.0",
+    "@harness-control/protocol": "0.3.0",
+    "@harness-control/runner": "0.3.0",
     "@harness-control/sample-mcp-server": "0.0.0",
     "ws": "^8.21.0"
   },

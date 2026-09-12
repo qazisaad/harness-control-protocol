@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { homedir } from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { HcpWorkspaceManagement, HcpWorkspacesRequestPayload, HcpWorkspacesResultPayload } from "@harness-control/protocol";
@@ -18,22 +19,74 @@ export class WorkspaceManager {
     return {
       revision: this.config.workspace_revision ?? createHash("sha256").update(JSON.stringify(this.config.workspaces)).digest("hex"),
       allowed_roots: this.configPath ? this.config.workspace_management?.allowed_roots ?? [] : [],
+      directory_browsing: true,
     };
   }
 
   async execute(requestId: string, request: HcpWorkspacesRequestPayload): Promise<HcpWorkspacesResultPayload> {
     let outcome: HcpWorkspacesResultPayload["outcome"];
     try {
-      if (request.operation.kind === "list") {
-        if (Date.parse(request.expires_at) <= Date.now()) throw new Error("Request expired. Refresh workspaces.");
+      if (request.operation.kind === "browse") {
+        outcome = await this.browse(request);
       } else {
-        await this.sessions.updateWorkspaceConfiguration(() => this.change(request));
+        if (request.operation.kind === "list") {
+          if (Date.parse(request.expires_at) <= Date.now()) throw new Error("Request expired. Refresh workspaces.");
+        } else {
+          await this.sessions.updateWorkspaceConfiguration(() => this.change(request));
+        }
+        outcome = { kind: "success" };
       }
-      outcome = { kind: "success" };
     } catch (error: unknown) {
       outcome = { kind: "error", message: error instanceof Error ? error.message.slice(0, 1000) : "Workspace update failed." };
     }
     return { request_id: requestId, outcome, management: this.snapshot(), workspaces: this.config.workspaces.map(workspace => ({ ...workspace })) };
+  }
+
+  private async canonicalRoots(): Promise<string[]> {
+    const roots = this.snapshot().allowed_roots;
+    if (roots.length === 0) throw new Error("Folder browsing is disabled. Configure workspace_management.allowed_roots locally, then restart the runner.");
+    return Promise.all(roots.map(root => realpath(root)));
+  }
+
+  private async allowedDirectory(path: string, roots: string[]): Promise<string> {
+    if (!isAbsolute(path)) throw new Error("Use an absolute folder path on this machine.");
+    const canonical = await realpath(path);
+    if (!roots.some(root => contained(root, canonical))) throw new Error("The folder is outside this machine’s allowed roots.");
+    if (!(await stat(canonical)).isDirectory()) throw new Error("Choose an existing folder.");
+    return canonical;
+  }
+
+  private async browse(request: HcpWorkspacesRequestPayload): Promise<Extract<HcpWorkspacesResultPayload["outcome"], { kind: "directory" }>> {
+    if (request.operation.kind !== "browse") throw new Error("Expected a folder browsing request.");
+    const operation = request.operation;
+    if (Date.parse(request.expires_at) <= Date.now()) throw new Error("Folder request expired. Try again.");
+    const roots = await this.canonicalRoots();
+    const home = homedir();
+    const path = await this.allowedDirectory(operation.path ?? (roots.some(root => contained(root, home)) ? home : roots[0]!), roots);
+    const candidates = (await readdir(path, { withFileTypes: true }))
+      .filter(entry => (entry.isDirectory() || entry.isSymbolicLink()) && (!operation.cursor || entry.name > operation.cursor))
+      .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    const entries: { name: string; path: string }[] = [];
+    let pageBytes = 0;
+    let hasMore = false;
+    for (const entry of candidates) {
+      if (Date.parse(request.expires_at) <= Date.now()) throw new Error("Folder request expired. Try again.");
+      const candidate = join(path, entry.name);
+      try {
+        const canonical = await realpath(candidate);
+        if (roots.some(root => contained(root, canonical)) && (await stat(canonical)).isDirectory()) {
+          const item = { name: entry.name, path: canonical };
+          const bytes = Buffer.byteLength(JSON.stringify(item));
+          if (entries.length === 200 || pageBytes + bytes > 64 * 1024) { hasMore = true; break; }
+          entries.push(item); pageBytes += bytes;
+        }
+      } catch (error: unknown) {
+        if (!(error instanceof Error && "code" in error && ["ENOENT", "EACCES", "EPERM", "ELOOP"].includes(String(error.code)))) throw error;
+      }
+    }
+    const parent = dirname(path);
+    return { kind: "directory", path, ...(parent !== path && roots.some(root => contained(root, parent)) ? { parent } : {}),
+      entries, ...(hasMore ? { next_cursor: entries.at(-1)!.name } : {}) };
   }
 
   private async change(request: HcpWorkspacesRequestPayload): Promise<void> {
@@ -45,11 +98,7 @@ export class WorkspaceManager {
     const operation = request.operation;
     let workspaces: RunnerWorkspaceConfig[] = this.config.workspaces.map(workspace => ({ ...workspace }));
     if (operation.kind === "add") {
-      if (!isAbsolute(operation.path)) throw new Error("Use an absolute folder path on this machine.");
-      const path = await realpath(operation.path);
-      if (!(await stat(path)).isDirectory()) throw new Error("The workspace must be an existing folder.");
-      const canonicalRoots = await Promise.all(roots.map(root => realpath(root)));
-      if (!canonicalRoots.some(root => contained(root, path))) throw new Error("The folder is outside this machine’s allowed roots.");
+      const path = await this.allowedDirectory(operation.path, await this.canonicalRoots());
       const existingPaths = await Promise.all(workspaces.map(async workspace => {
         try { return await realpath(workspace.path); }
         catch (error: unknown) {
