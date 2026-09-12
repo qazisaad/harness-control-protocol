@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
-import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
+import { z } from "zod";
 
 import { loadRunnerConfig, ProviderInstanceConfigSchema, RunnerConfigSchema, type RunnerConfig } from "./config/index.js";
 import { createDefaultHarnessAdapterRegistry } from "./harnesses/adapters/registry.js";
@@ -13,6 +14,8 @@ import { loadRunnerCredential, normalizeControlPlaneUrl, pairWithReferenceContro
 export type ConnectOptions = {
   controlPlaneUrl: string;
   configPath: string;
+  connectionDirectory: string;
+  identityPath: string;
   providers?: string[];
   pair: boolean;
   openBrowser: boolean;
@@ -22,7 +25,8 @@ export function parseConnectOptions(args: string[], home: string = homedir()): C
   if (!args[0]) throw new Error("Usage: hcp-runner connect <control-plane-url> [--config path] [--providers codex,claude,opencode] [--pair] [--no-browser]");
   const controlPlaneUrl = normalizeControlPlaneUrl(args[0]);
   const key = createHash("sha256").update(controlPlaneUrl).digest("hex").slice(0, 16);
-  const options: ConnectOptions = { controlPlaneUrl, configPath: join(home, ".hcp-runner", "connections", key, "runner.json"), pair: false, openBrowser: true };
+  const connectionDirectory = join(home, ".hcp-runner", "connections", key);
+  const options: ConnectOptions = { controlPlaneUrl, connectionDirectory, identityPath: join(home, ".hcp-runner", "identity.json"), configPath: join(connectionDirectory, "runner.json"), pair: false, openBrowser: true };
   for (let index = 1; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--pair") options.pair = true;
@@ -57,7 +61,7 @@ export async function openApprovalBrowser(value: string): Promise<boolean> {
   });
 }
 
-async function saveConfig(path: string, config: RunnerConfig): Promise<void> {
+async function saveJson(path: string, config: RunnerConfig | string): Promise<void> {
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
@@ -65,10 +69,22 @@ async function saveConfig(path: string, config: RunnerConfig): Promise<void> {
   } finally { await rm(temp, { force: true }); }
 }
 
+async function installationIdentity(path: string, existingRunnerId?: string): Promise<string> {
+  const schema = z.object({ runner_id: z.string().min(1).max(200) }).strict();
+  if (!existsSync(path)) {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify({ runner_id: existingRunnerId ?? `runner-${randomUUID()}` }), { mode: 0o600, flag: "wx" });
+      try { await link(temporary, path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    } finally { await rm(temporary, { force: true }); }
+  }
+  return schema.parse(JSON.parse(await readFile(path, "utf8"))).runner_id;
+}
+
 export async function connectMachine(options: ConnectOptions, run: (path: string) => Promise<number>): Promise<number> {
-  const configPath = options.configPath;
-  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-  const lockPath = `${configPath}.lock`;
+  await mkdir(options.connectionDirectory, { recursive: true, mode: 0o700 });
+  const lockPath = join(options.connectionDirectory, "runner.json.lock");
   let lock;
   try { lock = await open(lockPath, "wx", 0o600); }
   catch (error) {
@@ -84,11 +100,20 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
   process.once("SIGINT", cancelSetup);
   process.once("SIGTERM", cancelSetup);
   try {
+    const locationPath = join(options.connectionDirectory, "config-path.json");
+    const defaultPath = join(options.connectionDirectory, "runner.json");
+    const savedPath = existsSync(locationPath) ? z.string().min(1).parse(JSON.parse(await readFile(locationPath, "utf8"))) : existsSync(defaultPath) ? defaultPath : undefined;
+    if (savedPath && options.configPath !== defaultPath && options.configPath !== savedPath) {
+      throw new Error(`This machine already has a configuration for this server: ${savedPath}. Run the standard connect command to reuse it.`);
+    }
+    const configPath = savedPath ?? options.configPath;
+    await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
     const existing = existsSync(configPath);
     let config: RunnerConfig;
     if (existing) {
       config = await loadRunnerConfig(configPath);
       if (normalizeControlPlaneUrl(config.control_plane_url) !== options.controlPlaneUrl) throw new Error("This config belongs to another control plane. Use its URL or a different --config path.");
+      if (await installationIdentity(options.identityPath, config.runner_id) !== config.runner_id) throw new Error("This configuration belongs to a different HCP installation. Use this installation’s saved configuration; do not copy machine credentials between installations.");
       if (options.providers && options.providers.slice().sort().join(",") !== config.provider_instances.filter(provider => provider.enabled).map(provider => provider.driver_kind).sort().join(",")) {
         throw new Error("This connection already has different agent settings. Edit its config to change them; reconnect preserves existing settings.");
       }
@@ -108,12 +133,13 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
       selected ??= installed;
       if (!selected.length) throw new Error("No coding agents found. Install and sign in to an agent, then run this command again.");
       if (selected.some(driver => !installed.includes(driver))) throw new Error("A selected agent is not installed. Install it before connecting.");
-      const identity = randomUUID();
-      config = RunnerConfigSchema.parse({ runner_id: `runner-${identity}`, host_id: hostname(), control_plane_url: options.controlPlaneUrl,
+      const runnerId = await installationIdentity(options.identityPath);
+      config = RunnerConfigSchema.parse({ runner_id: runnerId, host_id: hostname(), control_plane_url: options.controlPlaneUrl,
         credentials_path: join(dirname(configPath), "credentials.json"), state_path: join(dirname(configPath), "state.json"),
         workspaces: [], workspace_management: { allowed_roots: [parse(homedir()).root] }, provider_instances: providers.filter(provider => selected.includes(provider.driver_kind)) });
-      await saveConfig(configPath, config);
+      await saveJson(configPath, config);
     }
+    await saveJson(locationPath, configPath);
     setupAbort.signal.throwIfAborted();
     const credential = await loadRunnerCredential(config);
     if (!credential || options.pair) {
@@ -126,7 +152,7 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
         } });
       config.credentials_path ??= join(dirname(configPath), "credentials.json");
       await writeRunnerCredentials(config.credentials_path, pairing.credential);
-      await saveConfig(configPath, config);
+      await saveJson(configPath, config);
     }
     process.removeListener("SIGINT", cancelSetup);
     process.removeListener("SIGTERM", cancelSetup);

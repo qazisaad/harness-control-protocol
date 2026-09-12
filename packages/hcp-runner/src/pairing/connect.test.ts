@@ -20,7 +20,7 @@ test("guided setup exchanges once, saves private config, starts immediately, and
       const parsed = JSON.parse(body) as typeof identity; identity = {runner_id:parsed.runner_id,host_id:parsed.host_id}; pairingCount++;
       if (cancelPairing) setImmediate(()=>process.emit("SIGINT"));
       res.end(JSON.stringify({request_id:"request",pairing_code:"ABCDEF123456",pairing_url:`${base.replace("ws:","http:")}/approve`,expires_at:new Date(Date.now()+10000).toISOString(),poll_interval_seconds:1}));
-    } else res.end(JSON.stringify({status:"approved",control_plane_url:base,credential:{...identity,credential_id:"credential",credential_secret:"secret",mcp_proof_secret:"proof",issued_at:new Date().toISOString(),control_plane_url:base}}));
+    } else { const endpoint = `ws://${req.headers.host}/hcp/runner`; res.end(JSON.stringify({status:"approved",control_plane_url:endpoint,credential:{...identity,credential_id:"credential",credential_secret:"secret",mcp_proof_secret:"proof",issued_at:new Date().toISOString(),control_plane_url:endpoint}})); }
   });
   await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
   const address = server.address(); assert.ok(address && typeof address !== "string");
@@ -40,6 +40,7 @@ test("guided setup exchanges once, saves private config, starts immediately, and
       assert.equal((await stat(config.credentials_path!)).mode & 0o777,0o600);
       assert.ok(config.workspace_management?.allowed_roots.length);
       await assert.rejects(connectMachine(options,async()=>0),/already in use/);
+      await assert.rejects(connectMachine({...options,configPath:join(dir,"other.json")},async()=>0),/already in use/);
       await writeFile(path,JSON.stringify({...config,workspaces:[{id:"chosen",path:dir}],workspace_management:{allowed_roots:[dir]}}));
       return 0;
     });
@@ -48,6 +49,25 @@ test("guided setup exchanges once, saves private config, starts immediately, and
       assert.equal(await readFile(path,"utf8"),before); return 0;
     });
     assert.equal(pairingCount,1);
+    const firstIdentity = JSON.parse(await readFile(options.identityPath,"utf8")) as {runner_id:string};
+    assert.equal(firstIdentity.runner_id,identity.runner_id);
+    await assert.rejects(connectMachine({...options,configPath:join(dir,"other.json")},async()=>0),/already has a configuration/);
+    await rm(options.identityPath);
+    await connectMachine(options,async()=>0);
+    assert.deepEqual(JSON.parse(await readFile(options.identityPath,"utf8")),firstIdentity);
+    assert.equal(pairingCount,1);
+    const anotherEndpoint = parseConnectOptions([base.replace("127.0.0.1","localhost"),"--providers","codex","--no-browser","--config",join(dir,"custom.json")],dir);
+    await connectMachine(anotherEndpoint, async path => {
+      assert.equal((await loadRunnerConfig(path)).runner_id,firstIdentity.runner_id);
+      return 0;
+    });
+    const afterCustomPairing = pairingCount;
+    await connectMachine(parseConnectOptions([anotherEndpoint.controlPlaneUrl,"--no-browser"],dir), async path => {
+      assert.equal(path,anotherEndpoint.configPath);
+      assert.equal((await loadRunnerConfig(path)).runner_id,firstIdentity.runner_id);
+      return 0;
+    });
+    assert.equal(pairingCount,afterCustomPairing);
     await assert.rejects(connectMachine({...parseConnectOptions([base,"--no-browser"],dir),controlPlaneUrl:"wss://other.example/hcp/runner"},async()=>0),/another control plane/);
     cancelPairing = true;
     await assert.rejects(connectMachine({...options,pair:true},async()=>0),/Setup cancelled/);
