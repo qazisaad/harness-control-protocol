@@ -8,9 +8,6 @@
       "path": "./packages/hcp-sdk"
     },
     {
-      "path": "./packages/hcp-management"
-    },
-    {
       "path": "./packages/hcp-runner"
     },
     {

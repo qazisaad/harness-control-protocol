@@ -1,10 +1,9 @@
 # Public packages and integration contract
 
-HCP has four public packages, released together at the same exact version:
+HCP has three public packages, released together at the same exact version:
 
 - `@harness-control/protocol`: wire types, validation, JSON Schema, pairing contracts, and the canonical session event reducer. No provider SDK or Node transport dependency.
 - `@harness-control/sdk`: app-side command construction and one authenticated runner connection. It depends only on the protocol package.
-- `@harness-control/management`: optional account capacity/renewal policies and authorized provider administration; Node storage is a separate export.
 - `@harness-control/runner`: local CLI and embeddable runner modules, including provider adapters, filesystem policy, durable command receipts, and MCP attachments.
 
 P2A and external apps use these same exports. P2A's Convex transactions use the SDK's stateless command API; its Python WebSocket service validates JSON Schema exported by the installed protocol package. No Node service is added to P2A.
@@ -27,10 +26,10 @@ Timeout, cancellation of a local wait, or connection loss can leave the operatio
 
 ## Release and validation
 
-Build and test the repo, pack allowlisted files, and install all four tarballs in a clean external project. That project imports public exports only and drives the real runner over loopback WebSocket through folder changes and a mock-provider session's terminal event. This verifies package and protocol boundaries; it does not claim live Codex/Claude execution.
+Build and test the repo, pack allowlisted files, and install all three tarballs in a clean external project. That project imports public exports only and drives the real runner over loopback WebSocket through folder changes and a mock-provider session's terminal event. This verifies package and protocol boundaries; it does not claim live Codex/Claude execution.
 
-Publish protocol first, then SDK, runner, and optional management. P2A pins exact registry versions and derives Python schemas from the installed package, avoiding a separate checkout as schema owner. npm account access to the scope is required to publish. Packed release candidates can be tested before publishing; they are not described as registry releases.
+Publish protocol first, then SDK, then runner. P2A pins exact registry versions and derives Python schemas from the installed package, avoiding a separate checkout as schema owner. npm account access to the scope is required to publish. Packed release candidates can be tested before publishing; they are not described as registry releases.
 
-Account usage adds a capability-gated read/snapshot pair and a canonical account-source projection. Management adds optional policy and action-ledger state owned by the consuming app. No additional deployed service is required. See [account capacity](account-capacity.md) for freshness, omission, identity, and administrative recovery contracts.
+Account usage adds a capability-gated read/snapshot pair and a canonical account-source projection. Capacity policy, budgets and administrative actions are owned entirely by the consuming app; HCP publishes no policy package. No additional deployed service is required. See [account capacity](account-capacity.md) for freshness, omission, identity, and administrative recovery contracts.
 
 Version 0.4.0 adds `host.accounts.read` and `host.accounts.snapshot` while retaining `hcp.v0`. Only send account reads when `account_usage` is advertised. Old consumers with strict schemas must upgrade their installed protocol/schema before opting into these messages. P2A adoption is a separate change; no P2A code or pinned dependency is updated here.
