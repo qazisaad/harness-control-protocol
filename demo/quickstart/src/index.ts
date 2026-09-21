@@ -51,7 +51,6 @@ const MCP_PROOF_SECRET = "quickstart-development-mcp-proof-secret";
 const SAMPLE_STDIO_PROFILE_ID = "sample-stdio-tools";
 const SAMPLE_STDIO_SOURCE_PATH = fileURLToPath(new URL("../../../apps/sample-mcp-server/src/stdio.ts", import.meta.url));
 const TSX_IMPORT_URL = import.meta.resolve("tsx");
-const DEMO_RUN_ID = "quickstart-run";
 const LOCAL_DEV_SERVER_ID = "quickstart-dev-server";
 const LOCAL_ACTION_TIMEOUT_MS = 30_000;
 const TURN_TIMEOUT_MS = 180_000;
@@ -1161,13 +1160,11 @@ class QuickstartDemoApp {
         turn_id: LOCAL_TURN_ID,
         workspace_id: WORKSPACE_ID,
         provider_instance_id: LOCAL_PROVIDER_ID,
-        run_id: DEMO_RUN_ID,
       },
       lease: {
         lease_id: "local_lease_quickstart",
         capability_id: capabilityId,
         scope,
-        run_id: DEMO_RUN_ID,
         hcp_session_id: LOCAL_SESSION_ID,
         execution_host_id: HOST_ID,
         provider_instance_id: LOCAL_PROVIDER_ID,
@@ -1310,11 +1307,7 @@ function createLocalCapabilityLease(input: {
   };
   return {
     lease_id: "local_lease_quickstart",
-    org_id: "quickstart-org",
     actor_id: "quickstart-user",
-    workflow_id: "quickstart-workflow",
-    run_id: DEMO_RUN_ID,
-    node_id: "quickstart-node",
     hcp_session_id: input.sessionId,
     execution_host_id: HOST_ID,
     provider_instance_id: input.providerInstanceId,

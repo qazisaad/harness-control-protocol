@@ -59,10 +59,10 @@ function toRootJsonSchema(schema: z.ZodType<unknown>): JsonSchema {
   return asJsonSchema(z.toJSONSchema(schema), "generated JSON Schema");
 }
 
-function toEmbeddedJsonSchema(schema: z.ZodType<unknown>): JsonSchema {
+function toEmbeddedJsonSchema(schema: z.ZodType<unknown>, name: string): JsonSchema {
   const jsonSchema: JsonSchema = cloneJsonSchema(toRootJsonSchema(schema));
   delete jsonSchema.$schema;
-  delete jsonSchema.$id;
+  jsonSchema.$id = `https://schemas.harness-control.local/${HCP_VERSION}/events/${name}.schema.json`;
   return jsonSchema;
 }
 
@@ -122,7 +122,7 @@ function createHarnessEventMessageSchema(
 function createHarnessEventMessageSchemas(baseMessageSchema: JsonSchema): JsonSchema[] {
   const basePayloadSchema: JsonSchema = getObjectProperty(baseMessageSchema, "payload", "harness.event message schema");
   const knownEventSchemas: JsonSchema[] = KNOWN_HCP_EVENT_TYPES.map((eventType: KnownHcpEventType): JsonSchema => {
-    const dataSchema: JsonSchema = toEmbeddedJsonSchema(knownHcpEventDataSchemas[eventType]);
+    const dataSchema: JsonSchema = toEmbeddedJsonSchema(knownHcpEventDataSchemas[eventType], eventType);
     const payloadSchema: JsonSchema = createHarnessEventPayloadSchema(
       basePayloadSchema,
       createEventTypeSchema(eventType),
@@ -132,13 +132,12 @@ function createHarnessEventMessageSchemas(baseMessageSchema: JsonSchema): JsonSc
     return createHarnessEventMessageSchema(baseMessageSchema, payloadSchema);
   });
 
-  const extensionEventDataSchema: JsonSchema = toEmbeddedJsonSchema(hcpExtensionEventDataSchema);
   const extensionEventSchemas: JsonSchema[] = (["provider", "extension"] as const).map(
     (prefix: "provider" | "extension"): JsonSchema => {
       const payloadSchema: JsonSchema = createHarnessEventPayloadSchema(
         basePayloadSchema,
         createExtensionEventTypeSchema(prefix),
-        extensionEventDataSchema,
+        toEmbeddedJsonSchema(hcpExtensionEventDataSchema, prefix),
         false,
       );
       return createHarnessEventMessageSchema(baseMessageSchema, payloadSchema);

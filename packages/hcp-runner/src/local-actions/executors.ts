@@ -595,7 +595,6 @@ function localCapabilityEvent(
     event_type: eventType,
     data: {
       lease_id: context.lease.lease_id,
-      run_id: context.lease.run_id,
       workspace_id: context.workspace_id,
       provider_instance_id: context.provider_instance_id,
       capability_id: capabilityId,

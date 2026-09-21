@@ -437,7 +437,6 @@ function failedEventFor(
     event_type: "local_capability.action.failed",
     data: {
       lease_id: request.lease.lease_id,
-      run_id: request.lease.run_id,
       workspace_id: request.attribution.workspace_id,
       provider_instance_id: request.attribution.provider_instance_id,
       capability_id: request.lease.capability_id,

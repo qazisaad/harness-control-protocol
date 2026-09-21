@@ -35,10 +35,6 @@ function config(): RunnerConfig {
 function lease(overrides: Partial<LocalCapabilityLease> = {}): LocalCapabilityLease {
   return {
     lease_id: "local_lease_123",
-    org_id: "org_123",
-    workflow_id: "workflow_123",
-    run_id: "run_123",
-    node_id: "node_123",
     hcp_session_id: "session-1",
     execution_host_id: "host-1",
     provider_instance_id: "provider-1",
@@ -332,7 +328,7 @@ describe("LocalCapabilityExecutor", () => {
     }
   });
 
-  it("fails dev-server start when the process exits immediately", async () => {
+  it("fails dev-server start when the process exits before readiness", async () => {
     const workspace = await createWorkspace();
     const localExecutor = executor();
     const port = await allocateLocalPort();
@@ -347,6 +343,7 @@ describe("LocalCapabilityExecutor", () => {
             timeout_seconds: 5,
             host: "127.0.0.1",
             port,
+            readiness: { url: `http://127.0.0.1:${port}/ready`, timeout_ms: 5000 },
           }),
         (error: unknown): boolean =>
           error instanceof LocalCapabilityExecutionError &&

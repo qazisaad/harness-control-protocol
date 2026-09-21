@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 import { HarnessSessionError, HarnessSessionManager, type HarnessMcpClient } from "./index.js";
 import type { AuditLogEvent } from "../audit/index.js";
 import type { LocalCapabilityConfig, RunnerConfig } from "../config/index.js";
+import type { HcpHarnessEventPayload, HcpSessionStartPayload } from "@harness-control/protocol";
+import { JsonRunnerStateStore } from "../state/index.js";
+import { HarnessMcpReview } from "./mcp-review.js";
+import { McpInputRequiredError, parseMcpPendingInput } from "../mcp/input-required.js";
 import {
   HarnessAdapterError,
   HarnessAdapterRegistry,
@@ -101,6 +105,105 @@ async function createWorkspace(): Promise<{ root: string; project: string; clean
 }
 
 describe("HarnessSessionManager", () => {
+  for (const closeFails of [false, true]) {
+    it(`records MCP startup cleanup only after the failed client closes (closeFails=${closeFails})`, async () => {
+      const workspace = await createWorkspace();
+      let closed = 0;
+      const manager = new HarnessSessionManager(createConfig(workspace.root), {
+        mcpClientFactory: () => ({
+          async connect() { throw new Error("MCP connection rejected"); },
+          async close() { closed++; if (closeFails) throw new Error("MCP close failed"); },
+        }),
+      });
+      try {
+        await assert.rejects(manager.startSession({
+          session_id: "failed-start", workspace_id: "repo", provider_instance_id: "mock-provider",
+          driver_kind: "mock", cwd: workspace.root, sandbox_mode: "read_only", approval_policy: "ask",
+          continue_session: false, model_selection: {model: "mock-model"},
+          mcp_servers: [{name: "tools", transport: "streamable_http", url: "https://example.com/mcp",
+            headers: {}, lease_id: "lease", proof_of_possession: {scheme: "runner_signed_request",
+              key_id: "key", required_headers: ["x-hcp-proof-signature"]}}],
+        }));
+        assert.equal(closed, 1);
+        const replay = manager.replayEventsAfter({sessions: [{session_id: "failed-start", last_event_sequence: 0}]});
+        assert.deepEqual(replay.events.map(event => event.event_type), closeFails ? [] : ["session.exited"]);
+        assert.equal(manager.activeSessionCount(), 0);
+        if (!closeFails) assert.deepEqual(await manager.stopSession("failed-start", "cleanup"), []);
+      } finally { await workspace.cleanup(); }
+    });
+  }
+  it("restores a waiting MCP input and delivers the result through the original native continuation", async () => {
+    const workspace = await createWorkspace();
+    const path = join(workspace.root, "runner-state.json");
+    const store = new JsonRunnerStateStore(path);
+    const start: HcpSessionStartPayload = {session_id: "input-session", workspace_id: "repo", provider_instance_id: "codex-local",
+      driver_kind: "codex", cwd: workspace.project, sandbox_mode: "read_only", approval_policy: "full_access",
+      continue_session: false, model_selection: {model: "gpt-test"}, mcp_servers: [{name: "tools", transport: "streamable_http",
+        url: "https://example.com/mcp", lease_id: "lease", expires_at: new Date(Date.now() + 60000).toISOString(),
+        headers: {}, proof_of_possession: {scheme: "runner_signed_request", key_id: "key", required_headers: ["x-hcp-proof-signature"]}}]};
+    const turn = {session_id: start.session_id, turn_id: "turn", input: "Read"};
+    let notify!: () => void;
+    const published = new Promise<void>(resolve => {notify = resolve;});
+    const owner = new HarnessMcpReview(store, start, turn, event => {if (event.event_type === "input.requested") notify();});
+    const request = {attachment_name: "tools", tool_name: "lookup", arguments: {query: "exact"},
+      native_thread_id: "native-thread", native_turn_id: "native-turn", native_call_id: "native-call"};
+    const pending = parseMcpPendingInput({requestState: "opaque-original", inputRequests: {q: {
+      method: "elicitation/create", params: {message: "Name?", requestedSchema: {type: "object", properties: {name: {type: "string"}}}},
+    }}});
+    const abandoned = owner.invoke(request, async () => {throw new McpInputRequiredError(pending);}, new AbortController().signal);
+    await published;
+    owner.interrupt();
+    await assert.rejects(abandoned, /interrupted/);
+    const retained = new JsonRunnerStateStore(path).getMcpReview(start.session_id)!;
+    assert.ok(retained.outcome.phase === "input_waiting");
+    const events: HcpHarnessEventPayload[] = [];
+    let calls = 0;
+    let nativeCompletions = 0;
+    const adapter: HarnessAdapter = {
+      driverKind: "codex", durableMcpContinuation: true,
+      async probe() {return {provider_instance_id: "codex-local", driver_kind: "codex", installed: true, available: true, status: "ready", models: []};},
+      async validateStart() {},
+      async startSession(input) {return {adapter_session_id: input.payload.session_id};},
+      async sendTurn(input) {
+        nativeCompletions++;
+        assert.equal(input.mcpContinuation?.native_thread_id, "native-thread");
+        assert.equal(input.mcpContinuation?.request_id, retained.request_id);
+        assert.deepEqual(input.mcpContinuation?.outcome, {kind: "completed", result: {is_error: false, content: [{type: "text", text: "done"}]}});
+        return [{event_type: "turn.completed", data: {status: "completed", final_output: {final_text: "done"}}}];
+      },
+      async cancelTurn() {return [];},
+      async stopSession() {return [];},
+    };
+    const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
+      stateStore: new JsonRunnerStateStore(path), adapterRegistry: new HarnessAdapterRegistry([adapter]),
+      mcpClientFactory: () => ({
+        async connect() {}, async close() {},
+        async listTools() {return [{name: "lookup", input_schema: {type: "object"}}];},
+        async callTool(name, args, grant, reply) {
+          calls++;
+          assert.equal(name, "lookup"); assert.deepEqual(args, {query: "exact"}); assert.equal(grant, undefined);
+          assert.deepEqual(reply, {pending, responses: {q: {action: "accept", content: {name: "Ada"}}}});
+          assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, "input_resuming");
+          return {is_error: false, content: [{type: "text", text: "done"}]};
+        },
+      }),
+    });
+    try {
+      await manager.recoverMcpReviews(event => events.push(event), () => assert.fail("Waiting input must not auto-resume"));
+      assert.equal(calls, 0);
+      const response = {session_id: start.session_id, turn_id: turn.turn_id, request_id: retained.outcome.input_request_id,
+        actor_id: "actor", value: {q: {action: "accept", content: {name: "Ada"}}}};
+      const resolution = await manager.respondToMcpInput(response, event => events.push(event));
+      assert.equal(resolution.kind, "resumed");
+      if (resolution.kind === "resumed") await resolution.completion;
+      assert.equal(calls, 1); assert.equal(nativeCompletions, 1);
+      assert.ok(events.some(event => event.event_type === "turn.completed"));
+      assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id), undefined);
+      await assert.rejects(manager.respondToMcpInput(response, event => events.push(event)), /No waiting/);
+      assert.equal(calls, 1);
+    } finally {await manager.stopSession(start.session_id, "test complete"); await workspace.cleanup();}
+  });
+
   it("rejects unimplemented workspace expectations before reporting preflight success", async () => {
     const workspace = await createWorkspace();
     try {
@@ -270,10 +373,6 @@ describe("HarnessSessionManager", () => {
       mcp_servers: [],
       local_capability_lease: {
         lease_id: "local_lease_123",
-        org_id: "org_123",
-        workflow_id: "workflow_123",
-        run_id: "run_123",
-        node_id: "node_123",
         hcp_session_id: "session-1",
         execution_host_id: "host-test",
         provider_instance_id: "mock-provider",
@@ -511,7 +610,8 @@ describe("HarnessSessionManager", () => {
     }
   });
 
-  it("attempts adapter stop when adapter start and MCP cleanup both fail", async () => {
+  for (const failure of ["none", "client", "adapter", "both"] as const) {
+  it(`records adapter-start cleanup only when both owners close (failure=${failure})`, async () => {
     const workspace = await createWorkspace();
     const calls: string[] = [];
     const adapter: HarnessAdapter = {
@@ -541,6 +641,7 @@ describe("HarnessSessionManager", () => {
       },
       async stopSession(): Promise<HarnessAdapterEvent[]> {
         calls.push("stop");
+        if (failure === "adapter" || failure === "both") throw new Error("adapter stop failed");
         return [];
       },
     };
@@ -554,7 +655,7 @@ describe("HarnessSessionManager", () => {
           },
           async close(): Promise<void> {
             calls.push("close");
-            throw new Error("mcp close failed");
+            if (failure === "client" || failure === "both") throw new Error("mcp close failed");
           },
         };
       },
@@ -588,32 +689,38 @@ describe("HarnessSessionManager", () => {
               },
             ],
           }),
-        (error: unknown): boolean =>
-          error instanceof HarnessSessionError &&
-          error.code === "adapter_start_cleanup_failed" &&
-          error.message.includes("adapter start failed") &&
-          error.message.includes("mcp close failed"),
+        (error: unknown): boolean => failure === "none"
+          ? error instanceof Error && error.message === "adapter start failed"
+          : error instanceof HarnessSessionError &&
+            error.code === "adapter_start_cleanup_failed" &&
+            error.message.includes("adapter start failed") &&
+            (failure === "adapter" || error.message.includes("mcp close failed")) &&
+            (failure === "client" || error.message.includes("adapter stop failed")),
       );
 
       assert.deepEqual(calls, ["validate", "connect", "start", "close", "stop"]);
+      const replay = manager.replayEventsAfter({sessions: [{session_id: "session-1", last_event_sequence: 0}]});
+      assert.deepEqual(replay.events.map(event => event.event_type), failure === "none" ? ["session.exited"] : []);
+      if (failure === "none") {
+        assert.deepEqual(replay.events[0]?.data, {
+          provider_instance_id: "mock-provider", reason: "adapter_start_failed",
+        });
+        assert.deepEqual(await manager.stopSession("session-1", "cleanup"), []);
+      }
     } finally {
       await workspace.cleanup();
     }
   });
+  }
 
-  it("proxies Codex MCP attachments before adapter start", async () => {
+  it("binds Codex MCP clients without requiring a loopback proxy", async () => {
     const workspace = await createWorkspace();
     const connected: string[] = [];
     const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
       mcpClientFactory(request) {
         return {
-          get adapterAttachment() {
-            return {
-              ...request.attachment,
-              url: "http://127.0.0.1:12345/mcp",
-              headers: {},
-            };
-          },
+          async listTools() { return [{name: "echo", input_schema: {type: "object"}}]; },
+          async callTool() { return {is_error: false}; },
           async connect(): Promise<void> {
             connected.push(request.attachment.name);
           },
@@ -654,7 +761,7 @@ describe("HarnessSessionManager", () => {
       assert.deepEqual(connected, ["tools"]);
       assert.deepEqual(
         events.map((event) => event.event_type),
-        ["session.started", "workspace.preflight.completed", "session.configured", "mcp.status.updated"],
+        ["session.started", "workspace.preflight.completed", "session.configured", "mcp.status.updated", "mcp.status.updated"],
       );
       await manager.stopSession("session-1", "done");
     } finally {
@@ -662,7 +769,7 @@ describe("HarnessSessionManager", () => {
     }
   });
 
-  it("closes Codex MCP clients when an attachment factory does not provide a proxy", async () => {
+  it("closes Codex MCP clients when an attachment factory cannot invoke tools", async () => {
     const workspace = await createWorkspace();
     const connected: string[] = [];
     const closed: string[] = [];
@@ -708,7 +815,7 @@ describe("HarnessSessionManager", () => {
             ],
           }),
         (error: unknown): boolean =>
-          error instanceof HarnessAdapterError && error.code === "codex_mcp_attachment_requires_proxy",
+          error instanceof HarnessAdapterError && error.code === "mcp_bridge_missing",
       );
       assert.deepEqual(connected, ["tools"]);
       assert.deepEqual(closed, ["tools"]);
@@ -865,4 +972,85 @@ describe("HarnessSessionManager", () => {
       await workspace.cleanup();
     }
   });
+});
+
+it("recovered approval remains waiting after preparation failure and serializes competing resumes", async () => {
+  const workspace = await createWorkspace();
+  const path = join(workspace.root, "approval-state.json");
+  const store = new JsonRunnerStateStore(path);
+  const start: HcpSessionStartPayload = {session_id: "review-session", workspace_id: "repo", provider_instance_id: "codex-local",
+    driver_kind: "codex", cwd: workspace.project, sandbox_mode: "read_only", approval_policy: "full_access",
+    continue_session: false, model_selection: {model: "gpt-test"}, mcp_servers: [{name: "tools", transport: "streamable_http",
+      url: "https://example.com/mcp", lease_id: "lease", expires_at: new Date(Date.now() + 60000).toISOString(),
+      headers: {}, proof_of_possession: {scheme: "runner_signed_request", key_id: "key", required_headers: ["x-hcp-proof-signature"]}}]};
+  const owner = new HarnessMcpReview(store, start, {session_id: start.session_id, turn_id: "turn", input: "Read"}, () => {});
+  const controller = new AbortController();
+  const waiting = owner.request({attachment_name: "tools", tool_name: "lookup", arguments: {},
+    native_thread_id: "thread", native_turn_id: "native-turn", native_call_id: "call"}, controller.signal);
+  controller.abort();
+  await assert.rejects(waiting, /interrupted/);
+  const retained = store.getMcpReview(start.session_id)!;
+  const response = {session_id: start.session_id, turn_id: "turn", request_id: retained.request_id,
+    action_hash: retained.action_hash, actor_id: "actor", decision: "accept" as const};
+  let attempts = 0;
+  let calls = 0;
+  let notifyConnecting!: () => void;
+  let releaseConnection!: () => void;
+  const connecting = new Promise<void>(resolve => {notifyConnecting = resolve;});
+  const connected = new Promise<void>(resolve => {releaseConnection = resolve;});
+  const adapter: HarnessAdapter = {
+    driverKind: "codex", durableMcpContinuation: true,
+    async probe() {return {provider_instance_id: "codex-local", driver_kind: "codex", installed: true, available: true, status: "ready", models: []};},
+    async validateStart() {}, async startSession(input) {return {adapter_session_id: input.payload.session_id};},
+    async sendTurn(input) {
+      assert.equal(input.mcpContinuation?.request_id, retained.request_id);
+      assert.deepEqual(input.mcpContinuation?.outcome, {kind: "completed", result: {is_error: false, content: []}});
+      return [{event_type: "turn.completed", data: {status: "completed", final_output: {final_text: "done"}}}];
+    },
+    async cancelTurn() {return [];}, async stopSession() {return [];},
+  };
+  const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
+    stateStore: store, adapterRegistry: new HarnessAdapterRegistry([adapter]),
+    mcpClientFactory: () => ({
+      async connect() {
+        attempts++;
+        if (attempts === 1) throw new Error("connection unavailable");
+        notifyConnecting();
+        await connected;
+      },
+      async close() {}, async listTools() {return [{name: "lookup", input_schema: {type: "object"}}];},
+      async callTool(name, args, grant) {
+        calls++;
+        assert.equal(name, "lookup"); assert.deepEqual(args, {});
+        assert.deepEqual(grant, {request_id: retained.request_id, action_json: retained.action_json});
+        assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, "dispatching");
+        return {is_error: false, content: []};
+      },
+    }),
+  });
+  const events: HcpHarnessEventPayload[] = [];
+  try {
+    await assert.rejects(manager.respondToMcpReview({...response, action_hash: "wrong"}, () => {}), /does not match/);
+    assert.equal(attempts, 0);
+    await assert.rejects(manager.respondToMcpReview(response, () => {}), /connection unavailable/);
+    assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, "waiting");
+    assert.equal(calls, 0);
+    const resuming = manager.respondToMcpReview(response, event => events.push(event));
+    await connecting;
+    await assert.rejects(manager.respondToMcpReview(response, () => {}), /already resuming/);
+    assert.equal(attempts, 2);
+    assert.equal(store.getMcpReview(start.session_id)?.outcome.phase, "waiting");
+    releaseConnection();
+    const resumed = await resuming;
+    assert.equal(resumed.kind, "resumed");
+    if (resumed.kind === "resumed") await resumed.completion;
+    assert.equal(calls, 1);
+    assert.equal(events.filter(event => event.event_type === "approval.resolved").length, 1);
+    assert.equal(events.filter(event => event.event_type === "turn.completed").length, 1);
+    assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id), undefined);
+  } finally {
+    releaseConnection();
+    await manager.stopSession(start.session_id, "test complete");
+    await workspace.cleanup();
+  }
 });

@@ -303,7 +303,19 @@ export class RunnerConnection {
         await this.#handleCommand(envelope, (message) => this.#handleSessionStop(message));
         return;
       case "harness.approval.respond":
+        await this.#handleCommand(envelope, async message => {
+          const resolution = await this.#harnessSessions.respondToMcpReview(message.payload, event => this.#sendEventIfConnected(event));
+          if (resolution.kind === "resumed") this.#watchTurn(resolution.completion, message.payload.session_id, message.payload.turn_id);
+          return [];
+        });
+        return;
       case "harness.input.respond":
+        await this.#handleCommand(envelope, async message => {
+          const resolution = await this.#harnessSessions.respondToMcpInput(message.payload, event => this.#sendEventIfConnected(event));
+          if (resolution.kind === "resumed") this.#watchTurn(resolution.completion, message.payload.session_id, message.payload.turn_id);
+          return [];
+        });
+        return;
       case "tool_servers.detach":
         await this.#handleCommand(envelope, () => {
           throw new HarnessAdapterError("unsupported_command", `${envelope.type} is not implemented by this runner.`);
@@ -340,6 +352,8 @@ export class RunnerConnection {
     await this.#sendCapabilities();
     this.#replayRequestedEvents(envelope.payload.resume);
     this.#startHeartbeat(envelope.payload.heartbeat_interval_seconds);
+    await this.#harnessSessions.recoverMcpReviews(event => this.#sendEventIfConnected(event),
+      (completion, sessionId, turnId) => this.#watchTurn(completion, sessionId, turnId));
   }
 
   #replayRequestedEvents(cursor: HcpHostAcceptedMessage["payload"]["resume"]): void {
@@ -455,7 +469,15 @@ export class RunnerConnection {
 
   async #handleSessionStart(envelope: Extract<HcpMessage, { type: "harness.session.start" }>): Promise<HcpHarnessEventPayload[]> {
     this.#localActionDispatcher.markSessionActive(envelope.payload.session_id);
-    return await this.#harnessSessions.startSession(envelope.payload);
+    try {
+      return await this.#harnessSessions.startSession(envelope.payload);
+    } catch (error: unknown) {
+      const replay = this.#harnessSessions.replayEventsAfter({sessions: [
+        {session_id: envelope.payload.session_id, last_event_sequence: 0},
+      ]});
+      for (const event of replay.events) this.#sendEventIfConnected(event);
+      throw error;
+    }
   }
 
   #handleTurnSend(envelope: Extract<HcpMessage, { type: "harness.turn.send" }>): HcpHarnessEventPayload[] {
@@ -463,6 +485,11 @@ export class RunnerConnection {
       envelope.payload,
       (event: HcpHarnessEventPayload): void => this.#sendEventIfConnected(event),
     );
+    this.#watchTurn(completion, envelope.payload.session_id, envelope.payload.turn_id);
+    return [];
+  }
+
+  #watchTurn(completion: Promise<HcpHarnessEventPayload[]>, sessionId: string, turnId: string): void {
     completion
       .then((events: HcpHarnessEventPayload[]): void => {
         for (const event of events) {
@@ -471,13 +498,12 @@ export class RunnerConnection {
       })
       .catch((error: unknown): void => {
         const failedEvent: HcpHarnessEventPayload = this.#harnessSessions.recordTurnFailure(
-          envelope.payload.session_id,
-          envelope.payload.turn_id,
+          sessionId,
+          turnId,
           error,
         );
         this.#sendEventIfConnected(failedEvent);
       });
-    return [];
   }
 
   #handleTurnCancel(envelope: Extract<HcpMessage, { type: "harness.turn.cancel" }>): Promise<HcpHarnessEventPayload[]> {

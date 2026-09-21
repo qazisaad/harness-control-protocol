@@ -362,11 +362,7 @@ export type LocalCapabilityGrant = {
 
 export type LocalCapabilityLease = {
   lease_id: string;
-  org_id: string;
   actor_id?: string;
-  workflow_id: string;
-  run_id: string;
-  node_id: string;
   hcp_session_id: string;
   execution_host_id: string;
   provider_instance_id: string;
@@ -487,14 +483,12 @@ export type LocalActionAttribution = {
   turn_id: string;
   workspace_id: string;
   provider_instance_id: string;
-  run_id: string;
 };
 
 export type LocalActionLeaseBinding = {
   lease_id: string;
   capability_id: LocalActionProtocolCapabilityId;
   scope: string;
-  run_id: string;
   hcp_session_id: string;
   execution_host_id: string;
   provider_instance_id: string;
@@ -1246,11 +1240,7 @@ export const localCapabilityGrantSchema = z
 export const localCapabilityLeaseSchema = z
   .object({
     lease_id: nonEmptyStringSchema,
-    org_id: nonEmptyStringSchema,
     actor_id: nonEmptyStringSchema.optional(),
-    workflow_id: nonEmptyStringSchema,
-    run_id: nonEmptyStringSchema,
-    node_id: nonEmptyStringSchema,
     hcp_session_id: nonEmptyStringSchema,
     execution_host_id: nonEmptyStringSchema,
     provider_instance_id: nonEmptyStringSchema,
@@ -1408,7 +1398,6 @@ const localActionAttributionSchema = z
     turn_id: nonEmptyStringSchema,
     workspace_id: nonEmptyStringSchema,
     provider_instance_id: nonEmptyStringSchema,
-    run_id: nonEmptyStringSchema,
   })
   .strict();
 
@@ -1417,7 +1406,6 @@ const localActionLeaseBindingSchema = z
     lease_id: nonEmptyStringSchema,
     capability_id: localActionProtocolCapabilityIdSchema,
     scope: nonEmptyStringSchema,
-    run_id: nonEmptyStringSchema,
     hcp_session_id: nonEmptyStringSchema,
     execution_host_id: nonEmptyStringSchema,
     provider_instance_id: nonEmptyStringSchema,
@@ -2006,9 +1994,6 @@ function refineLocalActionContract(payload: LocalActionContractPayload, context:
   if (payload.attribution.provider_instance_id !== payload.lease.provider_instance_id) {
     addLocalActionIssue(context, ["lease", "provider_instance_id"], "Local action lease provider must match request attribution.");
   }
-  if (payload.attribution.run_id !== payload.lease.run_id) {
-    addLocalActionIssue(context, ["lease", "run_id"], "Local action lease run must match request attribution.");
-  }
 
   const expectedBinding: { capabilityId: LocalActionProtocolCapabilityId; scope: string } =
     localActionExpectedBinding(payload.action);
@@ -2309,7 +2294,6 @@ const localCapabilityLeaseEventDataSchema = z
 const localCapabilityActionEventDataSchema = z
   .object({
     lease_id: nonEmptyStringSchema,
-    run_id: nonEmptyStringSchema,
     workspace_id: nonEmptyStringSchema,
     provider_instance_id: nonEmptyStringSchema,
     capability_id: nonEmptyStringSchema,
@@ -2389,6 +2373,7 @@ const inputRequestedEventDataSchema = z
     turn_id: nonEmptyStringSchema,
     prompt: z.string(),
     input_kind: z.enum(["text", "choice", "multi_choice", "form"]),
+    form_schema: z.record(z.string(), z.json()).optional(),
     choices: z
       .array(
         z
@@ -3026,3 +3011,5 @@ export {
 } from "./session-reducer.js";
 
 export * from "./pairing.js";
+
+export * from "./mcp-review.js";

@@ -1,15 +1,10 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  type CallToolResult,
-  type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+import { Server, createMcpHandler, type McpHttpHandler, type CallToolResult, type Tool } from "@modelcontextprotocol/server";
+import { toNodeHandler, type NodeMcpRequestHandler } from "@modelcontextprotocol/node";
 import type { HarnessAdapterMcpServer } from "../harnesses/adapters.js";
-import type { McpAttachmentClient, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
+import { MCP_REVIEW_META_KEY } from "./McpAttachmentClient.js";
+import type { McpAttachmentClient, McpToolCallArguments, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
 
 export type McpProxyUpstream = Pick<McpAttachmentClient, "connect" | "listTools" | "callTool" | "close">;
 
@@ -26,6 +21,7 @@ export class McpProxyServer {
   readonly #host: "127.0.0.1" | "localhost";
   readonly #port: number;
   #httpServer: HttpServer | undefined;
+  #mcpHandler: McpHttpHandler | undefined;
   #adapterAttachment: HarnessAdapterMcpServer | undefined;
 
   constructor(options: McpProxyServerOptions) {
@@ -45,8 +41,10 @@ export class McpProxyServer {
     }
 
     await this.#upstream.connect();
+    const mcpHandler = createMcpHandler(() => createProxySdkServer(this.#attachment.name, this.#upstream));
+    const nodeHandler = toNodeHandler(mcpHandler);
     const httpServer: HttpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
-      this.#handleRequest(request, response).catch((error: unknown) => {
+      this.#handleRequest(request, response, nodeHandler).catch((error: unknown) => {
         writeJsonRpcError(
           response,
           500,
@@ -59,6 +57,7 @@ export class McpProxyServer {
     try {
       boundPort = await listen(httpServer, this.#host, this.#port);
     } catch (error: unknown) {
+      await mcpHandler.close();
       try {
         await this.#upstream.close();
       } catch (cleanupError: unknown) {
@@ -72,6 +71,7 @@ export class McpProxyServer {
       throw error;
     }
     this.#httpServer = httpServer;
+    this.#mcpHandler = mcpHandler;
     this.#adapterAttachment = {
       name: this.#attachment.name,
       transport: "streamable_http",
@@ -86,12 +86,25 @@ export class McpProxyServer {
     return await this.#upstream.listTools();
   }
 
+  async callTool(name: string, arguments_: McpToolCallArguments = {}): Promise<McpToolCallResult> {
+    return this.#upstream.callTool(name, arguments_);
+  }
+
   async close(): Promise<void> {
     const httpServer: HttpServer | undefined = this.#httpServer;
     this.#httpServer = undefined;
     this.#adapterAttachment = undefined;
 
     const errors: string[] = [];
+    const mcpHandler = this.#mcpHandler;
+    this.#mcpHandler = undefined;
+    if (mcpHandler) {
+      try {
+        await mcpHandler.close();
+      } catch (error: unknown) {
+        errors.push(errorMessage(error, "MCP proxy handler close failed."));
+      }
+    }
     if (httpServer) {
       try {
         await closeHttpServer(httpServer);
@@ -109,24 +122,19 @@ export class McpProxyServer {
     }
   }
 
-  async #handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  async #handleRequest(request: IncomingMessage, response: ServerResponse, handler: NodeMcpRequestHandler): Promise<void> {
     if (request.url !== "/mcp") {
       writeJsonRpcError(response, 404, "mcp_proxy_not_found", "MCP proxy only serves /mcp.");
       return;
     }
 
     const parsedBody: unknown = request.method === "POST" ? await readJsonBody(request) : undefined;
-    const server: Server = createProxySdkServer(this.#attachment.name, this.#upstream);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]);
-
-    await server.connect(transport as Parameters<Server["connect"]>[0]);
-    response.on("close", () => {
-      transport.close().catch(() => undefined);
-      server.close().catch(() => undefined);
-    });
-    await transport.handleRequest(request, response, parsedBody);
+    await handler({
+      headers: request.headers,
+      ...(request.method === undefined ? {} : {method: request.method}),
+      ...(request.url === undefined ? {} : {url: request.url}),
+      [Symbol.asyncIterator]: () => request[Symbol.asyncIterator](),
+    }, response, parsedBody);
   }
 }
 
@@ -140,19 +148,22 @@ function createProxySdkServer(attachmentName: string, upstream: McpProxyUpstream
     },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler("tools/list", async () => {
     const tools: McpToolDescriptor[] = await upstream.listTools();
     return {
       tools: tools.map(toSdkTool),
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
+  server.setRequestHandler("tools/call", async (request): Promise<CallToolResult> => {
+    const tools = await upstream.listTools();
+    const tool = tools.find(tool => tool.name === request.params.name);
+    if (!tool) throw new Error("The requested MCP tool is no longer advertised.");
     const result: McpToolCallResult = await upstream.callTool(
       request.params.name,
       request.params.arguments ?? {},
     );
-    return toSdkToolCallResult(result);
+    return server.projectCallToolResult(toSdkToolCallResult(result), tool.output_schema);
   });
 
   return server;
@@ -163,6 +174,7 @@ function toSdkTool(tool: McpToolDescriptor): Tool {
     name: tool.name,
     ...(tool.description ? { description: tool.description } : {}),
     inputSchema: tool.input_schema as Tool["inputSchema"],
+    ...(tool.review_policy ? {_meta: {[MCP_REVIEW_META_KEY]: tool.review_policy}} : {}),
     ...(tool.output_schema ? { outputSchema: tool.output_schema as Tool["outputSchema"] } : {}),
   };
 }
@@ -170,7 +182,7 @@ function toSdkTool(tool: McpToolDescriptor): Tool {
 function toSdkToolCallResult(result: McpToolCallResult): CallToolResult {
   return {
     content: (result.content ?? []) as CallToolResult["content"],
-    ...(result.structured_content ? { structuredContent: result.structured_content } : {}),
+    ...(result.structured_content !== undefined ? { structuredContent: result.structured_content } : {}),
     ...(result.is_error ? { isError: true } : {}),
   };
 }

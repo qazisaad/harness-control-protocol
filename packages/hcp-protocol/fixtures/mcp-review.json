@@ -1,0 +1,20 @@
+[
+  {
+    "action_json": "{\"kind\":\"mcp_tool\",\"attachment_name\":\"server\",\"tool_name\":\"write\",\"arguments\":{\"text\":\"é🙂\"}}",
+    "valid": true,
+    "sha256": "f56beacaa38c8377403c751206b8c1998b45d6cc9a146d84c3e1ede2652ce7c4"
+  },
+  {
+    "action_json": "{\"kind\":\"mcp_tool\",\"attachment_name\":\"server\",\"tool_name\":\"write\",\"arguments\":{}}",
+    "valid": true,
+    "sha256": "3a571ac3eec173ae039bedda0a3c015b7e3577af92efce1b6c1b6949d06cf8c0"
+  },
+  {
+    "action_json": "{\"kind\":\"mcp_tool\",\"attachment_name\":\"\",\"tool_name\":\"write\",\"arguments\":{}}",
+    "valid": false
+  },
+  {
+    "action_json": "{}",
+    "valid": false
+  }
+]

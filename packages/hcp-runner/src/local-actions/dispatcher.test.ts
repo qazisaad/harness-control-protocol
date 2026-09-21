@@ -63,10 +63,6 @@ function config(workspaceRoot: string): RunnerConfig {
 function lease(): LocalCapabilityLease {
   return {
     lease_id: "lease-1",
-    org_id: "org-1",
-    workflow_id: "workflow-1",
-    run_id: "run-1",
-    node_id: "node-1",
     hcp_session_id: "session-1",
     execution_host_id: "host-1",
     provider_instance_id: "provider-1",
@@ -157,7 +153,6 @@ function leaseBinding(capabilityId: "filesystem" | "git" | "shell" | "dev_server
     lease_id: "lease-1",
     capability_id: capabilityId,
     scope,
-    run_id: "run-1",
     hcp_session_id: "session-1",
     execution_host_id: "host-1",
     provider_instance_id: "provider-1",
@@ -174,7 +169,6 @@ function requestBase(workspace: TestWorkspace) {
       turn_id: "turn-1",
       workspace_id: "workspace-1",
       provider_instance_id: "provider-1",
-      run_id: "run-1",
     },
     sandbox: {
       mode: "workspace_write" as const,

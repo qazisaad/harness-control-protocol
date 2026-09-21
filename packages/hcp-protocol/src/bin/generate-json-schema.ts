@@ -13,3 +13,6 @@ await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, schemaJson, "utf8");
 
 process.stdout.write(`${outputPath}\n`);
+
+const { createMcpReviewContract } = await import("../mcp-review.js");
+await writeFile(fileURLToPath(new URL("../../schemas/mcp-review.json", import.meta.url)), `${JSON.stringify(createMcpReviewContract(), null, 2)}\n`, "utf8");

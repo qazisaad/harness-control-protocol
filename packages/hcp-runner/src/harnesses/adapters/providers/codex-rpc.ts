@@ -12,6 +12,10 @@ const messageSchema = z.object({
   error: z.unknown().optional(),
 });
 export type RpcMessage = z.infer<typeof messageSchema>;
+export type RpcRequestHandler = (
+  params: unknown,
+  signal: AbortSignal,
+) => Promise<unknown>;
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -24,6 +28,9 @@ export class CodexRpc {
   #failure: Error | undefined;
   #buffer = "";
   readonly #decoder = new StringDecoder("utf8");
+  readonly #handlers = new Map<string, RpcRequestHandler>();
+  readonly #activeRequests = new Set<string | number>();
+  readonly #requestsAbort = new AbortController();
   onNotification: (message: RpcMessage) => void = () => {};
   onFailure: (error: Error) => void = () => {};
 
@@ -80,6 +87,38 @@ export class CodexRpc {
     this.#write({ method });
   }
 
+  setRequestHandler(method: string, handler: RpcRequestHandler): void {
+    if (this.#handlers.has(method)) {
+      throw new Error(`A native request handler is already registered for ${method}.`);
+    }
+    this.#handlers.set(method, handler);
+  }
+
+  async #handleRequest(
+    id: string | number,
+    params: unknown,
+    handler: RpcRequestHandler,
+  ): Promise<void> {
+    if (this.#activeRequests.has(id)) {
+      this.#fail(new HarnessAdapterError("codex_protocol_error", "Codex repeated an active native request."));
+      await this.process.stop();
+      return;
+    }
+    this.#activeRequests.add(id);
+    try {
+      const result = await handler(params, this.#requestsAbort.signal);
+      if (!this.#failure) this.#write({ id, result });
+    } catch {
+      if (!this.#failure) {
+        this.#write({ id, error: { code: -32603, message: "The native tool request could not complete." } });
+        this.#fail(new HarnessAdapterError("native_tool_request_failed", "The native tool request could not complete."));
+        await this.process.stop();
+      }
+    } finally {
+      this.#activeRequests.delete(id);
+    }
+  }
+
   #write(message: object): void {
     this.process.child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
       if (error)
@@ -95,6 +134,11 @@ export class CodexRpc {
   #receive(message: RpcMessage): void {
     if (this.#failure) return;
     if (message.method && message.id !== undefined) {
+      const handler = this.#handlers.get(message.method);
+      if (handler) {
+        void this.#handleRequest(message.id, message.params, handler);
+        return;
+      }
       this.#write({
         id: message.id,
         error: {
@@ -140,6 +184,7 @@ export class CodexRpc {
   #fail(error: Error): void {
     if (this.#failure) return;
     this.#failure = error;
+    this.#requestsAbort.abort(error);
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
     this.onFailure(error);

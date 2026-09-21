@@ -1,6 +1,6 @@
 {
   "name": "@harness-control/runner",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -49,8 +49,12 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.267",
-    "@harness-control/protocol": "0.4.0",
+    "@harness-control/protocol": "0.4.5",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "fs-native-extensions": "1.5.1",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   },

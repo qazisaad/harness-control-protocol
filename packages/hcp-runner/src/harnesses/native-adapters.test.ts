@@ -98,13 +98,15 @@ if (process.argv.includes('--version')) { console.log('codex-cli fixture'); proc
 if (process.argv.includes('login')) process.exit(0);
 const send = (x) => process.stdout.write(JSON.stringify(x)+'\n');
 const notify = (method, params) => send({method,params});
+let selectedTool; let finishTool;
 readline.createInterface({input:process.stdin}).on('line', line => {
  const m=JSON.parse(line); if (!m.id) return;
  fs.appendFileSync(process.env.RECORD,JSON.stringify(m)+'\n');
+ if(m.id==='native-call') { if(!m.result?.success) throw new Error('Native MCP failed'); finishTool(); return; }
  if(m.method==='initialize') send({id:m.id,result:{}});
- if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}}}}});
- if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
- if(m.method==='thread/start') send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never'}});
+ if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
+ if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
+ if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never'}}); }
  if(m.method==='turn/start') {
   const params={threadId:'native-thread',turnId:'native-turn'};
   notify('turn/started',{threadId:'native-thread',turn:{id:'native-turn'}});
@@ -112,6 +114,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   if(process.env.MODE==='exit') return process.exit(0);
   if(process.env.MODE==='request') return send({id:'approval-1',method:'item/commandExecution/requestApproval',params});
   if(process.env.MODE==='malformed') return process.stdout.write('not json\n');
+  const finish=()=>{
   const delta=JSON.stringify({method:'item/agentMessage/delta',params:{...params,delta:'🙂hello'}})+'\n';
   const bytes=Buffer.from(delta); const i=bytes.indexOf(Buffer.from('🙂'))+1;
   process.stdout.write(bytes.subarray(0,i));
@@ -122,6 +125,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     notify('turn/completed',{threadId:'native-thread',turn:{id:'native-turn',status:process.env.MODE==='failed'?'failed':'completed',error:null}});
    },30);
   },5);
+  };
+  if(process.env.MODE==='success') { finishTool=finish; send({id:'native-call',method:'item/tool/call',params:{...params,callId:'echo-call',namespace:selectedTool.name,tool:'echo',arguments:{text:'hello'}}}); } else finish();
  }
 });
 `;
@@ -153,6 +158,7 @@ for (const mode of [
       turnTimeoutMs: mode === "sleep" ? 1500 : 5000,
     });
     const events: HarnessAdapterEvent[] = [];
+    const toolCalls: unknown[] = [];
     let running = true;
     const terminal = await adapter.sendTurn({
       ...turn(payload, selected, (event) => {
@@ -160,7 +166,10 @@ for (const mode of [
         events.push(event);
       }),
       mcpServers: mode === "success" ? [{
-        name: "selected", transport: "streamable_http", url: "http://127.0.0.1:12345/mcp", headers: {}, allowed_tools: ["echo"],
+        name: "selected", transport: "streamable_http", url: "https://mcp.example.test/mcp", headers: {Authorization: "Bearer never-forward-this-token"}, allowed_tools: ["echo"],
+      }] : [],
+      mcpToolsets: mode === "success" ? [{name: "selected", tools: [{name: "echo", input_schema: {type: "object"}}],
+        async callTool(name, args) {toolCalls.push([name, args]); return {is_error: false, structured_content: {text: "hello"}};},
       }] : [],
     });
     running = false;
@@ -192,10 +201,18 @@ for (const mode of [
           },
       );
     const configuration = requests.find((r) => r.method === "thread/start")
-      ?.params.config as { mcp_servers: { inherited: { enabled: boolean; default_tools_approval_mode?: string }; selected?: { default_tools_approval_mode: string } } };
+      ?.params.config as { plugins: Record<string, { enabled: boolean }>; mcp_servers: { inherited: { enabled: boolean; default_tools_approval_mode?: string }; selected?: { default_tools_approval_mode: string } } };
     assert.equal(configuration.mcp_servers.inherited.enabled, false);
+    assert.deepEqual(configuration.plugins, { "plugin@vendor": { enabled: false } });
     assert.equal(configuration.mcp_servers.inherited.default_tools_approval_mode, undefined);
-    if (mode === "success") assert.equal(configuration.mcp_servers.selected?.default_tools_approval_mode, "approve");
+    if (mode === "success") {
+      assert.equal(configuration.mcp_servers.selected, undefined);
+      assert.deepEqual(toolCalls, [["echo", {text: "hello"}]]);
+      assert.equal(JSON.stringify(requests).includes("never-forward-this-token"), false);
+      const definitions = requests.find(r => r.method === "thread/start")!.params.dynamicTools as Array<{type: string; tools: Array<{name: string}>}>;
+      assert.equal(definitions[0]!.type, "namespace");
+      assert.equal(definitions[0]!.tools[0]!.name, "echo");
+    }
     if (mode !== "policy" && mode !== "mcp-leak")
       assert.equal(
         requests.find((r) => r.method === "turn/start")?.params.effort,

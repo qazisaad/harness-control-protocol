@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client as ModernClient, StreamableHTTPClientTransport as ModernTransport } from "@modelcontextprotocol/client";
 import type { ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
 import type { StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
 import type { HarnessAdapterMcpServer } from "../harnesses/adapters.js";
@@ -12,6 +13,34 @@ import { McpProxyServer, type McpProxyUpstream } from "./McpProxyServer.js";
 import type { McpToolCallArguments, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
 
 describe("McpProxyServer", () => {
+  for (const mode of ["auto", "legacy"] as const) {
+    it(`preserves every structured result type through ${mode} wire projection`, async () => {
+      const values = [null, false, 0, "", [1, "two"], {ok: true}];
+      const schemas = [{type: "null"}, {type: "boolean"}, {type: "number"}, {type: "string"}, {type: "array"}, {type: "object"}];
+      const upstream: McpProxyUpstream = {
+        async connect() {}, async close() {},
+        async listTools() {
+          return values.map((_, index) => ({name: `value_${index}`, input_schema: {type: "object"}, output_schema: schemas[index]!}));
+        },
+        async callTool(name) { return {is_error: false, structured_content: values[Number(name.split("_")[1])]!}; },
+      };
+      const proxy = new McpProxyServer({attachment: attachment(), upstream});
+      await proxy.connect();
+      const client = new ModernClient({name: "projection-test", version: "1"}, {versionNegotiation: {mode}});
+      try {
+        await client.connect(new ModernTransport(new URL(requireAdapterUrl(proxy))));
+        const catalog = await client.listTools();
+        for (const [index, value] of values.entries()) {
+          const tool = catalog.tools[index]!;
+          const result = await client.callTool({name: tool.name, arguments: {}}, {toolDefinition: tool});
+          const wrapped = mode === "legacy" && schemas[index]!.type !== "object";
+          assert.deepEqual(result.structuredContent, wrapped ? {result: value} : value);
+          assert.equal(tool.outputSchema?.type, wrapped ? "object" : schemas[index]!.type);
+        }
+      } finally { await client.close(); await proxy.close(); }
+    });
+  }
+
   it("serves an MCP endpoint that forwards tool listing and calls to the upstream attachment client", async () => {
     const calls: Array<{ name: string; arguments_: McpToolCallArguments }> = [];
     let connected = false;
@@ -39,7 +68,7 @@ describe("McpProxyServer", () => {
         calls.push({ name, arguments_ });
         return {
           content: [{ type: "text", text: String(arguments_["text"]) }],
-          structured_content: { text: arguments_["text"] },
+          structured_content: { text: String(arguments_["text"]) },
           is_error: false,
         };
       },

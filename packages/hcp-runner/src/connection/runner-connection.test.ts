@@ -24,6 +24,7 @@ import type { RunnerConfig } from "../config/index.js";
 import { HarnessSessionManager } from "../harnesses/index.js";
 import {
   HarnessAdapterRegistry,
+  MockHarnessAdapter,
   type HarnessAdapter,
   type HarnessAdapterEvent,
   type HarnessAdapterSession,
@@ -172,10 +173,6 @@ function createSessionStartPayload(cwd: string): HcpSessionStartPayload {
 function createLocalCapabilityLease(overrides: Partial<LocalCapabilityLease> = {}): LocalCapabilityLease {
   return {
     lease_id: "lease-1",
-    org_id: "org-1",
-    workflow_id: "workflow-1",
-    run_id: "run-1",
-    node_id: "node-1",
     hcp_session_id: "session-1",
     execution_host_id: "runner-test",
     provider_instance_id: "mock-provider",
@@ -198,13 +195,11 @@ function createFilesystemReadRequest(workspace: TestWorkspace, path = "project/n
       turn_id: "turn-1",
       workspace_id: "repo",
       provider_instance_id: "mock-provider",
-      run_id: "run-1",
     },
     lease: {
       lease_id: "lease-1",
       capability_id: "filesystem",
       scope: "workspace_read",
-      run_id: "run-1",
       hcp_session_id: "session-1",
       execution_host_id: "runner-test",
       provider_instance_id: "mock-provider",
@@ -230,7 +225,7 @@ function createFilesystemReadRequest(workspace: TestWorkspace, path = "project/n
 }
 
 describe("RunnerConnection", () => {
-  it("nacks unsupported controls without acknowledging a successful no-op", async () => {
+  it("nacks unsupported controls and approvals without a pending review", async () => {
     const workspace = await createWorkspace();
     const commands = [
       createHcpEnvelope("harness.approval.respond", { request_id: "r", session_id: "s", turn_id: "t", action_hash: "hash", decision: "accept", actor_id: "actor" }),
@@ -245,7 +240,9 @@ describe("RunnerConnection", () => {
     const connection = new RunnerConnection({ config: { ...createConfigBase(workspace.root), control_plane_url: server.url }, runnerVersion: "test" });
     try {
       await connection.connect();
-      for (const command of commands) assert.equal((await waitForNack(server.messages, command.id)).payload.error.code, "unsupported_command");
+      for (const command of commands) assert.equal((await waitForNack(server.messages, command.id)).payload.error.code,
+        command.type === "harness.approval.respond" ? "mcp_review_unavailable"
+          : command.type === "harness.input.respond" ? "mcp_input_unavailable" : "unsupported_command");
       assert.equal(server.messages.some(message => message.type === "hcp.command.ack"), false);
     } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
   });
@@ -294,6 +291,45 @@ describe("RunnerConnection", () => {
       await workspace.cleanup();
     }
   });
+
+  for (const failure of ["mcp", "adapter"] as const) {
+  it(`sends cleanup evidence when ${failure} initialization rejects a session start`, async () => {
+    const workspace = await createWorkspace();
+    const payload = createSessionStartPayload(workspace.project);
+    payload.mcp_servers = [{name: "tools", transport: "streamable_http", url: "https://example.com/mcp",
+      headers: {}, lease_id: "lease", proof_of_possession: {scheme: "runner_signed_request",
+        key_id: "key", required_headers: ["x-hcp-proof-signature"]}}];
+    const command = createHcpEnvelope("harness.session.start", payload);
+    const server = await startServer(async (socket, messages) => {
+      await waitForMessage(messages, "host.hello");
+      socket.send(JSON.stringify(command));
+    });
+    const config = {...createConfigBase(workspace.root), control_plane_url: server.url};
+    class FailingStartAdapter extends MockHarnessAdapter {
+      override async startSession(): Promise<HarnessAdapterSession> {
+        throw new Error("Adapter initialization rejected");
+      }
+    }
+    const connection = new RunnerConnection({config, runnerVersion: "test",
+      harnessSessions: new HarnessSessionManager(config, {
+        adapterRegistry: new HarnessAdapterRegistry([new FailingStartAdapter()]),
+        mcpClientFactory: () => ({
+        async connect() { if (failure === "mcp") throw new Error("MCP initialization rejected"); }, async close() {},
+      })}),
+    });
+    try {
+      await connection.connect();
+      const exited = await waitForHarnessEvent(server.messages, "session.exited");
+      assert.equal(exited.payload.session_id, payload.session_id);
+      assert.deepEqual(exited.payload.data, {
+        provider_instance_id: payload.provider_instance_id, reason: `${failure}_start_failed`,
+      });
+      await waitForNack(server.messages, command.id);
+      assert.equal(server.messages.some(message => message.type === "harness.event" &&
+        message.payload.event_type === "session.started"), false);
+    } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
+  });
+  }
 
   it("nacks invalid messages and invalid session starts", async () => {
     const workspace = await createWorkspace();

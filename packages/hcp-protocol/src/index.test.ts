@@ -59,11 +59,7 @@ function proofBoundAttachment(
 function localLease(overrides: Partial<LocalCapabilityLease> = {}): LocalCapabilityLease {
   return {
     lease_id: "local_lease_123",
-    org_id: "org_123",
     actor_id: "user_123",
-    workflow_id: "workflow_123",
-    run_id: "run_123",
-    node_id: "node_harness",
     hcp_session_id: "session-1",
     execution_host_id: "host-local",
     provider_instance_id: "provider-1",
@@ -344,7 +340,6 @@ test("requires attribution for local capability action events", () => {
       created_at: sentAt,
       data: {
         lease_id: "local_lease_123",
-        run_id: "run_123",
         workspace_id: "workspace-1",
         provider_instance_id: "provider-1",
         capability_id: "filesystem",
@@ -378,4 +373,12 @@ test("rejects malformed local capability lease policy", () => {
       }),
     ),
   );
+});
+
+test("local capability leases use HCP identity without product workflow fields", () => {
+  const lease = localLease();
+  assert.deepEqual(parseLocalCapabilityLease(lease), lease);
+  for (const field of ["org_id", "workflow_id", "run_id", "node_id"]) {
+    assert.throws(() => parseLocalCapabilityLease({ ...lease, [field]: "product-only" }));
+  }
 });

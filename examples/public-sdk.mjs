@@ -1,4 +1,4 @@
-// Standalone package acceptance example. Only loopback, temporary files, and the mock provider.
+// Standalone package acceptance example. Only loopback, temporary files, and a custom adapter.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +9,8 @@ import { HcpHostConnection } from "@harness-control/sdk";
 import { RunnerConnection } from "@harness-control/runner/connection";
 import { RunnerConfigSchema, loadRunnerConfig } from "@harness-control/runner/config";
 import { AccountUsageReader, normalizeCodexUsage } from "@harness-control/runner/accounts";
-import { HarnessSessionManager } from "@harness-control/runner/harnesses";
+import { EchoHarnessAdapter } from "./custom-harness.js";
+import { HarnessAdapterRegistry, HarnessSessionManager } from "@harness-control/runner/harnesses";
 
 const directory = await realpath(await mkdtemp(join(tmpdir(), "hcp-public-sdk-")));
 const folder = join(directory, "project");
@@ -57,14 +58,14 @@ try {
     runner_id: "public-sdk-example", host_id: "public-sdk-example",
     control_plane_url: `ws://127.0.0.1:${address.port}`,
     workspaces: [], workspace_management: { allowed_roots: [directory] },
-    provider_instances: [{ id: "mock", driver_kind: "mock", display_name: "Mock", enabled: true, account_usage: {} }],
+    provider_instances: [{ id: "echo-local", driver_kind: "example.echo", display_name: "Custom harness", enabled: true, account_usage: {} }],
   });
   await writeFile(configPath, JSON.stringify(config));
-  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.4.0", accountUsage: new AccountUsageReader(config, { collectors: new Map([["mock", async context => normalizeCodexUsage(context, { account: { type: "chatgpt", email: "fixture@example.com", planType: "fixture" } }, { rateLimits: { primary: { usedPercent: 96, resetsAt: Math.ceil(Date.now() / 1000) + 86400 } } })]]) }), harnessSessions: new HarnessSessionManager(config) });
+  runner = new RunnerConnection({ config, configPath, runnerVersion: "0.4.0", accountUsage: new AccountUsageReader(config, { collectors: new Map([["example.echo", async context => normalizeCodexUsage(context, { account: { type: "chatgpt", email: "fixture@example.com", planType: "fixture" } }, { rateLimits: { primary: { usedPercent: 96, resetsAt: Math.ceil(Date.now() / 1000) + 86400 } } })]]) }), harnessSessions: new HarnessSessionManager(config, { adapterRegistry: new HarnessAdapterRegistry([new EchoHarnessAdapter()]) }) });
   await runner.connect();
   await until(() => received.some(message => message.type === "host.capabilities.updated"));
   const capabilities = received.find(message => message.type === "host.capabilities.updated").payload;
-  assert.ok(capabilities.providers.some(provider => provider.provider_instance_id === "mock"));
+  assert.ok(capabilities.providers.some(provider => provider.provider_instance_id === "echo-local"));
   const accountSnapshot = await peer.readAccounts();
   assert.equal(accountSnapshot.payload.providers.length, 1);
   const [accountView] = peer.accounts.accounts(new Date(), 300_000);
@@ -88,11 +89,23 @@ try {
   await manage({ kind: "rename", id: workspace.id, display_name: "Renamed project" });
   const persisted = await loadRunnerConfig(configPath);
   assert.equal(persisted.workspaces[0].display_name, "Renamed project");
-  await peer.startSession({ session_id: "session-1", workspace_id: workspace.id, provider_instance_id: "mock",
-    driver_kind: "mock", cwd: folder, sandbox_mode: "workspace_write", approval_policy: "full_access", continue_session: false, model_selection: { model: "mock-model", options: [] }, mcp_servers: [] });
+  await peer.startSession({ session_id: "session-1", workspace_id: workspace.id, provider_instance_id: "echo-local",
+    driver_kind: "example.echo", cwd: folder, sandbox_mode: "workspace_write", approval_policy: "full_access", continue_session: false, model_selection: { model: "echo", options: [] }, mcp_servers: [], local_capability_lease: { lease_id: "local-lease", hcp_session_id: "session-1", execution_host_id: config.host_id, provider_instance_id: "echo-local", workspace_id: workspace.id, issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(), policy_version: "example-v1", capabilities: [{ id: "filesystem", scopes: ["workspace_read"] }] } });
   await until(() => received.some(message => message.type === "harness.event" && message.payload.event_type === "session.configured"));
   await peer.sendTurn({ session_id: "session-1", turn_id: "turn-1", input: "Explain this project" });
   await until(() => received.some(message => message.type === "harness.event" && message.payload.event_type === "turn.completed"));
+  assert.equal(received.find(message => message.type === "harness.event" && message.payload.event_type === "turn.completed").payload.data.final_output.final_text, "Explain this project");
+  const localRead = await peer.runLocalAction({
+    request_id: "read-1", action: "local.filesystem.read", issued_at: new Date().toISOString(),
+    attribution: { session_id: "session-1", turn_id: "turn-1", workspace_id: workspace.id, provider_instance_id: "echo-local" },
+    lease: { lease_id: "local-lease", capability_id: "filesystem", scope: "workspace_read", hcp_session_id: "session-1", execution_host_id: config.host_id, provider_instance_id: "echo-local", workspace_id: workspace.id },
+    sandbox: { mode: "workspace_write", workspace_root: folder, cwd: folder, requires_workspace_containment: true },
+    approval: { status: "not_required" }, output_limits: { content_bytes: 65536 }, cancellation: { cancellable: false },
+    audit: { started_event_type: "local_capability.action.started", completed_event_type: "local_capability.action.completed", failed_event_type: "local_capability.action.failed" },
+    input: { path: "README.md", encoding: "utf8" },
+  });
+  assert.equal(localRead.type, "local.action.response");
+  assert.equal(localRead.payload.output.content, "Package acceptance workspace\n");
   const snapshot = await peer.requestSnapshot({ session_id: "session-1" });
   assert.ok(snapshot.payload.events.some(event => event.event_type === "turn.completed"));
   await peer.stopSession({ session_id: "session-1", reason: "Example complete" });
@@ -100,7 +113,7 @@ try {
   assert.deepEqual(await manage({ kind: "remove", id: workspace.id }), []);
   assert.equal(await readFile(join(folder, "README.md"), "utf8"), "Package acceptance workspace\n");
   if (failure) throw failure;
-  console.log("Public packages: account read, SDK account reduction, folder browse/list/add/rename/remove, persisted config, session start, terminal turn, snapshot, and session exit verified over WebSocket.");
+  console.log("Public packages: custom adapter, local capability without product IDs, account read, SDK account reduction, folder browse/list/add/rename/remove, persisted config, session start, terminal turn, snapshot, and session exit verified over WebSocket.");
 } finally {
   await runner?.close();
   peer?.disconnect();

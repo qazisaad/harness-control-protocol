@@ -1,9 +1,8 @@
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client, type Tool } from "@modelcontextprotocol/client";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Readable } from "node:stream";
 
-import { McpToolPolicyError, type McpToolCallArguments, type McpToolCallResult, type McpToolDescriptor } from "./McpAttachmentClient.js";
+import { toMcpToolDescriptor, toMcpToolCallResult, McpToolPolicyError, type McpToolCallArguments, type McpToolCallResult, type McpToolDescriptor } from "./McpAttachmentClient.js";
 import { redactValue } from "./redaction.js";
 
 export type McpStdioProfileClientOptions = {
@@ -32,7 +31,7 @@ export class McpStdioProfileClient {
 
   async connect(): Promise<void> {
     if (this.#client) return;
-    const client = new Client({ name: "hcp-runner", version: "0.0.0" });
+    const client = new Client({ name: "hcp-runner", version: "0.0.0" }, {inputRequired: {autoFulfill: false}});
     const transport = new StdioClientTransport({
       command: this.#options.command,
       args: this.#options.args,
@@ -59,7 +58,7 @@ export class McpStdioProfileClient {
   async listTools(): Promise<McpToolDescriptor[]> {
     const client: Client = this.#requireClient();
     const result: Awaited<ReturnType<Client["listTools"]>> = await client.listTools();
-    return result.tools.filter((tool: Tool): boolean => this.#isAllowed(tool.name)).map(toDescriptor);
+    return result.tools.filter((tool: Tool): boolean => this.#isAllowed(tool.name)).map(toMcpToolDescriptor);
   }
 
   async callTool(name: string, arguments_: McpToolCallArguments = {}): Promise<McpToolCallResult> {
@@ -71,15 +70,7 @@ export class McpStdioProfileClient {
       );
     }
     const result: SdkToolCallResult = await this.#requireClient().callTool({ name, arguments: arguments_ });
-    const content: unknown[] = Array.isArray(result.content) ? result.content : [];
-    const structuredContent: Record<string, unknown> | undefined = isRecord(result.structuredContent)
-      ? result.structuredContent
-      : undefined;
-    return {
-      content,
-      ...(structuredContent ? { structured_content: structuredContent } : {}),
-      is_error: result.isError === true,
-    };
+    return toMcpToolCallResult(result);
   }
 
   async close(): Promise<void> {
@@ -97,17 +88,4 @@ export class McpStdioProfileClient {
     if (!this.#client) throw new Error(`Runner MCP profile '${this.#options.name}' is not connected.`);
     return this.#client;
   }
-}
-
-function toDescriptor(tool: Tool): McpToolDescriptor {
-  return {
-    name: tool.name,
-    ...(tool.description ? { description: tool.description } : {}),
-    input_schema: tool.inputSchema,
-    ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

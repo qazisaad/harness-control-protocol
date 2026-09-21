@@ -38,7 +38,7 @@ Runner responsibilities:
 - map HCP `McpServerAttachment` records into SDK clients
 - resolve runner-owned stdio profile ids into locally configured processes without exposing command configuration
 - enforce `allowed_tools` and `denied_tools`
-- attach MCP servers only to workflow-launched harness sessions
+- attach MCP servers only to explicitly configured harness sessions
 - redact inputs, outputs, and headers before logging
 - emit HCP MCP events
 - close clients and remove temporary config at session end
@@ -53,3 +53,11 @@ The sample MCP server exposes both proof-bound Streamable HTTP and local stdio e
 The runner owns local acceptance, idempotency receipts, per-session event sequencing, retained replay windows, and session event snapshots. The control plane owns the sequence it has durably applied and sends that cursor in `host.accepted`.
 
 The runner does not own product thread/message history or workflow queues. A hosted application persists HCP events through its canonical production reducer and stores its cursor in the same transaction as the resulting projection. See [Reliability And Snapshots](reliability-and-snapshots.md).
+
+## Consumer identity and custom harnesses
+
+Local leases, actions and their events use HCP session, lease, host, provider and workspace identities. Organization, workflow, run and node IDs belong to the consuming application's records, mapped by session or lease ID. They are not fields in the public local capability contract. This keeps one execution identity through retry/replay without requiring a workflow engine. The 0.4.0 release removes those formerly required product fields; callers must omit them.
+
+Custom harness developers import `HarnessAdapter`, its input/output types, `ProviderDriverStatus` and `HarnessAdapterRegistry` from `@harness-control/runner/harnesses`. Supply the registry to `HarnessSessionManager`, then the manager to `RunnerConnection`. See [`examples/custom-harness.ts`](../examples/custom-harness.ts) and [`examples/public-sdk.mjs`](../examples/public-sdk.mjs). The packed release check compiles this adapter outside the monorepo and exercises it through terminal execution, a local capability action, snapshot reduction and session exit.
+
+The `connect` CLI discovers bundled providers. Applications embedding custom adapters configure their provider instances and registry themselves; they do not need to patch the default registry or import private package paths. User-facing product setup instructions belong to the consuming application.

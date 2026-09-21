@@ -12,14 +12,12 @@
       "session_id": "session-1",
       "turn_id": "turn-1",
       "workspace_id": "workspace-1",
-      "provider_instance_id": "provider-1",
-      "run_id": "run-1"
+      "provider_instance_id": "provider-1"
     },
     "lease": {
       "lease_id": "local-lease-patch",
       "capability_id": "filesystem",
       "scope": "workspace_write",
-      "run_id": "run-1",
       "hcp_session_id": "session-1",
       "execution_host_id": "host-1",
       "provider_instance_id": "provider-1",

@@ -1,6 +1,6 @@
 {
   "name": "@harness-control/protocol",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,7 +24,13 @@
     "./schema.json": {
       "default": "./schemas/hcp-message.schema.json"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./mcp-review.json": {
+      "default": "./schemas/mcp-review.json"
+    },
+    "./mcp-review-fixtures.json": {
+      "default": "./fixtures/mcp-review.json"
+    }
   },
   "scripts": {
     "build": "tsc -b && npm run schema:generate",
@@ -56,6 +62,7 @@
     "README.md",
     "LICENSE",
     "schemas",
-    "fixtures/conformance"
+    "fixtures/conformance",
+    "fixtures/mcp-review.json"
   ]
 }

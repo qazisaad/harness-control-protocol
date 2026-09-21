@@ -5,9 +5,11 @@ import type {
   HarnessUsageSnapshot,
 } from "@harness-control/protocol";
 import { HarnessAdapterError } from "../types.js";
-import { adapterMcpServers, assertCliMcpAttachmentProxied } from "./shared.js";
+import { adapterMcpServers } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
 import { CodexRpc } from "./codex-rpc.js";
+import { NativeMcpBridge } from "./native-mcp.js";
+import { recordMcpContinuation } from "./mcp-continuation.js";
 
 const object = z.record(z.string(), z.unknown());
 const idObject = z.object({ id: z.string() });
@@ -67,7 +69,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
   try {
     await rpc.request("initialize", {
       clientInfo: { name: "hcp-runner", version: "0.0.0" },
-      capabilities: {},
+      capabilities: { experimentalApi: true },
     });
     rpc.notify("initialized");
     const configResult = z.object({ config: object }).parse(
@@ -77,36 +79,34 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       }),
     );
     const inherited = object.parse(configResult.config.mcp_servers ?? {});
+    const inheritedPlugins = object.parse(configResult.config.plugins ?? {});
     const servers: Record<string, unknown> = {};
     for (const name of Object.keys(inherited))
       servers[name] = { enabled: false };
-    for (const attachment of adapterMcpServers(
-      input.mcpServers,
-      input.startPayload,
-    )) {
-      assertCliMcpAttachmentProxied(attachment, "Codex", "codex");
-      if (Object.hasOwn(inherited, attachment.name)) {
-        throw new HarnessAdapterError(
-          "mcp_name_conflict",
-          "An attachment conflicts with an inherited MCP server name.",
-        );
-      }
-      servers[attachment.name] = {
-        url: attachment.url,
-        enabled: true,
-        default_tools_approval_mode: "approve",
-      };
+    const attachments = adapterMcpServers(input.mcpServers, input.startPayload);
+    const toolsets = input.mcpToolsets ?? [];
+    if (attachments.length !== toolsets.length ||
+        attachments.some(attachment => !toolsets.some(toolset => toolset.name === attachment.name))) {
+      throw new HarnessAdapterError("mcp_bridge_missing", "Codex requires the authorized runner tool bridge for every selected MCP attachment.");
     }
+    const bridge = new NativeMcpBridge(toolsets, input.reviewMcpTool);
     const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
     const started = startedSchema.parse(
-      await rpc.request("thread/start", {
+      await rpc.request(input.mcpContinuation ? "thread/resume" : "thread/start", {
+        ...(input.mcpContinuation ? {threadId: input.mcpContinuation.native_thread_id} : {
+          ephemeral: !(input.reviewMcpTool && toolsets.some(toolset => toolset.tools.length > 0)),
+          dynamicTools: bridge.definitions,
+        }),
         cwd: input.startPayload.cwd,
         model: selection.model,
         sandbox,
         approvalPolicy: "never",
-        ephemeral: true,
+
         config: {
           mcp_servers: servers,
+          plugins: Object.fromEntries(
+            Object.keys(inheritedPlugins).map((name) => [name, { enabled: false }]),
+          ),
           "features.apps": false,
           "features.multi_agent": false,
           "sandbox_workspace_write.writable_roots": [],
@@ -147,11 +147,9 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       }
     }
     const threadId = started.thread.id;
-    const allowedServers = new Set(
-      adapterMcpServers(input.mcpServers, input.startPayload).map(
-        (attachment) => attachment.name,
-      ),
-    );
+    if (input.mcpContinuation && threadId !== input.mcpContinuation.native_thread_id) {
+      throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
+    }
     let cursor: string | undefined;
     do {
       const inventory = z
@@ -174,9 +172,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       if (
         inventory.data.some(
           (server) =>
-            !allowedServers.has(server.name) &&
             !(
-              Object.hasOwn(inherited, server.name) &&
               server.runtimeStatus === "disabled" &&
               Object.keys(server.tools ?? {}).length === 0
             ),
@@ -190,6 +186,10 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       cursor = inventory.nextCursor ?? undefined;
     } while (cursor);
     let nativeTurnId: string | undefined;
+    rpc.setRequestHandler("item/tool/call", async (params, requestSignal) => {
+      if (!nativeTurnId) throw new HarnessAdapterError("codex_turn_missing", "Native tool calls require an active turn.");
+      return bridge.call(params, {threadId, turnId: nativeTurnId}, requestSignal);
+    });
     let finalText: string | undefined;
     let usage: HarnessUsageSnapshot | undefined;
     let settled = false;
@@ -313,12 +313,17 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         } else resolve({ final_text: finalText, ...(usage ? { usage } : {}) });
       }
     };
+    const continuation = input.mcpContinuation;
+    if (continuation) await recordMcpContinuation(rpc, threadId, continuation);
     const turn = z.object({ turn: idObject }).parse(
       await rpc.request("turn/start", {
         threadId,
         model: selection.model,
         ...(effort ? { effort } : {}),
-        input: [{ type: "text", text: input.payload.input, text_elements: [] }],
+        input: [{ type: "text", text: continuation
+          ? (continuation.outcome.kind === "declined" ? "The user declined the pending tool call. Continue without executing it."
+            : "Continue using the result of the separately approved tool operation recorded above.")
+          : input.payload.input, text_elements: [] }],
       }),
     );
     if (nativeTurnId !== undefined && nativeTurnId !== turn.turn.id)

@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -19,6 +20,7 @@ import {
   type LocalActionResponsePayload,
 } from "@harness-control/protocol";
 import { z } from "zod";
+import { persistedMcpReviewSchema, validateMcpTransition, type PersistedMcpReview } from "./mcp-review.js";
 
 const DEFAULT_RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_EVENT_RETENTION_PER_SESSION = 512;
@@ -58,6 +60,7 @@ type RunnerStateData = {
   events: Record<string, HcpHarnessEventPayload[]>;
   commandReceipts: Record<string, PersistedCommandReceipt>;
   localActionReceipts: Record<string, PersistedLocalActionReceipt>;
+  mcpReviews: Record<string, PersistedMcpReview>;
 };
 
 const persistedCommandReceiptSchema = z.discriminatedUnion("outcome", [
@@ -106,6 +109,7 @@ const runnerStateDataSchema = z
     events: z.record(z.string(), z.array(hcpHarnessEventPayloadSchema)),
     commandReceipts: z.record(z.string(), persistedCommandReceiptSchema),
     localActionReceipts: z.record(z.string(), persistedLocalActionReceiptSchema),
+    mcpReviews: z.record(z.string(), persistedMcpReviewSchema).default({}),
   })
   .strict();
 
@@ -116,6 +120,10 @@ export type RunnerStateStoreOptions = {
 };
 
 export interface RunnerStateStore {
+  getMcpReview(sessionId: string): PersistedMcpReview | undefined;
+  pendingMcpReviews(): PersistedMcpReview[];
+  saveMcpReview(review: PersistedMcpReview, event?: HcpHarnessEventPayload): void;
+  clearMcpReview(sessionId: string, requestId: string, events?: HcpHarnessEventPayload[]): void;
   nextEventSequence(sessionId: string): number;
   appendEvent(event: HcpHarnessEventPayload): void;
   hasSessionEvents(sessionId: string): boolean;
@@ -155,19 +163,72 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
   }
 
   appendEvent(event: HcpHarnessEventPayload): void {
+    this.#appendEvent(event);
+    this.persist();
+  }
+
+  #appendEvent(event: HcpHarnessEventPayload): void {
     const expectedSequence: number = this.nextEventSequence(event.session_id);
     if (event.sequence !== expectedSequence) {
       throw new Error(
         `Event sequence ${event.sequence} for session '${event.session_id}' does not match expected sequence ${expectedSequence}.`,
       );
     }
-    const events: HcpHarnessEventPayload[] = this.data.events[event.session_id] ?? [];
+    const events: HcpHarnessEventPayload[] = [...(this.data.events[event.session_id] ?? [])];
     events.push(event);
     while (events.length > this.#eventRetentionPerSession) {
       events.shift();
     }
     this.data.events[event.session_id] = events;
-    this.persist();
+  }
+
+  getMcpReview(sessionId: string): PersistedMcpReview | undefined {
+    const review = this.data.mcpReviews[sessionId];
+    return review ? structuredClone(review) : undefined;
+  }
+
+  pendingMcpReviews(): PersistedMcpReview[] {
+    return structuredClone(Object.values(this.data.mcpReviews));
+  }
+
+  saveMcpReview(input: PersistedMcpReview, event?: HcpHarnessEventPayload): void {
+    const review = persistedMcpReviewSchema.parse(input);
+    const sessionId = review.start.session_id;
+    const previous = this.data.mcpReviews[sessionId];
+    if (!previous && Object.keys(this.data.mcpReviews).length >= 16) throw new Error("Pending MCP continuation capacity exceeded.");
+    if (previous && previous.request_id !== review.request_id) throw new Error("A pending MCP continuation cannot be replaced.");
+    if (createHash("sha256").update(review.action_json).digest("hex") !== review.action_hash) throw new Error("MCP review action hash changed.");
+    validateMcpTransition(previous, review, event);
+    this.#persistMcpChange(sessionId, () => {
+      this.data.mcpReviews[sessionId] = review;
+      if (event) {
+        hcpHarnessEventPayloadSchema.parse(event);
+        this.#appendEvent(structuredClone(event));
+      }
+    });
+  }
+
+  clearMcpReview(sessionId: string, requestId: string, events: HcpHarnessEventPayload[] = []): void {
+    const review = this.data.mcpReviews[sessionId];
+    if (!review || review.request_id !== requestId) throw new Error("MCP continuation identity changed.");
+    this.#persistMcpChange(sessionId, () => {
+      for (const event of events) {
+        if (event.session_id !== sessionId) throw new Error("MCP cleanup event has another session binding.");
+        hcpHarnessEventPayloadSchema.parse(event);
+        this.#appendEvent(structuredClone(event));
+      }
+      delete this.data.mcpReviews[sessionId];
+    });
+  }
+
+  #persistMcpChange(sessionId: string, change: () => void): void {
+    const review = this.data.mcpReviews[sessionId];
+    const events = this.data.events[sessionId];
+    try {change(); this.persist();} catch (error: unknown) {
+      if (review) this.data.mcpReviews[sessionId] = review; else delete this.data.mcpReviews[sessionId];
+      if (events) this.data.events[sessionId] = events; else delete this.data.events[sessionId];
+      throw error;
+    }
   }
 
   hasSessionEvents(sessionId: string): boolean {
@@ -325,6 +386,7 @@ function emptyRunnerState(): RunnerStateData {
     events: {},
     commandReceipts: {},
     localActionReceipts: {},
+    mcpReviews: {},
   };
 }
 

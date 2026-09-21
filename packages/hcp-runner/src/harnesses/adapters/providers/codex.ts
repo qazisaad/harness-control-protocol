@@ -26,8 +26,6 @@ import {
 } from "./cli-process.js";
 import {
   normalizeProviderModels,
-  adapterMcpServers,
-  assertCliMcpAttachmentProxied,
 } from "./shared.js";
 import {
   NativeTurns,
@@ -43,6 +41,7 @@ export type CodexHarnessAdapterOptions = {
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "codex";
+  readonly durableMcpContinuation = true;
   readonly #processSpawner: CliProcessSpawner;
   readonly #probeTimeoutMs: number;
   readonly #processKillGraceMs: number;
@@ -184,8 +183,6 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     input: HarnessAdapterStartInput,
   ): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
-    for (const attachment of adapterMcpServers(input.mcpServers, input.payload))
-      assertCliMcpAttachmentProxied(attachment, "Codex", "codex");
     return { adapter_session_id: input.payload.session_id };
   }
   async sendTurn(

@@ -1891,23 +1891,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "org_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "actor_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workflow_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "run_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "node_id": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -2042,10 +2026,6 @@
               },
               "required": [
                 "lease_id",
-                "org_id",
-                "workflow_id",
-                "run_id",
-                "node_id",
                 "hcp_session_id",
                 "execution_host_id",
                 "provider_instance_id",
@@ -3074,18 +3054,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -3103,10 +3078,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -3134,7 +3105,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -3402,18 +3372,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -3431,10 +3396,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -3462,7 +3423,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -3718,18 +3678,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -3747,10 +3702,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_write"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -3778,7 +3729,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -4047,18 +3997,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -4076,10 +4021,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_write"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -4107,7 +4048,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -4376,18 +4316,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -4405,10 +4340,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -4436,7 +4367,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -4687,18 +4617,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -4716,10 +4641,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -4747,7 +4668,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -4999,18 +4919,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -5028,10 +4943,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -5059,7 +4970,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -5316,18 +5226,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -5345,10 +5250,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -5376,7 +5277,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -5663,18 +5563,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -5692,10 +5587,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -5723,7 +5614,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -6022,18 +5912,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -6051,10 +5936,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -6082,7 +5963,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -6219,18 +6099,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -6248,10 +6123,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -6279,7 +6150,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -6425,18 +6295,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -6454,10 +6319,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_write"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -6485,7 +6346,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -6613,18 +6473,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -6642,10 +6497,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_write"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -6673,7 +6524,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -6799,18 +6649,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -6828,10 +6673,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -6859,7 +6700,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -6982,18 +6822,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -7011,10 +6846,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace_read"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -7042,7 +6873,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -7161,18 +6991,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -7190,10 +7015,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -7221,7 +7042,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -7391,18 +7211,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -7420,10 +7235,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -7451,7 +7262,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -7600,18 +7410,13 @@
                     "provider_instance_id": {
                       "type": "string",
                       "minLength": 1
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     }
                   },
                   "required": [
                     "session_id",
                     "turn_id",
                     "workspace_id",
-                    "provider_instance_id",
-                    "run_id"
+                    "provider_instance_id"
                   ],
                   "additionalProperties": false
                 },
@@ -7629,10 +7434,6 @@
                     "scope": {
                       "type": "string",
                       "const": "workspace"
-                    },
-                    "run_id": {
-                      "type": "string",
-                      "minLength": 1
                     },
                     "hcp_session_id": {
                       "type": "string",
@@ -7660,7 +7461,6 @@
                     "lease_id",
                     "capability_id",
                     "scope",
-                    "run_id",
                     "hcp_session_id",
                     "execution_host_id",
                     "provider_instance_id",
@@ -7840,18 +7640,13 @@
                 "provider_instance_id": {
                   "type": "string",
                   "minLength": 1
-                },
-                "run_id": {
-                  "type": "string",
-                  "minLength": 1
                 }
               },
               "required": [
                 "session_id",
                 "turn_id",
                 "workspace_id",
-                "provider_instance_id",
-                "run_id"
+                "provider_instance_id"
               ],
               "additionalProperties": false
             },
@@ -7872,10 +7667,6 @@
                   ]
                 },
                 "scope": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "run_id": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -7905,7 +7696,6 @@
                 "lease_id",
                 "capability_id",
                 "scope",
-                "run_id",
                 "hcp_session_id",
                 "execution_host_id",
                 "provider_instance_id",
@@ -8180,7 +7970,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/session.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -8373,7 +8164,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/session.configured.schema.json"
             },
             "raw": {
               "type": "object",
@@ -8566,7 +8358,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/session.state.changed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -8759,7 +8552,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/session.exited.schema.json"
             },
             "raw": {
               "type": "object",
@@ -8931,7 +8725,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -9103,7 +8898,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.state.changed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -9275,7 +9071,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.metadata.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -9447,7 +9244,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.token_usage.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -9619,7 +9417,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.realtime.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -9791,7 +9590,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.realtime.item_added.schema.json"
             },
             "raw": {
               "type": "object",
@@ -9963,7 +9763,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.realtime.audio_delta.schema.json"
             },
             "raw": {
               "type": "object",
@@ -10135,7 +9936,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.realtime.error.schema.json"
             },
             "raw": {
               "type": "object",
@@ -10307,7 +10109,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/thread.realtime.closed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -10460,7 +10263,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/auth.status.schema.json"
             },
             "raw": {
               "type": "object",
@@ -10613,7 +10417,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/account.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -10766,7 +10571,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/account.rate_limits.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -10961,7 +10767,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -11200,7 +11007,8 @@
               "required": [
                 "final_output"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -11439,7 +11247,8 @@
               "required": [
                 "final_output"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.failed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -11678,7 +11487,8 @@
               "required": [
                 "final_output"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.aborted.schema.json"
             },
             "raw": {
               "type": "object",
@@ -11917,7 +11727,8 @@
               "required": [
                 "final_output"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.cancelled.schema.json"
             },
             "raw": {
               "type": "object",
@@ -12112,7 +11923,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.plan.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -12307,7 +12119,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.proposed.delta.schema.json"
             },
             "raw": {
               "type": "object",
@@ -12502,7 +12315,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.proposed.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -12697,7 +12511,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/turn.diff.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -12812,7 +12627,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/item.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -12927,7 +12743,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/item.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13042,7 +12859,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/item.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13151,7 +12969,8 @@
               "required": [
                 "delta"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/content.delta.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13260,7 +13079,8 @@
               "required": [
                 "delta"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/reasoning.delta.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13419,7 +13239,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/command.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13578,7 +13399,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/command.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13714,7 +13536,8 @@
                 "provider_instance_id",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/local_capability.lease.created.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13850,7 +13673,8 @@
                 "provider_instance_id",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/local_capability.lease.revoked.schema.json"
             },
             "raw": {
               "type": "object",
@@ -13986,7 +13810,8 @@
                 "provider_instance_id",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/local_capability.lease.expired.schema.json"
             },
             "raw": {
               "type": "object",
@@ -14088,10 +13913,6 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "run_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "workspace_id": {
                   "type": "string",
                   "minLength": 1
@@ -14154,14 +13975,14 @@
               },
               "required": [
                 "lease_id",
-                "run_id",
                 "workspace_id",
                 "provider_instance_id",
                 "capability_id",
                 "action",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/local_capability.action.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -14264,10 +14085,6 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "run_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "workspace_id": {
                   "type": "string",
                   "minLength": 1
@@ -14330,14 +14147,14 @@
               },
               "required": [
                 "lease_id",
-                "run_id",
                 "workspace_id",
                 "provider_instance_id",
                 "capability_id",
                 "action",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/local_capability.action.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -14440,10 +14257,6 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "run_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "workspace_id": {
                   "type": "string",
                   "minLength": 1
@@ -14506,14 +14319,14 @@
               },
               "required": [
                 "lease_id",
-                "run_id",
                 "workspace_id",
                 "provider_instance_id",
                 "capability_id",
                 "action",
                 "status"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/local_capability.action.failed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -14673,7 +14486,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/file_change.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -14832,7 +14646,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/file_change.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -14991,7 +14806,8 @@
               "required": [
                 "tool_name"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/mcp_tool.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -15150,7 +14966,8 @@
               "required": [
                 "tool_name"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/mcp_tool.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -15268,7 +15085,8 @@
                   "minLength": 1
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/mcp.status.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -15386,7 +15204,8 @@
                   "minLength": 1
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/mcp.oauth.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -15581,7 +15400,8 @@
                 "expires_at",
                 "display"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/approval.requested.schema.json"
             },
             "raw": {
               "type": "object",
@@ -15722,7 +15542,8 @@
                 "decision",
                 "actor_id"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/approval.resolved.schema.json"
             },
             "raw": {
               "type": "object",
@@ -15844,6 +15665,15 @@
                     "form"
                   ]
                 },
+                "form_schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#/$defs/__schema0"
+                  }
+                },
                 "choices": {
                   "type": "array",
                   "items": {
@@ -15893,7 +15723,41 @@
                 "required",
                 "redaction"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$defs": {
+                "__schema0": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/__schema0"
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "$ref": "#/$defs/__schema0"
+                      }
+                    }
+                  ]
+                }
+              },
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/input.requested.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16022,7 +15886,8 @@
                 "session_id",
                 "turn_id"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/input.resolved.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16149,7 +16014,8 @@
                   "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/request.opened.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16276,7 +16142,8 @@
                   "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/request.resolved.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16398,6 +16265,15 @@
                     "form"
                   ]
                 },
+                "form_schema": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "$ref": "#/$defs/__schema0"
+                  }
+                },
                 "choices": {
                   "type": "array",
                   "items": {
@@ -16447,7 +16323,41 @@
                 "required",
                 "redaction"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$defs": {
+                "__schema0": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/__schema0"
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "$ref": "#/$defs/__schema0"
+                      }
+                    }
+                  ]
+                }
+              },
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/user_input.requested.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16576,7 +16486,8 @@
                 "session_id",
                 "turn_id"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/user_input.resolved.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16721,7 +16632,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/task.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -16866,7 +16778,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/task.progress.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17011,7 +16924,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/task.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17160,7 +17074,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/hook.started.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17309,7 +17224,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/hook.progress.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17458,7 +17374,8 @@
                   "additionalProperties": false
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/hook.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17573,7 +17490,8 @@
                   "maximum": 1
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/tool.progress.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17688,7 +17606,8 @@
                   "maximum": 1
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/tool.summary.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17798,7 +17717,8 @@
                   "type": "string"
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/model.rerouted.schema.json"
             },
             "raw": {
               "type": "object",
@@ -17935,7 +17855,8 @@
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/config.warning.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18072,7 +17993,8 @@
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/deprecation.notice.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18233,7 +18155,8 @@
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/files.persisted.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18372,7 +18295,8 @@
                 "cwd",
                 "result"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/workspace.preflight.completed.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18490,7 +18414,8 @@
                   "minimum": 0
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/usage.updated.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18627,7 +18552,8 @@
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/runtime.warning.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18764,7 +18690,8 @@
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/runtime.error.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18873,7 +18800,8 @@
                   "additionalProperties": {}
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/provider.schema.json"
             },
             "raw": {
               "type": "object",
@@ -18982,7 +18910,8 @@
                   "additionalProperties": {}
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/extension.schema.json"
             },
             "raw": {
               "type": "object",

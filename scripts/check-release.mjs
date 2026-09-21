@@ -26,11 +26,17 @@ assert.equal(new Set(manifests.map(pkg => pkg.version)).size, 1);
 const consumer = mkdtempSync(join(tmpdir(), "hcp-package-consumer-"));
 try {
   writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
-  run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...manifests.map(pkg => join(output, pkg.filename)), "ws@^8.21.0"], consumer);
+  run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...manifests.map(pkg => join(output, pkg.filename)), "ws@^8.21.0", "typescript@^5.6.0", "@types/node@^22.0.0"], consumer);
   run(join(consumer, "node_modules/.bin/hcp-runner"), ["version"], consumer);
   run(process.execPath, ["--input-type=module", "-e", "await import('@harness-control/runner/accounts'); await import('@harness-control/runner'); await import('@harness-control/runner/pairing'); await import('@harness-control/protocol/json-schema'); await import('@harness-control/protocol/conformance'); console.log('Public exports imported without CLI side effects')"], consumer);
+  copyFileSync(join(root, "examples/custom-harness.ts"), join(consumer, "custom-harness.ts"));
+  run(join(consumer, "node_modules/.bin/tsc"), ["--strict", "--skipLibCheck", "--module", "NodeNext", "--target", "ES2022", "custom-harness.ts"], consumer);
   copyFileSync(join(root, "examples/public-sdk.mjs"), join(consumer, "example.mjs"));
   run(process.execPath, ["example.mjs"], consumer);
+  copyFileSync(join(root, "examples/mcp-review-consumer.mjs"), join(consumer, "mcp-review-consumer.mjs"));
+  run(process.execPath, ["mcp-review-consumer.mjs"], consumer);
+  copyFileSync(join(root, "examples/startup-cleanup-consumer.mjs"), join(consumer, "startup-cleanup-consumer.mjs"));
+  run(process.execPath, ["startup-cleanup-consumer.mjs"], consumer);
   writeFileSync(join(output, "manifest.json"), JSON.stringify({ packages: manifests }, null, 2) + "\n");
   console.log(`Validated release artifacts: ${output}`);
 } finally { rmSync(consumer, { recursive: true, force: true }); }

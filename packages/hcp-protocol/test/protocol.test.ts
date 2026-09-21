@@ -58,11 +58,7 @@ const helloPayload: HcpHostHelloPayload = {
 
 const leasePayload: LocalCapabilityLease = {
   lease_id: "local_lease_123",
-  org_id: "org_123",
   actor_id: "user_123",
-  workflow_id: "workflow_123",
-  run_id: "run_123",
-  node_id: "node_harness",
   hcp_session_id: "session-1",
   execution_host_id: "host-local",
   provider_instance_id: "provider-1",
@@ -101,13 +97,11 @@ const localActionRequestPayload: LocalActionRequestPayload = {
     turn_id: "turn-1",
     workspace_id: "workspace-1",
     provider_instance_id: "provider-1",
-    run_id: "run_123",
   },
   lease: {
     lease_id: "local_lease_123",
     capability_id: "filesystem",
     scope: "workspace_read",
-    run_id: "run_123",
     hcp_session_id: "session-1",
     execution_host_id: "host-local",
     provider_instance_id: "provider-1",
@@ -319,13 +313,11 @@ describe("HCP protocol runtime parsing", () => {
           turn_id: "turn-1",
           workspace_id: "workspace-1",
           provider_instance_id: "provider-1",
-          run_id: "run_123",
         },
         lease: {
           lease_id: "local_lease_456",
           capability_id: "git",
           scope: "workspace_read",
-          run_id: "run_123",
           hcp_session_id: "session-1",
           execution_host_id: "host-local",
           provider_instance_id: "provider-1",
@@ -427,7 +419,6 @@ describe("HCP protocol runtime parsing", () => {
         created_at: sentAt,
         data: {
           lease_id: "local_lease_123",
-          run_id: "run_123",
           workspace_id: "workspace-1",
           provider_instance_id: "provider-1",
           capability_id: "filesystem",

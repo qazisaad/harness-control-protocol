@@ -7,6 +7,20 @@ on:
 permissions:
   contents: read
 jobs:
+  runner-ownership:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: node --import tsx --test --test-concurrency=1 packages/hcp-runner/src/ownership.test.ts packages/hcp-runner/src/cli-ownership.test.ts
   validate:
     runs-on: ubuntu-latest
     steps:

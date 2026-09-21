@@ -22,11 +22,7 @@
     },
     "local_capability_lease": {
       "lease_id": "local-lease-1",
-      "org_id": "org-1",
       "actor_id": "user-1",
-      "workflow_id": "workflow-1",
-      "run_id": "run-1",
-      "node_id": "node-harness",
       "hcp_session_id": "session-1",
       "execution_host_id": "host-local",
       "provider_instance_id": "provider-1",
@@ -37,15 +33,24 @@
       "capabilities": [
         {
           "id": "filesystem",
-          "scopes": ["workspace_read", "workspace_write"]
+          "scopes": [
+            "workspace_read",
+            "workspace_write"
+          ]
         },
         {
           "id": "shell",
-          "scopes": ["workspace"],
+          "scopes": [
+            "workspace"
+          ],
           "approval_policy": "ask",
           "command_policy": {
-            "allowed_executables": ["npm"],
-            "denied_executables": ["rm"],
+            "allowed_executables": [
+              "npm"
+            ],
+            "denied_executables": [
+              "rm"
+            ],
             "cwd_policy": "selected_workspace_only",
             "env_policy": "minimal",
             "allow_shell": false,

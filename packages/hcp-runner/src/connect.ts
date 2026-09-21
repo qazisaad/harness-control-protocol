@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, unlinkSync } from "node:fs";
-import { link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -10,6 +10,8 @@ import { z } from "zod";
 import { loadRunnerConfig, ProviderInstanceConfigSchema, RunnerConfigSchema, type RunnerConfig } from "./config/index.js";
 import { createDefaultHarnessAdapterRegistry } from "./harnesses/adapters/registry.js";
 import { loadRunnerCredential, normalizeControlPlaneUrl, pairWithReferenceControlPlane, writeRunnerCredentials } from "./pairing/index.js";
+
+import { ALREADY_RUNNING, ConnectionOwnership, connectionDirectory } from "./ownership.js";
 
 export type ConnectOptions = {
   controlPlaneUrl: string;
@@ -24,9 +26,8 @@ export type ConnectOptions = {
 export function parseConnectOptions(args: string[], home: string = homedir()): ConnectOptions {
   if (!args[0]) throw new Error("Usage: hcp-runner connect <control-plane-url> [--config path] [--providers codex,claude,opencode] [--pair] [--no-browser]");
   const controlPlaneUrl = normalizeControlPlaneUrl(args[0]);
-  const key = createHash("sha256").update(controlPlaneUrl).digest("hex").slice(0, 16);
-  const connectionDirectory = join(home, ".hcp-runner", "connections", key);
-  const options: ConnectOptions = { controlPlaneUrl, connectionDirectory, identityPath: join(home, ".hcp-runner", "identity.json"), configPath: join(connectionDirectory, "runner.json"), pair: false, openBrowser: true };
+  const directory = connectionDirectory(controlPlaneUrl, home);
+  const options: ConnectOptions = { controlPlaneUrl, connectionDirectory: directory, identityPath: join(home, ".hcp-runner", "identity.json"), configPath: join(directory, "runner.json"), pair: false, openBrowser: true };
   for (let index = 1; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--pair") options.pair = true;
@@ -83,18 +84,14 @@ async function installationIdentity(path: string, existingRunnerId?: string): Pr
 }
 
 export async function connectMachine(options: ConnectOptions, run: (path: string) => Promise<number>): Promise<number> {
-  await mkdir(options.connectionDirectory, { recursive: true, mode: 0o700 });
-  const lockPath = join(options.connectionDirectory, "runner.json.lock");
-  let lock;
-  try { lock = await open(lockPath, "wx", 0o600); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    throw new Error(`This connection is already in use. Stop its runner first. If it crashed, remove ${lockPath} after confirming it is stopped.`);
+  const ownership = ConnectionOwnership.acquire(options.connectionDirectory);
+  if (ownership === "already_running") {
+    if (options.pair || options.providers || options.configPath !== join(options.connectionDirectory, "runner.json")) {
+      throw new Error("This connection is already in use. The requested setup changes were not applied. Press Ctrl+C in the original HCP terminal, then run this command again.");
+    }
+    console.log(ALREADY_RUNNING);
+    return 0;
   }
-  await lock.writeFile(String(process.pid));
-  await lock.close();
-  const release = (): void => { if (existsSync(lockPath)) unlinkSync(lockPath); };
-  process.once("exit", release);
   const setupAbort = new AbortController();
   const cancelSetup = (): void => setupAbort.abort(new Error("Setup cancelled. Run the command again when ready."));
   process.once("SIGINT", cancelSetup);
@@ -143,7 +140,7 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
     setupAbort.signal.throwIfAborted();
     const credential = await loadRunnerCredential(config);
     if (!credential || options.pair) {
-      console.log("Approve this computer in your browser. You can then register existing folders in P2A; no folder is added automatically.");
+      console.log("Approve this computer in your browser. No folder is added automatically. Use your control plane to register existing folders.");
       const pairing = await pairWithReferenceControlPlane({ controlPlaneUrl: config.control_plane_url, runnerId: config.runner_id, hostId: config.host_id ?? config.runner_id, signal: setupAbort.signal,
         onPairingCode: async code => {
           console.log(`Approval link: ${code.pairing_url}\nFallback pairing code: ${code.pairing_code}`);
@@ -161,7 +158,6 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
   } finally {
     process.removeListener("SIGINT", cancelSetup);
     process.removeListener("SIGTERM", cancelSetup);
-    process.removeListener("exit", release);
-    release();
+    ownership.release();
   }
 }

@@ -1,11 +1,11 @@
+import { z } from "zod";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 
-import { Client } from "@modelcontextprotocol/sdk/client";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client, StreamableHTTPClientTransport, type Tool, type InputResponses } from "@modelcontextprotocol/client";
 import type { HcpEventType, StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
 
 import { redactHeaders, redactValue } from "./redaction.js";
+import { ManagedMcpSdkClient, McpInputRequiredError, mcpInputResponseParams, type McpInputReply } from "./input-required.js";
 
 export type McpAttachmentEvent = {
   event_type: HcpEventType;
@@ -17,18 +17,20 @@ export type McpAttachmentEventSink = (event: McpAttachmentEvent) => void | Promi
 export type McpToolCallArguments = Record<string, unknown>;
 type FetchLike = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => ReturnType<typeof fetch>;
 
+import { MCP_REVIEW_META_KEY, mcpReviewGrantSchema, mcpReviewPolicySchema, type McpReviewGrant, type McpReviewPolicy } from "@harness-control/protocol";
+export { MCP_REVIEW_META_KEY, mcpReviewActionSchema, mcpReviewGrantSchema, mcpReviewPolicySchema, type McpReviewGrant, type McpReviewPolicy } from "@harness-control/protocol";
+
 export type McpToolDescriptor = {
   name: string;
   description?: string;
   input_schema: Record<string, unknown>;
   output_schema?: Record<string, unknown>;
+  review_policy?: McpReviewPolicy;
 };
 
-export type McpToolCallResult = {
-  content?: unknown[];
-  structured_content?: Record<string, unknown>;
-  is_error: boolean;
-};
+export const mcpToolCallResultSchema = z.object({content: z.array(z.unknown()).optional(),
+  structured_content: z.json().optional(), is_error: z.boolean()}).strict();
+export type McpToolCallResult = z.infer<typeof mcpToolCallResultSchema>;
 
 export class McpToolPolicyError extends Error {
   constructor(
@@ -85,7 +87,7 @@ export type McpProofSigner = (input: McpProofSigningInput) => string;
 type SdkToolClient = {
   connect(transport: unknown): Promise<void>;
   listTools(): Promise<{ tools: Tool[] }>;
-  callTool(params: { name: string; arguments?: McpToolCallArguments }): Promise<SdkToolCallResult>;
+  callTool(params: { name: string; arguments?: McpToolCallArguments; _meta?: Record<string, unknown>; requestState?: string; inputResponses?: InputResponses }, options?: Parameters<Client["callTool"]>[1]): Promise<SdkToolCallResult>;
   close(): Promise<void>;
 };
 
@@ -180,11 +182,18 @@ export class McpAttachmentClient {
     return tools.map(toMcpToolDescriptor);
   }
 
-  async callTool(name: string, arguments_: McpToolCallArguments = {}): Promise<McpToolCallResult> {
+  async callTool(name: string, arguments_: McpToolCallArguments = {}, grant?: McpReviewGrant, continuation?: McpInputReply): Promise<McpToolCallResult> {
     this.assertNotExpired();
     await this.assertToolAllowed(name);
 
+    const responseParams = continuation === undefined ? {} : mcpInputResponseParams(continuation);
     const client: SdkToolClient = this.requireConnectedClient();
+    const catalog: { tools: Tool[] } = await client.listTools();
+    const toolDefinition: Tool | undefined = catalog.tools.find(tool => tool.name === name);
+    if (!toolDefinition) {
+      throw new McpToolPolicyError(this.attachment.name, name, "The requested MCP tool is no longer advertised.");
+    }
+    this.assertNotExpired();
     await this.emitEvent("mcp_tool.started", {
       attachment: this.attachment.name,
       tool_name: name,
@@ -192,7 +201,9 @@ export class McpAttachmentClient {
     });
 
     try {
-      const sdkResult: SdkToolCallResult = await client.callTool({ name, arguments: arguments_ });
+      const sdkResult: SdkToolCallResult = await client.callTool({ name, arguments: arguments_, ...responseParams,
+        ...(grant ? {_meta: {[MCP_REVIEW_META_KEY]: mcpReviewGrantSchema.parse(grant)}} : {}),
+      }, {toolDefinition});
       const result: McpToolCallResult = toMcpToolCallResult(sdkResult);
       await this.emitEvent("mcp_tool.completed", {
         attachment: this.attachment.name,
@@ -201,6 +212,11 @@ export class McpAttachmentClient {
       });
       return result;
     } catch (error: unknown) {
+      if (error instanceof McpInputRequiredError) {
+        await this.emitEvent("runtime.warning", {event: "mcp.tool.input_required",
+          attachment: this.attachment.name, tool_name: name});
+        throw error;
+      }
       await this.emitEvent("runtime.error", {
         event: "mcp.tool.failed",
         attachment: this.attachment.name,
@@ -369,7 +385,7 @@ export class McpAttachmentClient {
 
 const defaultMcpSdkFactory: McpSdkFactory = {
   createClient(): SdkToolClient {
-    return new Client({ name: "hcp-runner", version: "0.0.0" });
+    return new ManagedMcpSdkClient({ name: "hcp-runner", version: "0.0.0" }, {inputRequired: {autoFulfill: false}, versionNegotiation: {mode: "auto"}});
   },
   createStreamableHttpTransport(attachment: StreamableHttpMcpServerAttachment, options: { fetch: FetchLike }): unknown {
     return new StreamableHTTPClientTransport(new URL(attachment.url), {
@@ -442,8 +458,10 @@ function sha256(value: string | Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
 }
 
-function toMcpToolDescriptor(tool: Tool): McpToolDescriptor {
+export function toMcpToolDescriptor(tool: Tool): McpToolDescriptor {
+  const policy = tool._meta?.[MCP_REVIEW_META_KEY];
   return {
+    ...(policy === undefined ? {} : {review_policy: mcpReviewPolicySchema.parse(policy)}),
     name: tool.name,
     ...(tool.description ? { description: tool.description } : {}),
     input_schema: tool.inputSchema,
@@ -451,7 +469,7 @@ function toMcpToolDescriptor(tool: Tool): McpToolDescriptor {
   };
 }
 
-function toMcpToolCallResult(result: SdkToolCallResult): McpToolCallResult {
+export function toMcpToolCallResult(result: SdkToolCallResult): McpToolCallResult {
   const converted: McpToolCallResult = {
     is_error: Boolean(result.isError),
   };
@@ -462,8 +480,8 @@ function toMcpToolCallResult(result: SdkToolCallResult): McpToolCallResult {
     converted.content = [result.toolResult];
   }
 
-  if ("structuredContent" in result && isRecord(result.structuredContent)) {
-    converted.structured_content = result.structuredContent;
+  if ("structuredContent" in result && result.structuredContent !== undefined) {
+    converted.structured_content = z.json().parse(result.structuredContent);
   }
 
   return converted;
@@ -480,8 +498,4 @@ function redactError(error: unknown): Record<string, unknown> {
   return {
     message: redactValue(String(error)),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

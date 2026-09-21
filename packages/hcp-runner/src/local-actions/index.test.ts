@@ -15,10 +15,6 @@ import {
 
 const lease: LocalCapabilityLease = {
   lease_id: "local_lease_123",
-  org_id: "org_123",
-  workflow_id: "workflow_123",
-  run_id: "run_123",
-  node_id: "node_123",
   hcp_session_id: "session-1",
   execution_host_id: "host-1",
   provider_instance_id: "provider-1",

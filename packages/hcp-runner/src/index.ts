@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { AccountUsageReader } from "./accounts/index.js";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 
 import { HCP_VERSION } from "@harness-control/protocol";
 
@@ -15,6 +15,7 @@ import { RunnerConnection } from "./connection/index.js";
 import { HarnessSessionManager } from "./harnesses/index.js";
 import { consoleLogger } from "./logs/index.js";
 import { connectMachine, parseConnectOptions } from "./connect.js";
+import { ALREADY_RUNNING, ConnectionOwnership, acquireStateOwnership, connectionDirectory, type StateOwnership } from "./ownership.js";
 import { createDevelopmentHmacProofSigner } from "./mcp/McpAttachmentClient.js";
 import { JsonRunnerStateStore, defaultRunnerStatePath } from "./state/index.js";
 import {
@@ -38,11 +39,11 @@ type PairOptions = {
   offline: boolean;
 };
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function main(argv: string[] = process.argv.slice(2), home: string = homedir()): Promise<number> {
   const command: string | undefined = argv[0];
 
   if (command === "connect") {
-    try { return await connectMachine(parseConnectOptions(argv.slice(1)), path => main(["run", "--config", path])); }
+    try { return await connectMachine(parseConnectOptions(argv.slice(1), home), runMachine); }
     catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
   }
 
@@ -128,50 +129,67 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 1;
     }
 
-    const config = await loadRunnerConfig(configPath);
-    const credential: RunnerCredential | undefined = await loadRunnerCredential(config);
-    const stateStore = new JsonRunnerStateStore(config.state_path ?? defaultRunnerStatePath(config.runner_id));
-    const harnessSessions = new HarnessSessionManager(config, {
-      auditLogger: new JsonlAuditLogger(defaultAuditLogPath()),
-      stateStore,
-      ...(credential
-        ? { mcpProofSigner: createDevelopmentHmacProofSigner(credential.mcp_proof_secret) }
-        : {}),
-    });
-    const connection = new RunnerConnection({
-      config,
-      runnerVersion: RUNNER_VERSION,
-      configPath,
-      harnessSessions,
-      ...(credential
-        ? {
-            connectionTokenProvider: async (): Promise<string> => requestConnectionToken(config, credential),
-          }
-        : {}),
-      onLog: (message: string) => {
-        consoleLogger.info(message);
-      },
-    });
-
-    await connection.connect();
-    consoleLogger.info(`Runner '${config.runner_id}' connected to ${config.control_plane_url}.`);
-
-    const close = async (): Promise<void> => {
-      await connection.close();
-    };
-
-    process.once("SIGINT", () => {
-      close().then(() => process.exit(0));
-    });
-    process.once("SIGTERM", () => {
-      close().then(() => process.exit(0));
-    });
-
-    return new Promise<number>(() => undefined);
+    try {
+      const config = await loadRunnerConfig(configPath);
+      const ownership = ConnectionOwnership.acquire(connectionDirectory(config.control_plane_url, home));
+      if (ownership === "already_running") {
+        console.error(ALREADY_RUNNING + " The requested config was not started.");
+        return 1;
+      }
+      try { return await runMachine(configPath); }
+      finally { ownership.release(); }
+    } catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
   }
 
   console.log("Usage: hcp-runner <version|connect|pair|run>");
   return command ? 1 : 0;
+}
+
+async function runMachine(configPath: string): Promise<number> {
+  let connection: RunnerConnection | undefined;
+  let stateOwnership: StateOwnership | undefined;
+  let stopping = false;
+  const stop = (): void => {
+    if (stopping) return;
+    stopping = true;
+    if (!connection) process.exit(0);
+    void connection.close().then(() => process.exit(0), (error: unknown) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  try {
+    const config = await loadRunnerConfig(configPath);
+    const statePath = config.state_path ?? defaultRunnerStatePath(config.runner_id);
+    stateOwnership = acquireStateOwnership(statePath);
+    const credential: RunnerCredential | undefined = await loadRunnerCredential(config);
+    const stateStore = new JsonRunnerStateStore(stateOwnership.path);
+    const harnessSessions = new HarnessSessionManager(config, {
+      auditLogger: new JsonlAuditLogger(defaultAuditLogPath()),
+      stateStore,
+      ...(credential ? { mcpProofSigner: createDevelopmentHmacProofSigner(credential.mcp_proof_secret) } : {}),
+    });
+    connection = new RunnerConnection({
+      config,
+      runnerVersion: RUNNER_VERSION,
+      configPath,
+      harnessSessions,
+      ...(credential ? { connectionTokenProvider: () => requestConnectionToken(config, credential) } : {}),
+      onLog: (message: string) => consoleLogger.info(message),
+    });
+    await connection.connect();
+    consoleLogger.info(`Runner '${config.runner_id}' connected to ${config.control_plane_url}.`);
+    return await new Promise<number>(() => undefined);
+  } finally {
+    try { if (connection && !stopping) await connection.close(); }
+    finally {
+      process.removeListener("SIGINT", stop);
+      process.removeListener("SIGTERM", stop);
+      stateOwnership?.release();
+    }
+  }
 }
 
 function parseConfigPath(args: string[]): string | undefined {
