@@ -8,9 +8,9 @@
     "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@harness-control/protocol": "0.4.5",
-    "@harness-control/runner": "0.4.5",
-    "@harness-control/sdk": "0.4.5",
+    "@harness-control/protocol": "0.4.6",
+    "@harness-control/runner": "0.4.6",
+    "@harness-control/sdk": "0.4.6",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
