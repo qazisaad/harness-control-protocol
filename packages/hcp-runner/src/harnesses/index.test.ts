@@ -530,9 +530,14 @@ describe("HarnessSessionManager", () => {
     }
   });
 
-  it("validates adapter start, connects MCP clients, then starts the adapter session", async () => {
+  for (const waitingAt of ["connect", "start"] as const) {
+  it(`stops a session after in-flight ${waitingAt} completes and cleans both resource owners`, async () => {
     const workspace = await createWorkspace();
     const calls: string[] = [];
+    let reached!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { reached = resolve; });
+    const continueStart = new Promise<void>(resolve => { release = resolve; });
     const adapter: HarnessAdapter = {
       driverKind: "mock",
       async probe() {
@@ -550,6 +555,7 @@ describe("HarnessSessionManager", () => {
       },
       async startSession(input): Promise<HarnessAdapterSession> {
         calls.push("start");
+        if (waitingAt === "start") { reached(); await continueStart; }
         return { adapter_session_id: input.payload.session_id };
       },
       async sendTurn(): Promise<HarnessAdapterEvent[]> {
@@ -559,6 +565,7 @@ describe("HarnessSessionManager", () => {
         return [];
       },
       async stopSession(): Promise<HarnessAdapterEvent[]> {
+        calls.push("stop");
         return [];
       },
     };
@@ -569,6 +576,7 @@ describe("HarnessSessionManager", () => {
         return {
           async connect(): Promise<void> {
             calls.push("connect");
+            if (waitingAt === "connect") { reached(); await continueStart; }
           },
           async close(): Promise<void> {
             calls.push("close");
@@ -578,7 +586,7 @@ describe("HarnessSessionManager", () => {
     });
 
     try {
-      await manager.startSession({
+      const starting = manager.startSession({
         session_id: "session-1",
         workspace_id: "repo",
         provider_instance_id: "mock-provider",
@@ -604,11 +612,20 @@ describe("HarnessSessionManager", () => {
         ],
       });
 
-      assert.deepEqual(calls, ["validate", "connect", "start"]);
+      await waiting;
+      const stopping = manager.stopSession("session-1", "cancel during startup");
+      release();
+      const [started, stopped] = await Promise.all([starting, stopping]);
+      assert.equal(started.filter(event => event.event_type === "session.started").length, 1);
+      assert.equal(stopped.filter(event => event.event_type === "session.exited").length, 1);
+      assert.deepEqual(calls, ["validate", "connect", "start", "stop", "close"]);
+      assert.equal(manager.activeSessionCount(), 0);
     } finally {
+      release();
       await workspace.cleanup();
     }
   });
+  }
 
   for (const failure of ["none", "client", "adapter", "both"] as const) {
   it(`records adapter-start cleanup only when both owners close (failure=${failure})`, async () => {

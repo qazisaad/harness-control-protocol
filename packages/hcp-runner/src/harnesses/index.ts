@@ -723,7 +723,11 @@ export class HarnessSessionManager {
     );
   }
 
-  async stopSession(sessionId: string, reason: string | undefined): Promise<HcpHarnessEventPayload[]> {
+  stopSession(sessionId: string, reason: string | undefined): Promise<HcpHarnessEventPayload[]> {
+    return this.#serializeWorkspace(() => this.#stopSession(sessionId, reason));
+  }
+
+  async #stopSession(sessionId: string, reason: string | undefined): Promise<HcpHarnessEventPayload[]> {
     const session: HarnessSession | undefined = this.#sessions.get(sessionId);
     if (!session) {
       const review = this.#stateStore.getMcpReview(sessionId);
