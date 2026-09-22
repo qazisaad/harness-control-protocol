@@ -71,12 +71,18 @@ it("input deadlines survive persistence and can only shorten caller authority", 
   assert.throws(() => parseMcpPendingInput({requestState: "opaque", _meta: {large: "x".repeat(1024 * 1024)}}), /persistence limit/);
 });
 
-it("legacy URL elicitation replies never carry form values", () => {
+for (const legacy of [false, true]) it(`URL elicitation replies never carry form values (legacy=${legacy})`, () => {
   const pending = parseMcpPendingInput({inputRequests: {question: {method: "elicitation/create",
-    params: {mode: "url", message: "Authorize", url: "https://auth.example/consent", elicitationId: "question"}}}});
+    params: {mode: "url", message: "Authorize", url: "https://auth.example/consent", ...(legacy ? {elicitationId: "question"} : {})}}}});
+  const persisted = mcpPendingInputSchema.parse(JSON.parse(JSON.stringify(pending)));
+  assert.equal("elicitationId" in persisted.inputRequests!.question!.params!, legacy);
   for (const action of ["accept", "decline", "cancel"] as const) {
     assert.doesNotThrow(() => mcpInputResponseParams({pending, responses: {question: {action}}}));
     assert.throws(() => mcpInputResponseParams({pending, responses: {question: {action, content: {}}}}), /URL elicitation/);
+  }
+  for (const url of ["javascript:alert(1)", "file:///secret", "not a URL"]) {
+    assert.throws(() => parseMcpPendingInput({inputRequests: {question: {method: "elicitation/create",
+      params: {mode: "url", message: "Authorize", url, ...(legacy ? {elicitationId: "question"} : {})}}}}));
   }
 });
 

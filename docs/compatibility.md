@@ -73,6 +73,8 @@ Backend-supplied stdio command/args are intentionally rejected. Named profile re
 
 ### Managed MCP review recovery
 
+The runner retains modern URL elicitation without inventing a legacy `elicitationId`; responses bind to the pending request-map key. HTTP and HTTPS URLs are presented for user completion, followed by accept, decline or cancel. URL responses cannot contain form values. Both legacy and modern URL requests use the same persisted operation and deadline as form input. Sampling and roots input remain unsupported in the managed UI.
+
 Codex managed MCP review uses the existing runner state file and standard HCP approval messages. The control plane must support exact-call grants and atomic child-effect claims before admitting review-required attachments. Other drivers do not inherit this capability.
 
 Native probes passed against `codex-cli 0.153.4`, including process loss before a decision, after result persistence, and after native result insertion. The native item-list API omits injected response items. The adapter therefore checks the native-owned JSONL path returned by `thread/read` before inserting a saved result. It validates thread, call, arguments and result; partial, changed or oversized history fails closed. The disk path/format is an unstable native dependency that must be reverified on upgrades. Replace it when the native API provides equivalent idempotent insertion or complete response-item reads.

@@ -191,13 +191,16 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     const hint = error.pending._meta?.[MCP_REVIEW_META_KEY];
     const delegated = hint === undefined ? undefined : mcpDelegatedReviewRequestSchema.parse(hint);
     const properties: Record<string, unknown> = Object.fromEntries(Object.entries(error.pending.inputRequests ?? {}).map(([key, input]) => {
-      if (input.method !== "elicitation/create" || !("requestedSchema" in input.params)) {
+      if (input.method !== "elicitation/create") {
         throw new HarnessAdapterError("mcp_input_capability_unavailable", "This runner does not yet support the requested MCP input capability.");
       }
-      return [key, {title: input.params.message, oneOf: [
-        {title: "Provide input", type: "object", properties: {
-          action: {type: "string", const: "accept", default: "accept"}, content: input.params.requestedSchema,
-        }, required: ["action", "content"], additionalProperties: false},
+      const form = "requestedSchema" in input.params;
+      return [key, {title: input.params.message,
+        ...(!form && "url" in input.params ? {description: `Open ${input.params.url}, complete the requested action, then confirm.`} : {}), oneOf: [
+        {title: form ? "Provide input" : "I have completed this step", type: "object", properties: {
+          action: {type: "string", const: "accept", default: "accept"},
+          ...("requestedSchema" in input.params ? {content: input.params.requestedSchema} : {}),
+        }, required: form ? ["action", "content"] : ["action"], additionalProperties: false},
         ...["decline", "cancel"].map(action => ({title: action === "decline" ? "Decline" : "Cancel", type: "object",
           properties: {action: {type: "string", const: action, default: action}}, required: ["action"], additionalProperties: false})),
       ]}];

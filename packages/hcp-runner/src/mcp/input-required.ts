@@ -2,14 +2,22 @@ import {
   Client, isJSONRPCResultResponse, isSpecType, type InputRequest, type InputRequiredResult, type InputResponses,
 
 } from "@modelcontextprotocol/client";
+import { ElicitRequestURLParamsSchema } from "@modelcontextprotocol/core";
 import { z } from "zod";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 
-export type McpInputReply = {pending: InputRequiredResult; responses: InputResponses};
+const urlInputSchema = z.object({
+  method: z.literal("elicitation/create"),
+  params: ElicitRequestURLParamsSchema.partial({elicitationId: true}).refine(
+    value => ["https:", "http:"].includes(new URL(value.url).protocol), "URL input requires HTTP or HTTPS"),
+});
+type PendingInputRequest = InputRequest | z.infer<typeof urlInputSchema>;
+export type McpPendingInput = Pick<InputRequiredResult, "resultType" | "requestState" | "_meta"> & {inputRequests?: Record<string, PendingInputRequest>};
+export type McpInputReply = {pending: McpPendingInput; responses: InputResponses};
 
 /** An optional server deadline can shorten the caller's existing deadline. */
-export function mcpInputExpiresAt(pending: InputRequiredResult, callerExpiry: string): string {
+export function mcpInputExpiresAt(pending: McpPendingInput, callerExpiry: string): string {
   let expiry = Date.parse(z.iso.datetime({offset: true}).parse(callerExpiry));
   const hint = pending._meta?.["com.prompt2agent/input-deadline"];
   if (hint !== undefined) expiry = Math.min(expiry, Date.parse(z.iso.datetime({offset: true}).parse(hint)));
@@ -33,7 +41,7 @@ export const mcpInputReplySchema = z.object({
 });
 
 export class McpInputRequiredError extends Error {
-  constructor(readonly pending: InputRequiredResult) {
+  constructor(readonly pending: McpPendingInput) {
     super("The MCP tool requires input before it can complete.");
     this.name = "McpInputRequiredError";
   }
@@ -42,11 +50,19 @@ export class McpInputRequiredError extends Error {
 export function parseMcpPendingInput(value: {
   inputRequests?: Record<string, unknown> | undefined; requestState?: string | undefined;
   _meta?: unknown;
-}): InputRequiredResult {
-  const requests: Array<[string, InputRequest]> = [];
+}): McpPendingInput {
+  const requests: Array<[string, PendingInputRequest]> = [];
   for (const [key, request] of Object.entries(value.inputRequests ?? {})) {
+    const url = urlInputSchema.safeParse(request);
+    if (url.success) {
+      requests.push([key, url.data]);
+      continue;
+    }
     if (!isSpecType.ElicitRequest(request) && !isSpecType.CreateMessageRequest(request) && !isSpecType.ListRootsRequest(request)) {
       throw new Error("MCP requested an unsupported or invalid input.");
+    }
+    if (request.method === "elicitation/create" && request.params.mode === "url") {
+      throw new Error("MCP requested an unsupported or invalid input URL.");
     }
     requests.push([key, structuredClone(request)]);
   }
@@ -54,7 +70,7 @@ export function parseMcpPendingInput(value: {
   if (Object.keys(inputRequests).length === 0 && value.requestState === undefined) {
     throw new Error("MCP input requirement has no requests or continuation state.");
   }
-  const pending: InputRequiredResult = {resultType: "input_required", inputRequests,
+  const pending: McpPendingInput = {resultType: "input_required", inputRequests,
     ...(value._meta === undefined ? {} : {_meta: z.record(z.string(), z.json()).parse(value._meta)}),
     ...(value.requestState === undefined ? {} : {requestState: value.requestState})};
   if (Buffer.byteLength(JSON.stringify(pending), "utf8") > 1024 * 1024) {

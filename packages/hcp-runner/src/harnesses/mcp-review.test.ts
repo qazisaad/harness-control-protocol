@@ -151,8 +151,8 @@ test("a durable decision releases its native waiter even when live delivery fail
   assert.equal(store.replayEventsAfter("session", 0)?.at(-1)?.event_type, "approval.resolved");
 });
 
-for (const reviewed of [false, true]) for (const action of ["accept", "decline", "cancel"] as const) {
-  test(`MCP form ${action} resumes the same operation after persistence (reviewed=${reviewed})`, async () => {
+for (const mode of ["form", "url"] as const) for (const reviewed of [false, true]) for (const action of ["accept", "decline", "cancel"] as const) {
+  test(`MCP ${mode} ${action} resumes the same operation after persistence (reviewed=${reviewed})`, async () => {
     let notify!: () => void;
     const published = new Promise<void>(resolve => {notify = resolve;});
     const {store, owner, request, events} = setup(event => {
@@ -170,8 +170,9 @@ for (const reviewed of [false, true]) for (const action of ["accept", "decline",
     let calls = 0;
     const inputExpiry = new Date(Date.now() + 30000).toISOString();
     const pending = parseMcpPendingInput({requestState: "private-opaque", _meta: {"com.prompt2agent/input-deadline": inputExpiry}, inputRequests: {question: {
-      method: "elicitation/create", params: {message: "Choose a name", requestedSchema: {type: "object",
-        properties: {name: {type: "string", minLength: 1}}, required: ["name"]}},
+      method: "elicitation/create", params: mode === "form" ? {message: "Choose a name", requestedSchema: {type: "object",
+        properties: {name: {type: "string", minLength: 1}}, required: ["name"]}}
+        : {mode: "url", message: "Authorize", url: "https://auth.example/consent"},
     }}});
     const callTool: HarnessMcpToolset["callTool"] = async (name, args, actualGrant, reply) => {
       calls++;
@@ -181,7 +182,7 @@ for (const reviewed of [false, true]) for (const action of ["accept", "decline",
       if (!reply) throw new McpInputRequiredError(pending);
       assert.equal(store.getMcpReview("session")?.outcome.phase, "input_resuming");
       assert.deepEqual(reply.pending, pending);
-      assert.deepEqual(reply.responses, {question: {action, ...(action === "accept" ? {content: {name: "Ada"}} : {})}});
+      assert.deepEqual(reply.responses, {question: {action, ...(action === "accept" && mode === "form" ? {content: {name: "Ada"}} : {})}});
       return {is_error: false, content: [{type: "text", text: "done"}]};
     };
     const execution = reviewed ? owner.invoke(request, callTool, signal, grant)
@@ -196,10 +197,11 @@ for (const reviewed of [false, true]) for (const action of ["accept", "decline",
     assert.ok(events.some(event => event.event_type === "input.requested" && "expires_at" in event.data && event.data.expires_at === inputExpiry));
     const response = {session_id: "session", turn_id: "turn", request_id: waiting.outcome.input_request_id, actor_id: "responder"};
     assert.throws(() => owner.respondToInput({...response, turn_id: "another", value: {}}), /does not match/);
-    assert.throws(() => owner.respondToInput({...response, value: {question: {action: "accept", content: {}}}}), /form schema/);
+    assert.throws(() => owner.respondToInput({...response, value: {question: {action: "accept", content: {}}}}), /form schema|URL elicitation/);
+    if (mode === "url") assert.ok(JSON.stringify(events).includes("https://auth.example/consent"));
     assert.equal(calls, 1);
     owner.respondToInput({...response, ...(action === "cancel" ? {cancelled: true} : {
-      value: {question: {action, ...(action === "accept" ? {content: {name: "Ada"}} : {})}},
+      value: {question: {action, ...(action === "accept" && mode === "form" ? {content: {name: "Ada"}} : {})}},
     })});
     assert.deepEqual(await execution, reviewed ? {is_error: false, content: [{type: "text", text: "done"}]}
       : {success: true, contentItems: [{type: "inputText", text: "done"}]});
@@ -253,9 +255,9 @@ test("interrupting a live input wait retains it without dispatching a continuati
   assert.equal(store.getMcpReview("session")?.outcome.phase, "input_waiting");
 });
 
-for (const delegated of [false, true]) for (const action of ["accept", "decline", "cancel"] as const) {
+for (const mode of ["form", "url"] as const) for (const delegated of mode === "url" ? [false] : [false, true]) for (const action of ["accept", "decline", "cancel"] as const) {
   if (delegated && action === "cancel") continue;
-  test(`native review and ${action} input reach completion through the HTTP SDK (delegated=${delegated})`, {timeout: 10000}, async () => {
+  test(`native review and ${action} ${mode} input reach completion through the HTTP SDK (delegated=${delegated})`, {timeout: 10000}, async () => {
     let notifyApproval!: () => void;
     let notifyInput!: () => void;
     const approvalReady = new Promise<void>(resolve => {notifyApproval = resolve;});
@@ -297,7 +299,7 @@ for (const delegated of [false, true]) for (const action of ["accept", "decline"
               ...(delegated ? {_meta: {[MCP_REVIEW_META_KEY]: {kind: "delegated", input_request_id: "question",
                 subject: {operation_id: "child", tool_name: "write", arguments: {id: "one"}, binding: "server-binding"}}}} : {}),
               inputRequests: {question: {
-              method: "elicitation/create", params: {message: "Choose a name", requestedSchema: {type: "object",
+              method: "elicitation/create", params: mode === "url" ? {mode: "url", message: "Authorize", url: "https://auth.example/consent"} : {message: "Choose a name", requestedSchema: {type: "object",
                 properties: delegated ? {request_id: {type: "string"}, action_json: {type: "string"}} : {name: {type: "string"}},
                 required: delegated ? ["request_id", "action_json"] : ["name"]}},
             }}};
@@ -307,7 +309,7 @@ for (const delegated of [false, true]) for (const action of ["accept", "decline"
             assert.equal(rpc.params.requestState, "private-http-state");
             const content = retained.outcome.phase === "review_resuming"
               ? {request_id: retained.outcome.input_request_id, action_json: retained.outcome.action_json} : {name: "Ada"};
-            assert.deepEqual(rpc.params.inputResponses, {question: {action, ...(action === "accept" ? {content} : {})}});
+            assert.deepEqual(rpc.params.inputResponses, {question: {action, ...(action === "accept" && mode === "form" ? {content} : {})}});
             result = {resultType: "complete", content: [{type: "text", text: "done"}]};
           }
         }
@@ -350,7 +352,7 @@ for (const delegated of [false, true]) for (const action of ["accept", "decline"
       } else {
         assert.ok(waiting.outcome.phase === "input_waiting");
         owner.respondToInput({session_id: "session", turn_id: "turn", request_id: waiting.outcome.input_request_id,
-          actor_id: "responder", value: {question: {action, ...(action === "accept" ? {content: {name: "Ada"}} : {})}}});
+          actor_id: "responder", value: {question: {action, ...(action === "accept" && mode === "form" ? {content: {name: "Ada"}} : {})}}});
       }
       assert.deepEqual(await execution, {success: true, contentItems: [{type: "inputText", text: "done"}]});
       assert.equal(store.getMcpReview("session")?.outcome.phase, "completed");

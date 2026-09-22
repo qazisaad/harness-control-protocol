@@ -1,6 +1,6 @@
 {
   "name": "@harness-control/sdk",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "App-side SDK for Harness Control Protocol runners",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,7 +18,7 @@
     "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@harness-control/protocol": "0.4.6"
+    "@harness-control/protocol": "0.4.7"
   },
   "engines": {
     "node": ">=22"
