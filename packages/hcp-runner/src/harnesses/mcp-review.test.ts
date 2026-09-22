@@ -91,8 +91,8 @@ for (const reviewed of [false, true]) for (const action of ["accept", "decline",
     }
     let calls = 0;
     const inputExpiry = new Date(Date.now() + 30000).toISOString();
-    const pending = parseMcpPendingInput({requestState: "private-opaque", inputRequests: {question: {
-      method: "elicitation/create", params: {_meta: {"com.prompt2agent/input-deadline": inputExpiry}, message: "Choose a name", requestedSchema: {type: "object",
+    const pending = parseMcpPendingInput({requestState: "private-opaque", _meta: {"com.prompt2agent/input-deadline": inputExpiry}, inputRequests: {question: {
+      method: "elicitation/create", params: {message: "Choose a name", requestedSchema: {type: "object",
         properties: {name: {type: "string", minLength: 1}}, required: ["name"]}},
     }}});
     const callTool: HarnessMcpToolset["callTool"] = async (name, args, actualGrant, reply) => {
@@ -142,9 +142,9 @@ test("an expired worker input cannot dispatch even while its caller lease is val
   let calls = 0;
   const execution = owner.invoke(request, async () => {
     calls++;
-    throw new McpInputRequiredError(parseMcpPendingInput({requestState: "opaque", inputRequests: {question: {
-      method: "elicitation/create", params: {message: "Confirm", requestedSchema: {type: "object", properties: {}},
-        _meta: {"com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString()}},
+    throw new McpInputRequiredError(parseMcpPendingInput({requestState: "opaque",
+      _meta: {"com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString()}, inputRequests: {question: {
+      method: "elicitation/create", params: {message: "Confirm", requestedSchema: {type: "object", properties: {}}},
     }}}));
   }, new AbortController().signal);
   const expired = assert.rejects(execution, /expired/);

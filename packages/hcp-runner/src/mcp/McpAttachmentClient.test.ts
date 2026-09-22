@@ -390,7 +390,8 @@ for (const inputRequired of [false, true]) for (const ttlMs of [0, 60000]) {
           assert.equal(rpc.params.requestState, "opaque-pending");
           assert.deepEqual(rpc.params.inputResponses, {});
         }
-        result = inputRequired && !invalidOutput && rpc.params.requestState === undefined ? {resultType: "input_required", requestState: "opaque-pending"}
+        result = inputRequired && !invalidOutput && rpc.params.requestState === undefined ? {resultType: "input_required", requestState: "opaque-pending",
+          _meta: {"example.org/interaction": {binding: "private-pending-context"}}}
           : {resultType: "complete", content: [{type: "text", text: "done"}], structuredContent: {done: invalidOutput ? "wrong type" : true}};
       } else {
         assert.fail(`Unexpected stateful method: ${rpc.method}`);
@@ -411,6 +412,7 @@ for (const inputRequired of [false, true]) for (const ttlMs of [0, 60000]) {
         let reply: McpInputReply | undefined;
         await assert.rejects(client.callTool("read_file", {}), error => {
           assert.ok(error instanceof McpInputRequiredError);
+          assert.deepEqual(error.pending._meta, {"example.org/interaction": {binding: "private-pending-context"}});
           reply = {pending: error.pending, responses: {}};
           return true;
         });
@@ -422,6 +424,7 @@ for (const inputRequired of [false, true]) for (const ttlMs of [0, 60000]) {
         }), /match the pending input request IDs/);
         assert.equal(methods.filter(method => method === "tools/call").length, 1);
         assert.equal(JSON.stringify(events).includes("opaque-pending"), false);
+        assert.equal(JSON.stringify(events).includes("private-pending-context"), false);
         assert.deepEqual(await client.callTool("read_file", {}, undefined, reply),
           {is_error: false, content: [{type: "text", text: "done"}], structured_content: {done: true}});
       } else {

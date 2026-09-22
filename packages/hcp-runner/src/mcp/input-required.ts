@@ -1,8 +1,9 @@
 import {
-  Client, isSpecType, type InputRequest, type InputRequiredResult, type InputResponses,
+  Client, isJSONRPCResultResponse, isSpecType, type InputRequest, type InputRequiredResult, type InputResponses,
 
 } from "@modelcontextprotocol/client";
 import { z } from "zod";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 
 export type McpInputReply = {pending: InputRequiredResult; responses: InputResponses};
@@ -10,10 +11,8 @@ export type McpInputReply = {pending: InputRequiredResult; responses: InputRespo
 /** An optional server deadline can shorten the caller's existing deadline. */
 export function mcpInputExpiresAt(pending: InputRequiredResult, callerExpiry: string): string {
   let expiry = Date.parse(z.iso.datetime({offset: true}).parse(callerExpiry));
-  for (const request of Object.values(pending.inputRequests ?? {})) {
-    const hint = request.params?._meta?.["com.prompt2agent/input-deadline"];
-    if (hint !== undefined) expiry = Math.min(expiry, Date.parse(z.iso.datetime({offset: true}).parse(hint)));
-  }
+  const hint = pending._meta?.["com.prompt2agent/input-deadline"];
+  if (hint !== undefined) expiry = Math.min(expiry, Date.parse(z.iso.datetime({offset: true}).parse(hint)));
   return new Date(expiry).toISOString();
 }
 
@@ -21,6 +20,7 @@ export const mcpPendingInputSchema = z.object({
   resultType: z.literal("input_required"),
   inputRequests: z.record(z.string(), z.unknown()).optional(),
   requestState: z.string().optional(),
+  _meta: z.record(z.string(), z.json()).optional(),
 }).strict().transform(value => parseMcpPendingInput(value));
 
 export const mcpInputReplySchema = z.object({
@@ -41,6 +41,7 @@ export class McpInputRequiredError extends Error {
 
 export function parseMcpPendingInput(value: {
   inputRequests?: Record<string, unknown> | undefined; requestState?: string | undefined;
+  _meta?: unknown;
 }): InputRequiredResult {
   const requests: Array<[string, InputRequest]> = [];
   for (const [key, request] of Object.entries(value.inputRequests ?? {})) {
@@ -54,6 +55,7 @@ export function parseMcpPendingInput(value: {
     throw new Error("MCP input requirement has no requests or continuation state.");
   }
   const pending: InputRequiredResult = {resultType: "input_required", inputRequests,
+    ...(value._meta === undefined ? {} : {_meta: z.record(z.string(), z.json()).parse(value._meta)}),
     ...(value.requestState === undefined ? {} : {requestState: value.requestState})};
   if (Buffer.byteLength(JSON.stringify(pending), "utf8") > 1024 * 1024) {
     throw new Error("MCP pending input exceeds the persistence limit.");
@@ -89,6 +91,9 @@ export function mcpInputResponseParams(reply: McpInputReply): {
         const validate = new AjvJsonSchemaValidator().getValidator(schema);
         if (!validate(response.content ?? {}).valid) throw new Error("MCP input does not satisfy the requested form schema.");
       }
+      if (request.params.mode === "url" && response.content !== undefined) {
+        throw new Error("URL elicitation cannot include form values.");
+      }
     }
   }
   return {inputResponses: structuredClone(reply.responses),
@@ -97,9 +102,24 @@ export function mcpInputResponseParams(reply: McpInputReply): {
 
 /** Retains nonterminal input while the SDK keeps validating terminal tool output. */
 export class ManagedMcpSdkClient extends Client {
+  readonly #responseMeta = new AsyncLocalStorage<unknown>();
+
+  override async connect(...args: Parameters<Client["connect"]>): Promise<void> {
+    await super.connect(...args);
+    const transport = args[0];
+    const receive = transport.onmessage;
+    if (!receive) throw new Error("The MCP client did not install its transport receiver.");
+    // SDK 2.0.0 discards input-required result metadata during decoding.
+    // Bind it to this received message, including asynchronous dispatch, without rewriting the wire payload.
+    transport.onmessage = (message, extra) => {
+      const meta = isJSONRPCResultResponse(message) ? message.result._meta : undefined;
+      this.#responseMeta.run(meta, () => receive(message, extra));
+    };
+  }
+
   protected override async _resolveNonCompleteResult(decoded: {
     kind: "input_required"; inputRequests: Record<string, unknown>; requestState?: string;
   }): Promise<unknown> {
-    throw new McpInputRequiredError(parseMcpPendingInput(decoded));
+    throw new McpInputRequiredError(parseMcpPendingInput({...decoded, _meta: this.#responseMeta.getStore()}));
   }
 }

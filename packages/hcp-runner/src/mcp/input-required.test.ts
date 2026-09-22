@@ -1,21 +1,83 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { mcpInputExpiresAt, mcpInputResponseParams, parseMcpPendingInput } from "./input-required.js";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { ManagedMcpSdkClient, McpInputRequiredError, mcpInputExpiresAt, mcpInputResponseParams, mcpPendingInputSchema, parseMcpPendingInput } from "./input-required.js";
 
 const question = {method: "elicitation/create", params: {
   message: "Choose a name", requestedSchema: {type: "object", properties: {name: {type: "string"}}},
 }};
 
+it("concurrent SDK responses retain their own metadata even with identical input and state", async () => {
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const rpc = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    let result: object;
+    if (rpc.method === "server/discover") {
+      result = {resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: {tools: {}}};
+    } else if (rpc.method === "tools/list") {
+      result = {resultType: "complete", tools: ["first", "second", "missing", "invalid"].map(name => ({name,
+        inputSchema: {type: "object", properties: {}}}))};
+    } else {
+      assert.equal(rpc.method, "tools/call");
+      const name: string = rpc.params.name;
+      if (name === "first") await new Promise(resolve => setTimeout(resolve, 20));
+      result = {resultType: "input_required", inputRequests: {question}, requestState: "same-state",
+        ...(name === "missing" ? {} : {_meta: name === "invalid" ? "invalid" : {"example.org/operation": name}})};
+    }
+    response.writeHead(200, {"Content-Type": "application/json"}).end(JSON.stringify({jsonrpc: "2.0", id: rpc.id, result}));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new ManagedMcpSdkClient({name: "metadata-test", version: "1"},
+    {inputRequired: {autoFulfill: false}, versionNegotiation: {mode: "auto"}});
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
+    await Promise.all(["first", "second", "missing"].map(async name => {
+      await assert.rejects(client.callTool({name}), error => {
+        assert.ok(error instanceof McpInputRequiredError);
+        const persisted = mcpPendingInputSchema.parse(JSON.parse(JSON.stringify(error.pending)));
+        assert.deepEqual(persisted._meta, name === "missing" ? undefined : {"example.org/operation": name});
+        assert.equal(persisted.requestState, "same-state");
+        return true;
+      });
+    }));
+    await assert.rejects(client.callTool({name: "invalid"}), error => {
+      assert.ok(error instanceof Error && !(error instanceof McpInputRequiredError));
+      return true;
+    });
+  } finally {
+    await client.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
 it("input deadlines survive persistence and can only shorten caller authority", () => {
   const expiry = "2026-09-21T15:00:00.000Z";
-  const pending = (hint: unknown) => parseMcpPendingInput({ inputRequests: { question: {
-    ...question, params: {...question.params, _meta: {"com.prompt2agent/input-deadline": hint}},
-  }} });
+  const pending = (hint: unknown) => parseMcpPendingInput({inputRequests: {question},
+    _meta: {"com.prompt2agent/input-deadline": hint}});
   const earlier = "2026-09-21T14:00:00.000Z";
   assert.equal(mcpInputExpiresAt(JSON.parse(JSON.stringify(pending(earlier))), expiry), earlier);
+  assert.equal(mcpInputExpiresAt(mcpPendingInputSchema.parse(JSON.parse(JSON.stringify(pending(earlier)))), expiry), earlier);
   assert.equal(mcpInputExpiresAt(pending("2026-09-21T16:00:00+00:00"), expiry), expiry);
   assert.equal(mcpInputExpiresAt(parseMcpPendingInput({inputRequests: {question}}), expiry), expiry);
   assert.throws(() => mcpInputExpiresAt(pending("tomorrow"), expiry));
+  assert.throws(() => parseMcpPendingInput({requestState: "opaque", _meta: "invalid"}));
+  assert.throws(() => parseMcpPendingInput({requestState: "opaque", _meta: {large: "x".repeat(1024 * 1024)}}), /persistence limit/);
+});
+
+it("legacy URL elicitation replies never carry form values", () => {
+  const pending = parseMcpPendingInput({inputRequests: {question: {method: "elicitation/create",
+    params: {mode: "url", message: "Authorize", url: "https://auth.example/consent", elicitationId: "question"}}}});
+  for (const action of ["accept", "decline", "cancel"] as const) {
+    assert.doesNotThrow(() => mcpInputResponseParams({pending, responses: {question: {action}}}));
+    assert.throws(() => mcpInputResponseParams({pending, responses: {question: {action, content: {}}}}), /URL elicitation/);
+  }
 });
 
 it("retains opaque state and validates exact input IDs and response categories", () => {
