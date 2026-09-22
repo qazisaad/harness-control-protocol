@@ -60,6 +60,84 @@ test("native process loss retains a waiting review without authorizing a call", 
   assert.equal(store.getMcpReview("session")?.outcome.phase, "waiting");
 });
 
+for (const reviewed of [false, true]) for (const decision of ["accept", "decline"] as const) {
+  test(`delegated ${decision} resumes with the original grant and reaches terminal output (reviewed=${reviewed})`, async () => {
+    let notify!: () => void;
+    let notifyInput!: () => void;
+    const published = new Promise<void>(resolve => {notify = resolve;});
+    const inputPublished = new Promise<void>(resolve => {notifyInput = resolve;});
+    const {store, owner, request} = setup(event => {
+      if (event.event_type === "approval.requested" && store.getMcpReview("session")?.outcome.phase === "review_waiting") notify();
+      if (event.event_type === "input.requested") notifyInput();
+    });
+    const signal = new AbortController().signal;
+    let rootGrant: McpReviewGrant | undefined;
+    if (reviewed) {
+      const root = owner.request(request, signal);
+      const record = store.getMcpReview("session")!;
+      owner.decide({session_id: "session", turn_id: "turn", request_id: record.request_id,
+        action_hash: record.action_hash, decision: "accept", actor_id: "root-reviewer"});
+      rootGrant = (await root)!;
+    }
+    const pending = parseMcpPendingInput({requestState: "same-worker", _meta: {[MCP_REVIEW_META_KEY]: {
+      kind: "delegated", input_request_id: "child", subject: {
+        operation_id: "child-operation", tool_name: "update", arguments: {id: "one"}, binding: "opaque-server-binding",
+      },
+    }}, inputRequests: {child: {method: "elicitation/create", params: {
+      message: "Approve update", requestedSchema: {type: "object", properties: {
+        request_id: {type: "string"}, action_json: {type: "string"},
+      }, required: ["request_id", "action_json"]},
+    }}}});
+    let calls = 0;
+    const execution = owner.invoke(request, async (_name, _args, grant, reply) => {
+      calls++;
+      assert.deepEqual(grant, rootGrant);
+      if (!reply) throw new McpInputRequiredError(pending);
+      const record = store.getMcpReview("session")!;
+      if (calls === 3) {
+        assert.ok(record.outcome.phase === "input_resuming");
+        assert.equal(record.outcome.protocol_round, 2);
+        assert.equal(record.outcome.review_actor_id, reviewed ? "root-reviewer" : undefined);
+        assert.deepEqual(reply.responses, {value: {action: "accept", content: {name: "Ada"}}});
+        return {is_error: false, content: [{type: "text", text: decision}]};
+      }
+      assert.ok(record.outcome.phase === "review_resuming");
+      assert.equal(record.outcome.review_actor_id, reviewed ? "root-reviewer" : undefined);
+      assert.deepEqual(reply.responses, {child: {action: decision,
+        ...(decision === "accept" ? {content: {request_id: record.outcome.input_request_id,
+          action_json: record.outcome.action_json}} : {})}});
+      if (decision === "accept") throw new McpInputRequiredError(parseMcpPendingInput({requestState: "child-input",
+        inputRequests: {value: {method: "elicitation/create", params: {message: "Name", requestedSchema: {
+          type: "object", properties: {name: {type: "string"}}, required: ["name"],
+        }}}}}));
+      return {is_error: false, content: [{type: "text", text: decision}]};
+    }, signal, rootGrant);
+    await published;
+    const waiting = store.getMcpReview("session")!;
+    assert.ok(waiting.outcome.phase === "review_waiting");
+    const childRequestId = waiting.outcome.input_request_id;
+    assert.throws(() => owner.respondToInput({session_id: "session", turn_id: "turn",
+      request_id: childRequestId, actor_id: "bypass", value: {child: {action: "accept"}}}), /does not match/);
+    const response = {session_id: "session", turn_id: "turn", request_id: waiting.outcome.input_request_id,
+      action_hash: waiting.outcome.action_hash, decision, actor_id: "child-reviewer"};
+    owner.decide(response);
+    owner.decide(response);
+    if (decision === "accept") {
+      await inputPublished;
+      const input = store.getMcpReview("session")!.outcome;
+      assert.ok(input.phase === "input_waiting");
+      owner.respondToInput({session_id: "session", turn_id: "turn", request_id: input.input_request_id,
+        actor_id: "input-responder", value: {value: {action: "accept", content: {name: "Ada"}}}});
+    }
+    assert.deepEqual(await execution, {is_error: false, content: [{type: "text", text: decision}]});
+    assert.equal(calls, decision === "accept" ? 3 : 2);
+    const terminal = store.getMcpReview("session")!;
+    assert.equal(terminal.outcome.phase, "completed");
+    assert.equal(terminal.action_json, waiting.action_json);
+    assert.equal(terminal.request_id, waiting.request_id);
+  });
+}
+
 test("a durable decision releases its native waiter even when live delivery fails", async () => {
   const {store, owner, request} = setup(event => {
     if (event.event_type === "approval.resolved") throw new Error("connection closed");
@@ -175,14 +253,18 @@ test("interrupting a live input wait retains it without dispatching a continuati
   assert.equal(store.getMcpReview("session")?.outcome.phase, "input_waiting");
 });
 
-for (const action of ["accept", "decline", "cancel"] as const) {
-  test(`native review and ${action} input reach completion through the HTTP SDK`, {timeout: 10000}, async () => {
+for (const delegated of [false, true]) for (const action of ["accept", "decline", "cancel"] as const) {
+  if (delegated && action === "cancel") continue;
+  test(`native review and ${action} input reach completion through the HTTP SDK (delegated=${delegated})`, {timeout: 10000}, async () => {
     let notifyApproval!: () => void;
     let notifyInput!: () => void;
     const approvalReady = new Promise<void>(resolve => {notifyApproval = resolve;});
     const inputReady = new Promise<void>(resolve => {notifyInput = resolve;});
     const {store, owner, request, start, events} = setup(event => {
-      if (event.event_type === "approval.requested") notifyApproval();
+      if (event.event_type === "approval.requested") {
+        if (store.getMcpReview("session")?.outcome.phase === "review_waiting") notifyInput();
+        else notifyApproval();
+      }
       if (event.event_type === "input.requested") notifyInput();
     });
     const calls: string[] = [];
@@ -211,15 +293,21 @@ for (const action of ["accept", "decline", "cancel"] as const) {
           assert.deepEqual(rpc.params._meta[MCP_REVIEW_META_KEY], {request_id: retained.request_id, action_json: retained.action_json});
           if (calls.length === 1) {
             assert.equal(retained.outcome.phase, "dispatching");
-            result = {resultType: "input_required", requestState: "private-http-state", inputRequests: {question: {
+            result = {resultType: "input_required", requestState: "private-http-state",
+              ...(delegated ? {_meta: {[MCP_REVIEW_META_KEY]: {kind: "delegated", input_request_id: "question",
+                subject: {operation_id: "child", tool_name: "write", arguments: {id: "one"}, binding: "server-binding"}}}} : {}),
+              inputRequests: {question: {
               method: "elicitation/create", params: {message: "Choose a name", requestedSchema: {type: "object",
-                properties: {name: {type: "string"}}, required: ["name"]}},
+                properties: delegated ? {request_id: {type: "string"}, action_json: {type: "string"}} : {name: {type: "string"}},
+                required: delegated ? ["request_id", "action_json"] : ["name"]}},
             }}};
           } else {
             assert.equal(calls.length, 2);
-            assert.equal(retained.outcome.phase, "input_resuming");
+            assert.equal(retained.outcome.phase, delegated ? "review_resuming" : "input_resuming");
             assert.equal(rpc.params.requestState, "private-http-state");
-            assert.deepEqual(rpc.params.inputResponses, {question: {action, ...(action === "accept" ? {content: {name: "Ada"}} : {})}});
+            const content = retained.outcome.phase === "review_resuming"
+              ? {request_id: retained.outcome.input_request_id, action_json: retained.outcome.action_json} : {name: "Ada"};
+            assert.deepEqual(rpc.params.inputResponses, {question: {action, ...(action === "accept" ? {content} : {})}});
             result = {resultType: "complete", content: [{type: "text", text: "done"}]};
           }
         }
@@ -253,10 +341,17 @@ for (const action of ["accept", "decline", "cancel"] as const) {
       await inputReady;
       const waiting = store.getMcpReview("session")!;
       assert.equal(waiting.request_id, reviewed.request_id);
-      assert.ok(waiting.outcome.phase === "input_waiting");
       assert.equal(calls.length, 1);
-      owner.respondToInput({session_id: "session", turn_id: "turn", request_id: waiting.outcome.input_request_id,
-        actor_id: "responder", value: {question: {action, ...(action === "accept" ? {content: {name: "Ada"}} : {})}}});
+      if (delegated) {
+        assert.ok(waiting.outcome.phase === "review_waiting");
+        assert.ok(action !== "cancel");
+        owner.decide({session_id: "session", turn_id: "turn", request_id: waiting.outcome.input_request_id,
+          action_hash: waiting.outcome.action_hash, actor_id: "responder", decision: action});
+      } else {
+        assert.ok(waiting.outcome.phase === "input_waiting");
+        owner.respondToInput({session_id: "session", turn_id: "turn", request_id: waiting.outcome.input_request_id,
+          actor_id: "responder", value: {question: {action, ...(action === "accept" ? {content: {name: "Ada"}} : {})}}});
+      }
       assert.deepEqual(await execution, {success: true, contentItems: [{type: "inputText", text: "done"}]});
       assert.equal(store.getMcpReview("session")?.outcome.phase, "completed");
       assert.deepEqual(hashes, [reviewed.action_hash, reviewed.action_hash]);

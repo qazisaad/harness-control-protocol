@@ -541,8 +541,8 @@ export class HarnessSessionManager {
         for (const event of this.#retireSavedReview(review, {kind: "closed"})) onEvent(event);
         continue;
       }
-      if (this.#sessions.has(review.start.session_id) || review.outcome.phase === "waiting" || review.outcome.phase === "input_waiting") continue;
-      if (review.outcome.phase === "dispatching" || review.outcome.phase === "input_resuming") {
+      if (this.#sessions.has(review.start.session_id) || review.outcome.phase === "waiting" || review.outcome.phase === "input_waiting" || review.outcome.phase === "review_waiting") continue;
+      if (review.outcome.phase === "dispatching" || review.outcome.phase === "input_resuming" || review.outcome.phase === "review_resuming") {
         for (const event of this.#retireSavedReview(review, {kind: "failed", code: "mcp_review_outcome_unknown",
           message: "The reviewed call may have dispatched before the runner stopped; automatic retry is forbidden."})) onEvent(event);
         continue;
@@ -589,7 +589,8 @@ export class HarnessSessionManager {
     else if (decided.outcome.phase === "completed") {
       outcome = {kind: "completed", result: mcpToolCallResultSchema.parse(JSON.parse(decided.outcome.result_json))};
     } else if ((decided.outcome.phase === "dispatching" && previous.outcome.phase === "waiting") ||
-        (decided.outcome.phase === "input_resuming" && previous.outcome.phase === "input_waiting")) {
+        (decided.outcome.phase === "input_resuming" && previous.outcome.phase === "input_waiting") ||
+        (decided.outcome.phase === "review_resuming" && previous.outcome.phase === "review_waiting")) {
       const toolset = session.mcpToolsets.find(item => item.name === action.attachment_name);
       if (!toolset || !toolset.tools.some(tool => tool.name === action.tool_name)) {
         throw new HarnessAdapterError("mcp_review_selection_changed", "The reviewed tool is no longer selected.");
@@ -599,7 +600,7 @@ export class HarnessSessionManager {
       const result = await reviewer.invoke({attachment_name: action.attachment_name, tool_name: action.tool_name,
         arguments: action.arguments, native_thread_id: decided.native_thread_id, native_turn_id: decided.native_turn_id,
         native_call_id: decided.native_call_id}, toolset.callTool.bind(toolset), new AbortController().signal, grant,
-        decided.outcome.phase === "input_resuming" ? decided.outcome.reply : undefined);
+        decided.outcome.phase === "input_resuming" || decided.outcome.phase === "review_resuming" ? decided.outcome.reply : undefined);
       outcome = {kind: "completed", result};
     } else {
       throw new HarnessAdapterError("mcp_review_outcome_unknown", "The reviewed call may already have dispatched; automatic retry is forbidden.");

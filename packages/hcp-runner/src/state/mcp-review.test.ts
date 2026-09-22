@@ -4,7 +4,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { HcpHarnessEventPayload } from "@harness-control/protocol";
+import { MCP_REVIEW_META_KEY, type HcpHarnessEventPayload } from "@harness-control/protocol";
 import { JsonRunnerStateStore, MemoryRunnerStateStore } from "./index.js";
 import type { PersistedMcpReview } from "./mcp-review.js";
 import { parseMcpPendingInput } from "../mcp/input-required.js";
@@ -102,6 +102,66 @@ function inputEvent(review: PersistedMcpReview, sequence: number): HcpHarnessEve
     data: {request_id: outcome.input_request_id, session_id: "session", turn_id: "turn",
       ...(outcome.phase === "input_waiting" ? {prompt: "Continue?", input_kind: "form", required: true, redaction: "none"}
         : {actor_id: outcome.actor_id, resolved_at: "2026-09-19T00:01:00Z"})}};
+}
+
+for (const reviewed of [false, true]) {
+  for (const decision of ["accept", "decline"] as const) {
+    test(`delegated ${decision} survives storage restart without replacing the parent (reviewed=${reviewed})`, async () => {
+      const directory = await mkdtemp(join(tmpdir(), "hcp-child-review-"));
+      const path = join(directory, "state.json");
+      try {
+        const {review, event} = pending();
+        const store = new JsonRunnerStateStore(path);
+        let sequence = 1;
+        if (reviewed) {
+          store.saveMcpReview(review, event);
+          store.saveMcpReview({...review, outcome: {phase: "dispatching", actor_id: "actor"}}, decisionEvent(review, "accept"));
+          sequence = 3;
+        }
+        const subject = {operation_id: "child", tool_name: "update", arguments: {id: "record"}, binding: "server-binding"};
+        const action = JSON.stringify({...JSON.parse(review.action_json), delegated_subject: subject});
+        const hash = createHash("sha256").update(action).digest("hex");
+        const pendingInput = parseMcpPendingInput({requestState: "retained-worker", inputRequests: {child: {
+          method: "elicitation/create", params: {message: "Approve child?", requestedSchema: {type: "object", properties: {
+            request_id: {type: "string"}, action_json: {type: "string"},
+          }, required: ["request_id", "action_json"]}},
+        }}, _meta: {[MCP_REVIEW_META_KEY]: {kind: "delegated", input_request_id: "child", subject}}});
+        const outcome = {phase: "review_waiting" as const, input_request_id: "child-review", protocol_round: 1,
+          action_json: action, action_hash: hash, pending: pendingInput, ...(reviewed ? {review_actor_id: "actor"} : {})};
+        const waiting: PersistedMcpReview = {...review, outcome};
+        const requested: HcpHarnessEventPayload = {...event, sequence: sequence++, data: {...event.data,
+          request_id: outcome.input_request_id, action, action_hash: hash}};
+        assert.throws(() => store.saveMcpReview({...waiting, outcome: {...outcome, action_hash: "0".repeat(64)}}, requested), /pending subject/);
+        const altered = JSON.stringify({...JSON.parse(action), tool_name: "other-parent"});
+        assert.throws(() => store.saveMcpReview({...waiting, outcome: {...outcome, action_json: altered,
+          action_hash: createHash("sha256").update(altered).digest("hex")}}, requested), /parent operation/);
+        store.saveMcpReview(waiting, requested);
+        const restarted = new JsonRunnerStateStore(path);
+        assert.deepEqual(restarted.getMcpReview("session"), waiting);
+        const {pending: _, ...round} = outcome;
+        const resuming: PersistedMcpReview = {...review, outcome: {...round, phase: "review_resuming", actor_id: "child-reviewer", decision,
+          reply: {pending: pendingInput, responses: {child: {action: decision,
+            ...(decision === "accept" ? {content: {request_id: "child-review", action_json: action}} : {})}}}}};
+        const resolved: HcpHarnessEventPayload = {...decisionEvent(review, decision), sequence: sequence++, data: {
+          session_id: "session", turn_id: "turn", request_id: "child-review", action_hash: hash,
+          actor_id: "child-reviewer", decision, resolved_at: "2026-09-19T00:01:00Z",
+        }};
+        assert.ok(resuming.outcome.phase === "review_resuming");
+        const resumingOutcome = resuming.outcome;
+        assert.throws(() => restarted.saveMcpReview({...resuming, outcome: {...resumingOutcome,
+          reply: {pending: pendingInput, responses: {child: {action: "accept", content: {
+            request_id: review.request_id, action_json: review.action_json,
+          }}}}}}, resolved), /recorded decision/);
+        restarted.saveMcpReview(resuming, resolved);
+        const resumed = new JsonRunnerStateStore(path);
+        assert.deepEqual(resumed.getMcpReview("session"), resuming);
+        assert.throws(() => resumed.saveMcpReview(waiting, requested), /replay/);
+        const terminal: PersistedMcpReview = {...review, outcome: {phase: "completed", actor_id: "child-reviewer", result_json: "{}"}};
+        resumed.saveMcpReview(terminal);
+        assert.deepEqual(new JsonRunnerStateStore(path).getMcpReview("session"), terminal);
+      } finally {await rm(directory, {recursive: true, force: true});}
+    });
+  }
 }
 
 for (const reviewed of [false, true]) {

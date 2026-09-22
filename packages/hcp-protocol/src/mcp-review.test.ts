@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { hashMcpReviewAction, mcpReviewActionBytes, mcpReviewGrantSchema, mcpReviewPolicySchema, MCP_REVIEW_MAX_ACTION_BYTES } from "./index.js";
+import { hashMcpReviewAction, mcpReviewActionBytes, mcpReviewGrantSchema, mcpReviewPolicySchema, mcpDelegatedReviewRequestSchema, MCP_REVIEW_MAX_ACTION_BYTES } from "./index.js";
+
+test("delegated review subjects are closed and covered by exact action hashing", async () => {
+  const subject = {operation_id: "child", tool_name: "write", arguments: {id: "one"}, binding: "server-issued"};
+  const hint = {kind: "delegated", input_request_id: "input", subject};
+  assert.deepEqual(mcpDelegatedReviewRequestSchema.parse(hint), hint);
+  assert.throws(() => mcpDelegatedReviewRequestSchema.parse({...hint, approved: true}));
+  assert.throws(() => mcpDelegatedReviewRequestSchema.parse({...hint, subject: {...subject, binding: ""}}));
+  assert.throws(() => mcpDelegatedReviewRequestSchema.parse({...hint, subject: {...subject, approved: true}}));
+  const root = {kind: "mcp_tool", attachment_name: "selected", tool_name: "execute", arguments: {code: "run()"}};
+  const action = JSON.stringify({...root, delegated_subject: subject});
+  assert.equal(await hashMcpReviewAction(action), createHash("sha256").update(action).digest("hex"));
+  assert.notEqual(await hashMcpReviewAction(action), await hashMcpReviewAction(JSON.stringify({...root,
+    delegated_subject: {...subject, operation_id: "sibling"}})));
+});
 
 test("public MCP review contracts bind exact UTF-8 bytes and reject invalid embedded actions", async () => {
   const action = JSON.stringify({kind: "mcp_tool", attachment_name: "server", tool_name: "write", arguments: {text: "é🙂"}});

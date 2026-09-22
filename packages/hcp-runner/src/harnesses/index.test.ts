@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { HarnessSessionError, HarnessSessionManager, type HarnessMcpClient } from "./index.js";
 import type { AuditLogEvent } from "../audit/index.js";
 import type { LocalCapabilityConfig, RunnerConfig } from "../config/index.js";
-import type { HcpHarnessEventPayload, HcpSessionStartPayload } from "@harness-control/protocol";
+import { MCP_REVIEW_META_KEY, type HcpHarnessEventPayload, type HcpSessionStartPayload } from "@harness-control/protocol";
 import { JsonRunnerStateStore } from "../state/index.js";
 import { HarnessMcpReview } from "./mcp-review.js";
 import { McpInputRequiredError, parseMcpPendingInput } from "../mcp/input-required.js";
@@ -991,10 +991,10 @@ describe("HarnessSessionManager", () => {
   });
 });
 
-it("recovered approval remains waiting after preparation failure and serializes competing resumes", async () => {
+for (const delegated of [false, true]) it(`recovered approval remains waiting after preparation failure and serializes competing resumes (delegated=${delegated})`, async () => {
   const workspace = await createWorkspace();
   const path = join(workspace.root, "approval-state.json");
-  const store = new JsonRunnerStateStore(path);
+  let store = new JsonRunnerStateStore(path);
   const start: HcpSessionStartPayload = {session_id: "review-session", workspace_id: "repo", provider_instance_id: "codex-local",
     driver_kind: "codex", cwd: workspace.project, sandbox_mode: "read_only", approval_policy: "full_access",
     continue_session: false, model_selection: {model: "gpt-test"}, mcp_servers: [{name: "tools", transport: "streamable_http",
@@ -1002,13 +1002,35 @@ it("recovered approval remains waiting after preparation failure and serializes 
       headers: {}, proof_of_possession: {scheme: "runner_signed_request", key_id: "key", required_headers: ["x-hcp-proof-signature"]}}]};
   const owner = new HarnessMcpReview(store, start, {session_id: start.session_id, turn_id: "turn", input: "Read"}, () => {});
   const controller = new AbortController();
-  const waiting = owner.request({attachment_name: "tools", tool_name: "lookup", arguments: {},
-    native_thread_id: "thread", native_turn_id: "native-turn", native_call_id: "call"}, controller.signal);
-  controller.abort();
-  await assert.rejects(waiting, /interrupted/);
+  const request = {attachment_name: "tools", tool_name: "lookup", arguments: {},
+    native_thread_id: "thread", native_turn_id: "native-turn", native_call_id: "call"};
+  const waiting = owner.request(request, controller.signal);
+  if (delegated) {
+    const root = store.getMcpReview(start.session_id)!;
+    owner.decide({session_id: start.session_id, turn_id: "turn", request_id: root.request_id,
+      action_hash: root.action_hash, actor_id: "parent-reviewer", decision: "accept"});
+    const grant = (await waiting)!;
+    const pending = owner.invoke(request, async () => {
+      throw new McpInputRequiredError(parseMcpPendingInput({requestState: "retained-child",
+        _meta: {[MCP_REVIEW_META_KEY]: {kind: "delegated", input_request_id: "child", subject: {
+          operation_id: "child", tool_name: "write", arguments: {}, binding: "server-binding",
+        }}}, inputRequests: {child: {method: "elicitation/create", params: {message: "Approve child", requestedSchema: {
+          type: "object", properties: {request_id: {type: "string"}, action_json: {type: "string"}},
+          required: ["request_id", "action_json"],
+        }}}}}));
+    }, controller.signal, grant);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    controller.abort();
+    await assert.rejects(pending, /interrupted/);
+  } else {
+    controller.abort();
+    await assert.rejects(waiting, /interrupted/);
+  }
+  store = new JsonRunnerStateStore(path);
   const retained = store.getMcpReview(start.session_id)!;
-  const response = {session_id: start.session_id, turn_id: "turn", request_id: retained.request_id,
-    action_hash: retained.action_hash, actor_id: "actor", decision: "accept" as const};
+  const subject = retained.outcome.phase === "review_waiting" ? {request_id: retained.outcome.input_request_id,
+    action_hash: retained.outcome.action_hash} : {request_id: retained.request_id, action_hash: retained.action_hash};
+  const response = {session_id: start.session_id, turn_id: "turn", ...subject, actor_id: "actor", decision: "accept" as const};
   let attempts = 0;
   let calls = 0;
   let notifyConnecting!: () => void;
@@ -1036,11 +1058,17 @@ it("recovered approval remains waiting after preparation failure and serializes 
         await connected;
       },
       async close() {}, async listTools() {return [{name: "lookup", input_schema: {type: "object"}}];},
-      async callTool(name, args, grant) {
+      async callTool(name, args, grant, reply) {
         calls++;
         assert.equal(name, "lookup"); assert.deepEqual(args, {});
         assert.deepEqual(grant, {request_id: retained.request_id, action_json: retained.action_json});
-        assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, "dispatching");
+        assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, delegated ? "review_resuming" : "dispatching");
+        if (delegated) {
+          assert.ok(retained.outcome.phase === "review_waiting");
+          assert.deepEqual(reply?.responses, {child: {action: "accept", content: {
+            request_id: retained.outcome.input_request_id, action_json: retained.outcome.action_json,
+          }}});
+        } else assert.equal(reply, undefined);
         return {is_error: false, content: []};
       },
     }),
@@ -1050,13 +1078,13 @@ it("recovered approval remains waiting after preparation failure and serializes 
     await assert.rejects(manager.respondToMcpReview({...response, action_hash: "wrong"}, () => {}), /does not match/);
     assert.equal(attempts, 0);
     await assert.rejects(manager.respondToMcpReview(response, () => {}), /connection unavailable/);
-    assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, "waiting");
+    assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id)?.outcome.phase, delegated ? "review_waiting" : "waiting");
     assert.equal(calls, 0);
     const resuming = manager.respondToMcpReview(response, event => events.push(event));
     await connecting;
     await assert.rejects(manager.respondToMcpReview(response, () => {}), /already resuming/);
     assert.equal(attempts, 2);
-    assert.equal(store.getMcpReview(start.session_id)?.outcome.phase, "waiting");
+    assert.equal(store.getMcpReview(start.session_id)?.outcome.phase, delegated ? "review_waiting" : "waiting");
     releaseConnection();
     const resumed = await resuming;
     assert.equal(resumed.kind, "resumed");

@@ -1,16 +1,16 @@
-import { mcpReviewActionBytes } from "@harness-control/protocol";
+import { MCP_REVIEW_META_KEY, mcpDelegatedReviewRequestSchema, mcpReviewActionBytes } from "@harness-control/protocol";
 import { createHash, randomUUID } from "node:crypto";
 import type { HcpHarnessEventPayload, HcpSessionStartPayload, HcpTurnSendPayload, HcpApprovalResponsePayload, HcpInputResponsePayload } from "@harness-control/protocol";
 import type { RunnerStateStore } from "../state/index.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
 import type { McpReviewGrant, McpToolCallResult } from "../mcp/McpAttachmentClient.js";
 import { HarnessAdapterError, type HarnessMcpReviewer, type HarnessMcpReviewRequest, type HarnessMcpToolset } from "./adapters/types.js";
-import { McpInputRequiredError, mcpInputExpiresAt, mcpInputReplySchema, type McpInputReply } from "../mcp/input-required.js";
+import { McpInputRequiredError, mcpInputExpiresAt, mcpInputReplySchema, mcpInputResponseParams, type McpInputReply } from "../mcp/input-required.js";
 
 function operationExpiresAt(record: PersistedMcpReview): string {
   const outcome = record.outcome;
-  if (outcome.phase === "input_waiting") return mcpInputExpiresAt(outcome.pending, record.expires_at);
-  if (outcome.phase === "input_resuming") return mcpInputExpiresAt(outcome.reply.pending, record.expires_at);
+  if (outcome.phase === "input_waiting" || outcome.phase === "review_waiting") return mcpInputExpiresAt(outcome.pending, record.expires_at);
+  if (outcome.phase === "input_resuming" || outcome.phase === "review_resuming") return mcpInputExpiresAt(outcome.reply.pending, record.expires_at);
   return record.expires_at;
 }
 
@@ -74,6 +74,18 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
 
   #decision(response: HcpApprovalResponsePayload): PersistedMcpReview {
     const review = this.store.getMcpReview(this.start.session_id);
+    if (review?.outcome.phase === "review_waiting" || review?.outcome.phase === "review_resuming") {
+      const outcome = review.outcome;
+      if (response.session_id !== this.start.session_id || response.turn_id !== this.turn.turn_id ||
+          response.request_id !== outcome.input_request_id || response.action_hash !== outcome.action_hash ||
+          !["accept", "decline"].includes(response.decision) || Date.parse(operationExpiresAt(review)) <= Date.now()) {
+        throw new HarnessAdapterError("mcp_review_binding_invalid", "Approval does not match the active child request.");
+      }
+      if (outcome.phase === "review_resuming" && (response.decision !== outcome.decision || response.actor_id !== outcome.actor_id)) {
+        throw new HarnessAdapterError("mcp_review_decision_conflict", "The child request already has another decision.");
+      }
+      return review;
+    }
     if (!review || response.session_id !== this.start.session_id || response.turn_id !== this.turn.turn_id ||
         response.request_id !== review.request_id || response.action_hash !== review.action_hash ||
         !["accept", "decline"].includes(response.decision) || Date.parse(review.expires_at) <= Date.now()) {
@@ -90,6 +102,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
 
   decide(response: HcpApprovalResponsePayload): PersistedMcpReview {
     const review = this.#decision(response);
+    if (review.outcome.phase === "review_waiting") return this.#decideDelegated(review, response);
     if (review.outcome.phase !== "waiting") return review;
     const phase = response.decision === "accept" ? "dispatching" : "declined";
     const updated: PersistedMcpReview = {...review, outcome: {phase, actor_id: response.actor_id}};
@@ -101,6 +114,27 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       if (this.#waiting?.requestId === review.request_id) {
         this.#waiting.resolve(phase === "dispatching" ? {request_id: review.request_id, action_json: review.action_json} : null);
       }
+    }
+    return updated;
+  }
+
+  #decideDelegated(review: PersistedMcpReview, response: HcpApprovalResponsePayload): PersistedMcpReview {
+    const outcome = review.outcome;
+    if (outcome.phase !== "review_waiting" || (response.decision !== "accept" && response.decision !== "decline")) {
+      throw new HarnessAdapterError("mcp_review_binding_invalid", "No matching child review is waiting.");
+    }
+    const delegated = mcpDelegatedReviewRequestSchema.parse(outcome.pending._meta?.[MCP_REVIEW_META_KEY]);
+    const reply = mcpInputReplySchema.parse({pending: outcome.pending, responses: {
+      [delegated.input_request_id]: {action: response.decision,
+        ...(response.decision === "accept" ? {content: {request_id: outcome.input_request_id, action_json: outcome.action_json}} : {})},
+    }});
+    const {pending: _, ...binding} = outcome;
+    const updated: PersistedMcpReview = {...review, outcome: {...binding, phase: "review_resuming",
+      reply, actor_id: response.actor_id, decision: response.decision}};
+    const event = this.#event("approval.resolved", {...response, resolved_at: new Date().toISOString()});
+    this.store.saveMcpReview(updated, event);
+    try {this.publish(event);} finally {
+      if (this.#inputWaiting?.requestId === outcome.input_request_id) this.#inputWaiting.resolve(reply);
     }
     return updated;
   }
@@ -130,8 +164,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
               tool_name: request.tool_name, arguments: request.arguments}) ||
             (grant && (retained.request_id !== grant.request_id || retained.action_json !== grant.action_json)) ||
             (!reply && retained.outcome.phase !== "dispatching") ||
-            (reply && retained.outcome.phase === "input_resuming" && Boolean(retained.outcome.review_actor_id) !== Boolean(grant)) ||
-            (reply && (retained.outcome.phase !== "input_resuming" || JSON.stringify(retained.outcome.reply) !== JSON.stringify(reply)))) {
+            (reply && (retained.outcome.phase === "input_resuming" || retained.outcome.phase === "review_resuming") && Boolean(retained.outcome.review_actor_id) !== Boolean(grant)) ||
+            (reply && ((retained.outcome.phase !== "input_resuming" && retained.outcome.phase !== "review_resuming") || JSON.stringify(retained.outcome.reply) !== JSON.stringify(reply)))) {
           throw new HarnessAdapterError("mcp_input_binding_invalid", "Input continuation does not match the original MCP operation.");
         }
       }
@@ -143,7 +177,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
         continue;
       }
       if (retained && (reply || grant)) {
-        if (retained.outcome.phase !== "dispatching" && retained.outcome.phase !== "input_resuming") {
+        if (retained.outcome.phase !== "dispatching" && retained.outcome.phase !== "input_resuming" && retained.outcome.phase !== "review_resuming") {
           throw new HarnessAdapterError("mcp_input_phase_invalid", "MCP operation is not dispatching.");
         }
         this.store.saveMcpReview({...retained, outcome: {phase: "completed", actor_id: retained.outcome.actor_id,
@@ -154,6 +188,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
   }
 
   async #waitForInput(request: HarnessMcpReviewRequest, error: McpInputRequiredError, signal: AbortSignal): Promise<McpInputReply> {
+    const hint = error.pending._meta?.[MCP_REVIEW_META_KEY];
+    const delegated = hint === undefined ? undefined : mcpDelegatedReviewRequestSchema.parse(hint);
     const properties: Record<string, unknown> = Object.fromEntries(Object.entries(error.pending.inputRequests ?? {}).map(([key, input]) => {
       if (input.method !== "elicitation/create" || !("requestedSchema" in input.params)) {
         throw new HarnessAdapterError("mcp_input_capability_unavailable", "This runner does not yet support the requested MCP input capability.");
@@ -170,13 +206,30 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     const sameCall = previous?.native_call_id === request.native_call_id && previous.native_turn_id === request.native_turn_id;
     const priorOutcome = sameCall ? previous.outcome : undefined;
     const reviewActor = priorOutcome?.phase === "dispatching" ? priorOutcome.actor_id
-      : priorOutcome?.phase === "input_resuming" ? priorOutcome.review_actor_id : undefined;
-    const round = priorOutcome?.phase === "input_resuming" ? priorOutcome.protocol_round + 1 : 1;
-    const outcome: PersistedMcpReview["outcome"] = {phase: "input_waiting", input_request_id: randomUUID(), protocol_round: round,
+      : priorOutcome?.phase === "input_resuming" || priorOutcome?.phase === "review_resuming" ? priorOutcome.review_actor_id : undefined;
+    const round = priorOutcome?.phase === "input_resuming" || priorOutcome?.phase === "review_resuming" ? priorOutcome.protocol_round + 1 : 1;
+    let outcome: Extract<PersistedMcpReview["outcome"], {phase: "input_waiting" | "review_waiting"}> = {phase: "input_waiting", input_request_id: randomUUID(), protocol_round: round,
       pending: error.pending, ...(reviewActor === undefined ? {} : {review_actor_id: reviewActor})};
+    if (delegated) {
+      if (Object.keys(error.pending.inputRequests ?? {}).length !== 1 || !Object.hasOwn(error.pending.inputRequests ?? {}, delegated.input_request_id)) {
+        throw new HarnessAdapterError("mcp_review_binding_invalid", "Child approval must identify its sole pending input.");
+      }
+      const action = JSON.stringify({kind: "mcp_tool", attachment_name: request.attachment_name,
+        tool_name: request.tool_name, arguments: request.arguments, delegated_subject: delegated.subject});
+      const actionHash = createHash("sha256").update(mcpReviewActionBytes(action)).digest("hex");
+      mcpInputResponseParams({pending: error.pending, responses: {[delegated.input_request_id]: {
+        action: "accept", content: {request_id: outcome.input_request_id, action_json: action},
+      }}});
+      outcome = {...outcome, phase: "review_waiting", action_json: action, action_hash: actionHash};
+    }
     const record = sameCall ? {...previous, outcome} : this.#newOperation(request, outcome);
     const expiresAt = operationExpiresAt(record);
-    const event = this.#event("input.requested", {request_id: outcome.input_request_id, session_id: this.start.session_id,
+    const event = outcome.phase === "review_waiting" ? this.#event("approval.requested", {
+      request_id: outcome.input_request_id, session_id: this.start.session_id, turn_id: this.turn.turn_id,
+      workspace_id: this.start.workspace_id, provider_instance_id: this.start.provider_instance_id, driver_kind: this.start.driver_kind,
+      request_type: "mcp_tool", risk_class: "medium", action: outcome.action_json, action_hash: outcome.action_hash,
+      allowed_decisions: ["accept", "decline"], expires_at: expiresAt, display: {title: `Run ${delegated!.subject.tool_name}`},
+    }) : this.#event("input.requested", {request_id: outcome.input_request_id, session_id: this.start.session_id,
       turn_id: this.turn.turn_id, prompt: `Provide input for ${request.tool_name}`, input_kind: "form", required: true,
       redaction: "none", expires_at: expiresAt,
       form_schema: {type: "object", properties, required: Object.keys(properties), additionalProperties: false}});

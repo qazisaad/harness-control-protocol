@@ -5,9 +5,24 @@ export const MCP_REVIEW_META_KEY = "io.harness-control/review-v1";
 export const MCP_REVIEW_MAX_ACTION_BYTES = 64 * 1024;
 export const MCP_REVIEW_MAX_REQUEST_ID_LENGTH = 256;
 
+export const mcpDelegatedReviewSubjectSchema = z.object({
+  operation_id: z.string().min(1).max(256),
+  tool_name: z.string().min(1),
+  arguments: z.record(z.string(), z.json()),
+  binding: z.string().min(1).max(MCP_REVIEW_MAX_ACTION_BYTES),
+}).strict();
+export type McpDelegatedReviewSubject = z.infer<typeof mcpDelegatedReviewSubjectSchema>;
+
+export const mcpDelegatedReviewRequestSchema = z.object({
+  kind: z.literal("delegated"),
+  input_request_id: z.string().min(1).max(MCP_REVIEW_MAX_REQUEST_ID_LENGTH),
+  subject: mcpDelegatedReviewSubjectSchema,
+}).strict();
+
 export const mcpReviewActionSchema = z.object({
   kind: z.literal("mcp_tool"), attachment_name: z.string().min(1),
   tool_name: z.string().min(1), arguments: z.record(z.string(), z.json()),
+  delegated_subject: mcpDelegatedReviewSubjectSchema.optional(),
 }).strict();
 export type McpReviewAction = z.infer<typeof mcpReviewActionSchema>;
 
@@ -45,5 +60,6 @@ export function createMcpReviewContract() {
   return {version: 1, metadata_key: MCP_REVIEW_META_KEY, max_action_bytes: MCP_REVIEW_MAX_ACTION_BYTES,
     hashing: "sha256-exact-utf8-lowercase-hex", schemas: {
       action: z.toJSONSchema(mcpReviewActionSchema), grant: z.toJSONSchema(mcpReviewGrantSchema), policy: z.toJSONSchema(mcpReviewPolicySchema),
+      delegated_request: z.toJSONSchema(mcpDelegatedReviewRequestSchema),
     }};
 }
