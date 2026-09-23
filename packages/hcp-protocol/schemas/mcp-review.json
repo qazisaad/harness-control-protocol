@@ -28,6 +28,41 @@
           "additionalProperties": {
             "$ref": "#/$defs/__schema0"
           }
+        },
+        "delegated_subject": {
+          "type": "object",
+          "properties": {
+            "operation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "tool_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "arguments": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema1"
+              }
+            },
+            "binding": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          },
+          "required": [
+            "operation_id",
+            "tool_name",
+            "arguments",
+            "binding"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -65,6 +100,37 @@
               },
               "additionalProperties": {
                 "$ref": "#/$defs/__schema0"
+              }
+            }
+          ]
+        },
+        "__schema1": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema1"
+              }
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema1"
               }
             }
           ]
@@ -136,6 +202,95 @@
           "additionalProperties": false
         }
       ]
+    },
+    "delegated_request": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "delegated"
+        },
+        "input_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "subject": {
+          "type": "object",
+          "properties": {
+            "operation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "tool_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "arguments": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0"
+              }
+            },
+            "binding": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          },
+          "required": [
+            "operation_id",
+            "tool_name",
+            "arguments",
+            "binding"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "input_request_id",
+        "subject"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema0"
+              }
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0"
+              }
+            }
+          ]
+        }
+      }
     }
   }
 }

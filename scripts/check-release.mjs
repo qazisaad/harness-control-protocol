@@ -28,6 +28,16 @@ try {
   writeFileSync(join(consumer, "package.json"), JSON.stringify({ private: true, type: "module" }));
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...manifests.map(pkg => join(output, pkg.filename)), "ws@^8.21.0", "typescript@^5.6.0", "@types/node@^22.0.0"], consumer);
   run(join(consumer, "node_modules/.bin/hcp-runner"), ["version"], consumer);
+  run(process.execPath, ["--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    import {readFileSync} from 'node:fs';
+    import {createMcpReviewContract} from '@harness-control/protocol';
+    import {createHcpMessageJsonSchema} from '@harness-control/protocol/json-schema';
+    const read = name => JSON.parse(readFileSync(new URL(import.meta.resolve(name)), 'utf8'));
+    assert.deepEqual(read('@harness-control/protocol/mcp-review.json'), createMcpReviewContract());
+    assert.deepEqual(read('@harness-control/protocol/schema.json'), createHcpMessageJsonSchema());
+    console.log('Packaged JSON contracts match public runtime schema factories');
+  `], consumer);
   run(process.execPath, ["--input-type=module", "-e", "await import('@harness-control/runner/accounts'); await import('@harness-control/runner'); await import('@harness-control/runner/pairing'); await import('@harness-control/protocol/json-schema'); await import('@harness-control/protocol/conformance'); console.log('Public exports imported without CLI side effects')"], consumer);
   copyFileSync(join(root, "examples/custom-harness.ts"), join(consumer, "custom-harness.ts"));
   run(join(consumer, "node_modules/.bin/tsc"), ["--strict", "--skipLibCheck", "--module", "NodeNext", "--target", "ES2022", "custom-harness.ts"], consumer);

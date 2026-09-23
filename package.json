@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && npm run schema:generate --workspace @harness-control/protocol",
     "check": "tsc -b --pretty false",
     "test": "npm test --workspaces --if-present",
     "demo:quickstart": "npm run start --workspace @harness-control/quickstart-demo",
