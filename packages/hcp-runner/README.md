@@ -68,3 +68,9 @@ await connection.connect();
 Implement `HarnessAdapter` and configure a provider instance whose `driver_kind` matches your adapter's `driverKind`. Advertise the capabilities your adapter implements and validate session configuration in `validateStart`. The runner owns sequencing, receipts and transport; the adapter owns provider execution and cleanup. The repository's `examples/custom-harness.ts` is a typed example, and `examples/public-sdk.mjs` exercises it through public packages and a real loopback connection.
 
 Local capability leases bind to HCP sessions and local resources. Keep product organization, workflow, run and node attribution in your application, mapped by the session or lease ID. The built-in `connect` command is a convenience for bundled providers; custom applications compose the public classes above.
+
+### Managed child input expiry
+
+A server can explicitly advertise `com.prompt2agent/input-on-expiry: "cancel"` with `com.prompt2agent/input-deadline` on an input-required result. If that deadline expires while the original operation lease is still valid, the runner durably records a cancellation-only continuation and uses the original request state to collect the parent result. It never emits a human approval/input resolution for an automatic expiry. Without the explicit cancellation policy, expiry still stops the operation.
+
+After process loss, an uncertain cancellation is fenced and never replayed; a saved terminal result can be delivered through the original native continuation. Automatic cancellation must produce a terminal result, not another input round. This does not grant permission to execute an expired child.

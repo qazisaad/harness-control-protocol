@@ -1099,3 +1099,60 @@ for (const delegated of [false, true]) it(`recovered approval remains waiting af
     await workspace.cleanup();
   }
 });
+
+for (const completed of [false, true]) it(`recovers automatic expiry without replay or a human decision (completed=${completed})`, async () => {
+  const workspace = await createWorkspace();
+  const path = join(workspace.root, "expiry-state.json");
+  const store = new JsonRunnerStateStore(path);
+  const start: HcpSessionStartPayload = {session_id: "expiry-session", workspace_id: "repo", provider_instance_id: "codex-local",
+    driver_kind: "codex", cwd: workspace.project, sandbox_mode: "read_only", approval_policy: "full_access",
+    continue_session: false, model_selection: {model: "gpt-test"}, mcp_servers: [{name: "tools", transport: "streamable_http",
+      url: "https://example.com/mcp", lease_id: "lease", expires_at: new Date(Date.now() + 60000).toISOString(),
+      headers: {}, proof_of_possession: {scheme: "runner_signed_request", key_id: "key", required_headers: ["x-hcp-proof-signature"]}}]};
+  const turn = {session_id: start.session_id, turn_id: "turn", input: "Read"};
+  const owner = new HarnessMcpReview(store, start, turn, () => {});
+  const request = {attachment_name: "tools", tool_name: "lookup", arguments: {},
+    native_thread_id: "original-thread", native_turn_id: "original-turn", native_call_id: "original-call"};
+  const pending = parseMcpPendingInput({requestState: "original-state",
+    _meta: {"com.prompt2agent/input-on-expiry": "cancel", "com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString()},
+    inputRequests: {q: {method: "elicitation/create", params: {message: "Confirm", requestedSchema: {type: "object", properties: {}}}}}});
+  const result = {is_error: false, content: [{type: "text" as const, text: "parent result"}]};
+  const original = owner.invoke(request, async (_name, _args, _grant, reply) => {
+    if (!reply) throw new McpInputRequiredError(pending);
+    if (!completed) throw new Error("lost response after automatic cancel");
+    return result;
+  }, new AbortController().signal);
+  if (completed) await original;
+  else await assert.rejects(original, /lost response/);
+  const retained = store.getMcpReview(start.session_id)!;
+  assert.equal(retained.outcome.phase, completed ? "expiry_completed" : "expiry_resuming");
+  let nativeCompletions = 0;
+  const adapter: HarnessAdapter = {
+    driverKind: "codex", durableMcpContinuation: true,
+    async probe() {return {provider_instance_id: "codex-local", driver_kind: "codex", installed: true, available: true, status: "ready", models: []};},
+    async validateStart() {}, async startSession(input) {return {adapter_session_id: input.payload.session_id};},
+    async sendTurn(input) {
+      nativeCompletions++;
+      assert.equal(input.mcpContinuation?.native_thread_id, request.native_thread_id);
+      assert.equal(input.mcpContinuation?.request_id, retained.request_id);
+      assert.deepEqual(input.mcpContinuation?.outcome, {kind: "completed", result});
+      return [{event_type: "turn.completed", data: {status: "completed", final_output: {final_text: "done"}}}];
+    }, async cancelTurn() {return [];}, async stopSession() {return [];},
+  };
+  const manager = new HarnessSessionManager(createCodexConfig(workspace.root), {
+    stateStore: new JsonRunnerStateStore(path), adapterRegistry: new HarnessAdapterRegistry([adapter]),
+    mcpClientFactory: () => ({async connect() {}, async close() {},
+      async listTools() {return [{name: "lookup", input_schema: {type: "object"}}];},
+      async callTool() {assert.fail("Automatic expiry may never redispatch after restart");}}),
+  });
+  const events: HcpHarnessEventPayload[] = [];
+  const completions: Promise<HcpHarnessEventPayload[]>[] = [];
+  try {
+    await manager.recoverMcpReviews(event => events.push(event), completion => completions.push(completion));
+    await Promise.all(completions);
+    assert.equal(nativeCompletions, completed ? 1 : 0);
+    assert.ok(events.some(event => event.event_type === (completed ? "turn.completed" : "turn.failed")));
+    assert.ok(!events.some(event => event.event_type === "approval.resolved" || event.event_type === "input.resolved"));
+    assert.equal(new JsonRunnerStateStore(path).getMcpReview(start.session_id), undefined);
+  } finally {await manager.stopSession(start.session_id, "test complete"); await workspace.cleanup();}
+});

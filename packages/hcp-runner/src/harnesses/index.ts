@@ -542,13 +542,15 @@ export class HarnessSessionManager {
         continue;
       }
       if (this.#sessions.has(review.start.session_id) || review.outcome.phase === "waiting" || review.outcome.phase === "input_waiting" || review.outcome.phase === "review_waiting") continue;
-      if (review.outcome.phase === "dispatching" || review.outcome.phase === "input_resuming" || review.outcome.phase === "review_resuming") {
+      if (review.outcome.phase === "dispatching" || review.outcome.phase === "input_resuming" || review.outcome.phase === "review_resuming" || review.outcome.phase === "expiry_resuming") {
         for (const event of this.#retireSavedReview(review, {kind: "failed", code: "mcp_review_outcome_unknown",
           message: "The reviewed call may have dispatched before the runner stopped; automatic retry is forbidden."})) onEvent(event);
         continue;
       }
       try {
-        const resolution = await this.respondToMcpReview({session_id: review.start.session_id, turn_id: review.turn.turn_id,
+        const resolution = review.outcome.phase === "expiry_completed"
+          ? await this.#resumeMcpOperation(review, new HarnessMcpReview(this.#stateStore, review.start, review.turn, onEvent), () => review, onEvent)
+          : await this.respondToMcpReview({session_id: review.start.session_id, turn_id: review.turn.turn_id,
           request_id: review.request_id, action_hash: review.action_hash, actor_id: review.outcome.actor_id,
           decision: review.outcome.phase === "declined" ? "decline" : "accept"}, onEvent);
         if (resolution.kind === "resumed") watchTurn(resolution.completion, review.start.session_id, review.turn.turn_id);
@@ -586,7 +588,7 @@ export class HarnessSessionManager {
     const action = mcpReviewActionSchema.parse(JSON.parse(decided.action_json));
     let outcome: HarnessMcpContinuation["outcome"];
     if (decided.outcome.phase === "declined") outcome = {kind: "declined"};
-    else if (decided.outcome.phase === "completed") {
+    else if (decided.outcome.phase === "completed" || decided.outcome.phase === "expiry_completed") {
       outcome = {kind: "completed", result: mcpToolCallResultSchema.parse(JSON.parse(decided.outcome.result_json))};
     } else if ((decided.outcome.phase === "dispatching" && previous.outcome.phase === "waiting") ||
         (decided.outcome.phase === "input_resuming" && previous.outcome.phase === "input_waiting") ||

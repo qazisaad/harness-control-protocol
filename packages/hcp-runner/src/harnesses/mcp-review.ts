@@ -56,7 +56,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     if (expiry <= Date.now()) throw new HarnessAdapterError("mcp_review_expired", "The MCP attachment expired before review.");
     const previous = this.store.getMcpReview(this.start.session_id);
     if (previous) {
-      if (!["completed", "declined"].includes(previous.outcome.phase)) {
+      if (!["completed", "expiry_completed", "declined"].includes(previous.outcome.phase)) {
         throw new HarnessAdapterError("mcp_review_pending", "The previous MCP operation has not resolved.");
       }
       this.store.clearMcpReview(this.start.session_id, previous.request_id);
@@ -164,8 +164,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
               tool_name: request.tool_name, arguments: request.arguments}) ||
             (grant && (retained.request_id !== grant.request_id || retained.action_json !== grant.action_json)) ||
             (!reply && retained.outcome.phase !== "dispatching") ||
-            (reply && (retained.outcome.phase === "input_resuming" || retained.outcome.phase === "review_resuming") && Boolean(retained.outcome.review_actor_id) !== Boolean(grant)) ||
-            (reply && ((retained.outcome.phase !== "input_resuming" && retained.outcome.phase !== "review_resuming") || JSON.stringify(retained.outcome.reply) !== JSON.stringify(reply)))) {
+            (reply && (retained.outcome.phase === "input_resuming" || retained.outcome.phase === "review_resuming" || retained.outcome.phase === "expiry_resuming") && Boolean(retained.outcome.review_actor_id) !== Boolean(grant)) ||
+            (reply && ((retained.outcome.phase !== "input_resuming" && retained.outcome.phase !== "review_resuming" && retained.outcome.phase !== "expiry_resuming") || JSON.stringify(retained.outcome.reply) !== JSON.stringify(reply)))) {
           throw new HarnessAdapterError("mcp_input_binding_invalid", "Input continuation does not match the original MCP operation.");
         }
       }
@@ -173,15 +173,19 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       try {result = await callTool(request.tool_name, request.arguments, grant, reply);}
       catch (error: unknown) {
         if (!(error instanceof McpInputRequiredError)) throw error;
+        if (retained?.outcome.phase === "expiry_resuming") {
+          throw new HarnessAdapterError("mcp_expiry_not_terminal", "Expired input cancellation must return a terminal result.");
+        }
         reply = await this.#waitForInput(request, error, signal);
         continue;
       }
       if (retained && (reply || grant)) {
-        if (retained.outcome.phase !== "dispatching" && retained.outcome.phase !== "input_resuming" && retained.outcome.phase !== "review_resuming") {
+        if (retained.outcome.phase !== "dispatching" && retained.outcome.phase !== "input_resuming" && retained.outcome.phase !== "review_resuming" && retained.outcome.phase !== "expiry_resuming") {
           throw new HarnessAdapterError("mcp_input_phase_invalid", "MCP operation is not dispatching.");
         }
-        this.store.saveMcpReview({...retained, outcome: {phase: "completed", actor_id: retained.outcome.actor_id,
-          result_json: JSON.stringify(result)}});
+        this.store.saveMcpReview({...retained, outcome: retained.outcome.phase === "expiry_resuming"
+          ? {phase: "expiry_completed", result_json: JSON.stringify(result)}
+          : {phase: "completed", actor_id: retained.outcome.actor_id, result_json: JSON.stringify(result)}});
       }
       return result;
     }
@@ -240,7 +244,20 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     return new Promise<McpInputReply>((resolve, reject) => {
       const cleanup = (): void => {clearTimeout(timer); signal.removeEventListener("abort", abort); this.#inputWaiting = undefined;};
       const abort = (): void => {cleanup(); reject(new HarnessAdapterError("mcp_input_interrupted", "MCP input was interrupted or expired."));};
-      const timer = setTimeout(abort, Math.max(0, Date.parse(expiresAt) - Date.now()));
+      const expire = (): void => {
+        if (signal.aborted || error.pending._meta?.["com.prompt2agent/input-on-expiry"] !== "cancel" ||
+            Date.parse(record.expires_at) <= Date.now()) {abort(); return;}
+        try {
+          const reply = mcpInputReplySchema.parse({pending: error.pending,
+            responses: Object.fromEntries(Object.keys(error.pending.inputRequests ?? {}).map(key => [key, {action: "cancel"}]))});
+          // Cancellation is automatic, never a synthesized human approval/input event.
+          this.store.saveMcpReview({...record, outcome: {phase: "expiry_resuming",
+            input_request_id: outcome.input_request_id, protocol_round: outcome.protocol_round,
+            ...(outcome.review_actor_id === undefined ? {} : {review_actor_id: outcome.review_actor_id}), reply}});
+          cleanup(); resolve(reply);
+        } catch (error: unknown) {cleanup(); reject(error);}
+      };
+      const timer = setTimeout(expire, Math.max(0, Date.parse(expiresAt) - Date.now()));
       this.#inputWaiting = {requestId: outcome.input_request_id, resolve: value => {cleanup(); resolve(value);}};
       signal.addEventListener("abort", abort, {once: true});
       if (signal.aborted) {abort(); return;}

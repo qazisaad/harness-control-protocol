@@ -368,3 +368,43 @@ for (const mode of ["form", "url"] as const) for (const delegated of mode === "u
     }
   });
 }
+
+for (const delegated of [false, true]) for (const reviewed of [false, true]) {
+  test(`automatic child expiry cancels once without inventing a human decision (delegated=${delegated}, reviewed=${reviewed})`, async () => {
+    const {store, owner, request, events} = setup();
+    const signal = new AbortController().signal;
+    let grant: McpReviewGrant | undefined;
+    if (reviewed) {
+      const approval = owner.request(request, signal);
+      const review = store.getMcpReview("session")!;
+      owner.decide({session_id: "session", turn_id: "turn", request_id: review.request_id,
+        action_hash: review.action_hash, decision: "accept", actor_id: "root-reviewer"});
+      grant = (await approval)!;
+    }
+    const pending = parseMcpPendingInput({requestState: "original-worker",
+      _meta: {"com.prompt2agent/input-on-expiry": "cancel",
+        "com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString(),
+        ...(delegated ? {[MCP_REVIEW_META_KEY]: {kind: "delegated", input_request_id: "child",
+          subject: {operation_id: "child-operation", tool_name: "write", arguments: {}, binding: "original-binding"}}} : {})},
+      inputRequests: {child: {method: "elicitation/create", params: {message: "Confirm",
+        requestedSchema: {type: "object", properties: delegated ? {request_id: {type: "string"}, action_json: {type: "string"}} : {}}}}}});
+    let calls = 0;
+    const result = {is_error: false, content: [{type: "text" as const, text: "parent observed child expiry"}]};
+    const execution = owner.invoke(request, async (_name, _args, actualGrant, reply) => {
+      calls++;
+      assert.deepEqual(actualGrant, grant);
+      if (!reply) throw new McpInputRequiredError(pending);
+      assert.equal(store.getMcpReview("session")?.outcome.phase, "expiry_resuming");
+      assert.deepEqual(reply, {pending, responses: {child: {action: "cancel"}}});
+      return result;
+    }, signal, grant);
+    assert.deepEqual(await execution, result);
+    assert.equal(calls, 2);
+    const terminal = store.getMcpReview("session")!;
+    assert.deepEqual(terminal.outcome, {phase: "expiry_completed", result_json: JSON.stringify(result)});
+    assert.equal(events.filter(event => event.event_type === "input.resolved").length, 0);
+    assert.equal(events.filter(event => event.event_type === "approval.resolved").length, reviewed ? 1 : 0);
+    await assert.rejects(owner.invoke(request, async () => {calls++; return result;}, signal, grant), /retained state|does not match/);
+    assert.equal(calls, 2);
+  });
+}

@@ -211,3 +211,44 @@ for (const reviewed of [false, true]) {
     } finally {await rm(root, {recursive: true, force: true});}
   });
 }
+
+test("automatic expiry persists cancel-only state and rejects early, rebound or human-authorized transitions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hcp-expiry-"));
+  const path = join(directory, "state.json");
+  try {
+    const {review} = pending();
+    const request = parseMcpPendingInput({requestState: "original",
+      _meta: {"com.prompt2agent/input-on-expiry": "cancel", "com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString()},
+      inputRequests: {q: {method: "elicitation/create", params: {message: "Confirm", requestedSchema: {type: "object", properties: {}}}}}});
+    const waiting: PersistedMcpReview = {...review, expires_at: new Date(Date.now() + 60000).toISOString(),
+      outcome: {phase: "input_waiting", input_request_id: "child", protocol_round: 1, pending: request}};
+    const store = new JsonRunnerStateStore(path);
+    store.saveMcpReview(waiting, inputEvent(waiting, 1));
+    const resumed: PersistedMcpReview = {...waiting, outcome: {phase: "expiry_resuming", input_request_id: "child",
+      protocol_round: 1, reply: {pending: request, responses: {q: {action: "cancel"}}}}};
+    assert.ok(resumed.outcome.phase === "expiry_resuming");
+    const expiryOutcome = resumed.outcome;
+    for (const response of [{action: "accept", content: {}}, {action: "decline"}, {action: "cancel", content: {}}] as const) {
+      assert.throws(() => store.saveMcpReview({...resumed, outcome: {...expiryOutcome, reply: {pending: request, responses: {q: response}}}}));
+    }
+    assert.throws(() => store.saveMcpReview({...resumed, outcome: {...expiryOutcome, input_request_id: "other"}}), /transition/);
+    assert.throws(() => store.saveMcpReview(resumed, inputEvent(waiting, 2)), /transition/);
+    store.saveMcpReview(resumed);
+    const restarted = new JsonRunnerStateStore(path);
+    assert.deepEqual(restarted.getMcpReview("session"), resumed);
+    assert.throws(() => restarted.saveMcpReview({...resumed, outcome: {phase: "completed", actor_id: "invented", result_json: "{}"}}), /transition/);
+    restarted.saveMcpReview({...resumed, outcome: {phase: "expiry_completed", result_json: '{"is_error":false}'}});
+    assert.equal(new JsonRunnerStateStore(path).getMcpReview("session")?.outcome.phase, "expiry_completed");
+    assert.equal(restarted.replayEventsAfter("session", 0)?.length, 1);
+    for (const metadata of [
+      {"com.prompt2agent/input-on-expiry": "stop", "com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString()},
+      {"com.prompt2agent/input-on-expiry": "cancel", "com.prompt2agent/input-deadline": new Date(Date.now() + 30000).toISOString()},
+    ]) {
+      const memory = new MemoryRunnerStateStore();
+      const pendingInput = {...request, _meta: metadata};
+      const initial: PersistedMcpReview = {...waiting, outcome: {...waiting.outcome, phase: "input_waiting", input_request_id: "child", protocol_round: 1, pending: pendingInput}};
+      memory.saveMcpReview(initial, inputEvent(initial, 1));
+      assert.throws(() => memory.saveMcpReview({...resumed, outcome: {...expiryOutcome, reply: {pending: pendingInput, responses: {q: {action: "cancel"}}}}}), /transition/);
+    }
+  } finally {await rm(directory, {recursive: true, force: true});}
+});

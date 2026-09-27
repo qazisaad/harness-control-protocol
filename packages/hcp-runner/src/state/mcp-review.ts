@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { mcpReviewActionBytes, mcpReviewActionSchema, mcpDelegatedReviewRequestSchema, MCP_REVIEW_META_KEY, MCP_REVIEW_MAX_ACTION_BYTES, MCP_REVIEW_MAX_REQUEST_ID_LENGTH } from "@harness-control/protocol";
 import { hcpSessionStartPayloadSchema, hcpTurnSendPayloadSchema, type HcpSessionStartPayload, type HcpTurnSendPayload, type HcpHarnessEventPayload } from "@harness-control/protocol";
 import { z } from "zod";
-import { mcpInputReplySchema, mcpPendingInputSchema } from "../mcp/input-required.js";
+import { mcpInputReplySchema, mcpPendingInputSchema, mcpInputExpiresAt } from "../mcp/input-required.js";
 
 const inputRound = {
   input_request_id: z.string().min(1).max(MCP_REVIEW_MAX_REQUEST_ID_LENGTH),
@@ -36,6 +36,8 @@ export const persistedMcpReviewSchema = z.object({
     z.object({phase: z.literal("review_waiting"), ...inputRound, ...reviewAction, pending: mcpPendingInputSchema}).strict(),
     z.object({phase: z.literal("review_resuming"), ...inputRound, ...reviewAction, reply: mcpInputReplySchema,
       actor_id: z.string().min(1), decision: z.enum(["accept", "decline"])}).strict(),
+    z.object({phase: z.literal("expiry_resuming"), ...inputRound, reply: mcpInputReplySchema}).strict(),
+    z.object({phase: z.literal("expiry_completed"), result_json: z.string().refine(value => Buffer.byteLength(value, "utf8") <= 1024 * 1024, "Review result exceeds 1 MiB.")}).strict(),
     z.object({phase: z.literal("completed"), actor_id: z.string().min(1), result_json: z.string().refine(value => Buffer.byteLength(value, "utf8") <= 1024 * 1024, "Review result exceeds 1 MiB.")}).strict(),
   ]),
 }).strict().refine(value => value.start.session_id === value.turn.session_id,
@@ -91,6 +93,16 @@ export function validateMcpTransition(previous: PersistedMcpReview | undefined, 
       advances = outcome.input_request_id === old.input_request_id && outcome.protocol_round === old.protocol_round &&
         outcome.review_actor_id === old.review_actor_id && JSON.stringify(outcome.reply.pending) === JSON.stringify(old.pending) &&
         outcome.action_json === old.action_json && outcome.action_hash === old.action_hash && event !== undefined;
+    } else if ((old?.phase === "input_waiting" || old?.phase === "review_waiting") && outcome.phase === "expiry_resuming") {
+      const expected = Object.fromEntries(Object.keys(old.pending.inputRequests ?? {}).map(key => [key, {action: "cancel"}]));
+      advances = !event && old.pending._meta?.["com.prompt2agent/input-on-expiry"] === "cancel" &&
+        Date.parse(mcpInputExpiresAt(old.pending, previous.expires_at)) <= Date.now() &&
+        Date.parse(previous.expires_at) > Date.now() &&
+        outcome.input_request_id === old.input_request_id && outcome.protocol_round === old.protocol_round &&
+        outcome.review_actor_id === old.review_actor_id && isDeepStrictEqual(outcome.reply.pending, old.pending) &&
+        isDeepStrictEqual(outcome.reply.responses, expected);
+    } else if (old?.phase === "expiry_resuming") {
+      advances = outcome.phase === "expiry_completed" && !event;
     } else if (old?.phase === "input_resuming" || old?.phase === "review_resuming") {
       advances = (outcome.phase === "completed" && outcome.actor_id === old.actor_id && !event) ||
         ((outcome.phase === "input_waiting" || outcome.phase === "review_waiting") && outcome.protocol_round === old.protocol_round + 1 &&
@@ -99,6 +111,9 @@ export function validateMcpTransition(previous: PersistedMcpReview | undefined, 
     if (!advances) throw new Error("MCP continuation transition would change or replay its operation.");
   }
   if (!event) return;
+  if (outcome.phase === "expiry_resuming" || outcome.phase === "expiry_completed") {
+    throw new Error("Automatic expiry cannot record a human decision event.");
+  }
   if (outcome.phase === "review_waiting" || outcome.phase === "review_resuming") {
     const requested = outcome.phase === "review_waiting";
     if (event.session_id !== next.start.session_id || event.turn_id !== next.turn.turn_id ||
