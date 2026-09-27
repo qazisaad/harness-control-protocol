@@ -14,6 +14,21 @@ function operationExpiresAt(record: PersistedMcpReview): string {
   return record.expires_at;
 }
 
+/**
+ * A child approval with a cancellation policy is released by the platform, which resumes its
+ * interrupted run with a decline after the prompt expires. Until the operation itself expires the
+ * runner keeps waiting for that decline instead of cancelling on its own.
+ */
+function platformReleasesChildReview(record: PersistedMcpReview): boolean {
+  const outcome = record.outcome;
+  const pending = outcome.phase === "review_waiting" ? outcome.pending : outcome.phase === "review_resuming" ? outcome.reply.pending : undefined;
+  return pending?._meta?.["com.prompt2agent/input-on-expiry"] === "cancel";
+}
+
+function declineExpiresAt(record: PersistedMcpReview): string {
+  return platformReleasesChildReview(record) ? record.expires_at : operationExpiresAt(record);
+}
+
 /** Owns platform review within the existing durable runner session. */
 export class HarnessMcpReview implements HarnessMcpReviewer {
   #waiting: {requestId: string; resolve: (grant: McpReviewGrant | null) => void} | undefined;
@@ -78,7 +93,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       const outcome = review.outcome;
       if (response.session_id !== this.start.session_id || response.turn_id !== this.turn.turn_id ||
           response.request_id !== outcome.input_request_id || response.action_hash !== outcome.action_hash ||
-          !["accept", "decline"].includes(response.decision) || Date.parse(operationExpiresAt(review)) <= Date.now()) {
+          !["accept", "decline"].includes(response.decision) ||
+          Date.parse(response.decision === "decline" ? declineExpiresAt(review) : operationExpiresAt(review)) <= Date.now()) {
         throw new HarnessAdapterError("mcp_review_binding_invalid", "Approval does not match the active child request.");
       }
       if (outcome.phase === "review_resuming" && (response.decision !== outcome.decision || response.actor_id !== outcome.actor_id)) {
@@ -159,7 +175,9 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       }
       if (reply || grant) {
         if (!retained || retained.native_call_id !== request.native_call_id || retained.native_thread_id !== request.native_thread_id ||
-            retained.native_turn_id !== request.native_turn_id || Date.parse(operationExpiresAt(retained)) <= Date.now() ||
+            retained.native_turn_id !== request.native_turn_id || Date.parse(
+              retained.outcome.phase === "review_resuming" && retained.outcome.decision === "decline"
+                ? declineExpiresAt(retained) : operationExpiresAt(retained)) <= Date.now() ||
             retained.action_json !== JSON.stringify({kind: "mcp_tool", attachment_name: request.attachment_name,
               tool_name: request.tool_name, arguments: request.arguments}) ||
             (grant && (retained.request_id !== grant.request_id || retained.action_json !== grant.action_json)) ||
@@ -244,10 +262,14 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     return new Promise<McpInputReply>((resolve, reject) => {
       const cleanup = (): void => {clearTimeout(timer); signal.removeEventListener("abort", abort); this.#inputWaiting = undefined;};
       const abort = (): void => {cleanup(); reject(new HarnessAdapterError("mcp_input_interrupted", "MCP input was interrupted or expired."));};
+      // The platform releases an expired child approval with a decline (see declineExpiresAt);
+      // self-cancelling here would race its still-interrupted run.
+      const platformReleased = platformReleasesChildReview(record);
+      const waitUntil = platformReleased ? record.expires_at : expiresAt;
       const expire = (): void => {
-        const remaining = Date.parse(expiresAt) - Date.now();
+        const remaining = Date.parse(waitUntil) - Date.now();
         if (remaining > 0 && !signal.aborted) {timer = setTimeout(expire, remaining); return;}
-        if (signal.aborted || error.pending._meta?.["com.prompt2agent/input-on-expiry"] !== "cancel" ||
+        if (signal.aborted || platformReleased || error.pending._meta?.["com.prompt2agent/input-on-expiry"] !== "cancel" ||
             Date.parse(record.expires_at) <= Date.now()) {abort(); return;}
         try {
           const reply = mcpInputReplySchema.parse({pending: error.pending,
@@ -259,7 +281,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
           cleanup(); resolve(reply);
         } catch (error: unknown) {cleanup(); reject(error);}
       };
-      let timer = setTimeout(expire, Math.max(0, Date.parse(expiresAt) - Date.now()));
+      let timer = setTimeout(expire, Math.max(0, Date.parse(waitUntil) - Date.now()));
       this.#inputWaiting = {requestId: outcome.input_request_id, resolve: value => {cleanup(); resolve(value);}};
       signal.addEventListener("abort", abort, {once: true});
       if (signal.aborted) {abort(); return;}
