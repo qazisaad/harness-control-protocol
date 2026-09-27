@@ -408,3 +408,26 @@ for (const delegated of [false, true]) for (const reviewed of [false, true]) {
     assert.equal(calls, 2);
   });
 }
+
+test("an early timer wakeup cannot abort or cancel input before its deadline", async t => {
+  const {owner, request} = setup();
+  const originalTimer = globalThis.setTimeout;
+  let scheduled = 0;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void, delay: number) => {
+    scheduled++;
+    return originalTimer(callback, scheduled === 1 ? 0 : delay);
+  });
+  const expiry = Date.now() + 100;
+  const pending = parseMcpPendingInput({requestState: "original", _meta: {
+    "com.prompt2agent/input-on-expiry": "cancel", "com.prompt2agent/input-deadline": new Date(expiry).toISOString(),
+  }, inputRequests: {q: {method: "elicitation/create", params: {message: "Confirm", requestedSchema: {type: "object", properties: {}}}}}});
+  let calls = 0;
+  await owner.invoke(request, async (_name, _args, _grant, reply) => {
+    calls++;
+    if (!reply) throw new McpInputRequiredError(pending);
+    assert.ok(Date.now() >= expiry);
+    return {is_error: false};
+  }, new AbortController().signal);
+  assert.equal(calls, 2);
+  assert.ok(scheduled >= 2);
+});

@@ -245,6 +245,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       const cleanup = (): void => {clearTimeout(timer); signal.removeEventListener("abort", abort); this.#inputWaiting = undefined;};
       const abort = (): void => {cleanup(); reject(new HarnessAdapterError("mcp_input_interrupted", "MCP input was interrupted or expired."));};
       const expire = (): void => {
+        const remaining = Date.parse(expiresAt) - Date.now();
+        if (remaining > 0 && !signal.aborted) {timer = setTimeout(expire, remaining); return;}
         if (signal.aborted || error.pending._meta?.["com.prompt2agent/input-on-expiry"] !== "cancel" ||
             Date.parse(record.expires_at) <= Date.now()) {abort(); return;}
         try {
@@ -257,7 +259,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
           cleanup(); resolve(reply);
         } catch (error: unknown) {cleanup(); reject(error);}
       };
-      const timer = setTimeout(expire, Math.max(0, Date.parse(expiresAt) - Date.now()));
+      let timer = setTimeout(expire, Math.max(0, Date.parse(expiresAt) - Date.now()));
       this.#inputWaiting = {requestId: outcome.input_request_id, resolve: value => {cleanup(); resolve(value);}};
       signal.addEventListener("abort", abort, {once: true});
       if (signal.aborted) {abort(); return;}
