@@ -369,52 +369,7 @@ for (const mode of ["form", "url"] as const) for (const delegated of mode === "u
   });
 }
 
-for (const reviewed of [false, true]) {
-  test(`the platform releases an expired child approval with one late decline (reviewed=${reviewed})`, async () => {
-    const {store, owner, request, events} = setup();
-    const signal = new AbortController().signal;
-    let grant: McpReviewGrant | undefined;
-    if (reviewed) {
-      const approval = owner.request(request, signal);
-      const review = store.getMcpReview("session")!;
-      owner.decide({session_id: "session", turn_id: "turn", request_id: review.request_id,
-        action_hash: review.action_hash, decision: "accept", actor_id: "root-reviewer"});
-      grant = (await approval)!;
-    }
-    const pending = parseMcpPendingInput({requestState: "original-worker",
-      _meta: {"com.prompt2agent/input-on-expiry": "cancel",
-        "com.prompt2agent/input-deadline": new Date(Date.now() - 1000).toISOString(),
-        [MCP_REVIEW_META_KEY]: {kind: "delegated", input_request_id: "child",
-          subject: {operation_id: "child-operation", tool_name: "write", arguments: {}, binding: "original-binding"}}},
-      inputRequests: {child: {method: "elicitation/create", params: {message: "Confirm",
-        requestedSchema: {type: "object", properties: {request_id: {type: "string"}, action_json: {type: "string"}}}}}}});
-    let calls = 0;
-    const result = {is_error: true, content: [{type: "text" as const, text: "parent observed child expiry"}]};
-    const execution = owner.invoke(request, async (_name, _args, actualGrant, reply) => {
-      calls++;
-      assert.deepEqual(actualGrant, grant);
-      if (!reply) throw new McpInputRequiredError(pending);
-      assert.deepEqual(reply, {pending, responses: {child: {action: "decline"}}});
-      return result;
-    }, signal, grant);
-    // The runner must not cancel on its own: the run is still interrupted on this approval.
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const waiting = store.getMcpReview("session")!.outcome;
-    if (waiting.phase !== "review_waiting") throw new Error("child approval is no longer waiting");
-    assert.equal(calls, 1);
-    const binding = {session_id: "session", turn_id: "turn", request_id: waiting.input_request_id, action_hash: waiting.action_hash};
-    assert.throws(() => owner.decide({...binding, decision: "accept", actor_id: "late-approver"}), /does not match/);
-    owner.decide({...binding, decision: "decline", actor_id: "platform-expiry"});
-    assert.deepEqual(await execution, result);
-    assert.equal(calls, 2);
-    assert.equal(store.getMcpReview("session")?.outcome.phase, "completed");
-    assert.equal(events.filter(event => event.event_type === "approval.resolved").length, reviewed ? 2 : 1);
-    await assert.rejects(owner.invoke(request, async () => {calls++; return result;}, signal, grant), /retained state|does not match/);
-    assert.equal(calls, 2);
-  });
-}
-
-for (const delegated of [false]) for (const reviewed of [false, true]) {
+for (const delegated of [false, true]) for (const reviewed of [false, true]) {
   test(`automatic child expiry cancels once without inventing a human decision (delegated=${delegated}, reviewed=${reviewed})`, async () => {
     const {store, owner, request, events} = setup();
     const signal = new AbortController().signal;
