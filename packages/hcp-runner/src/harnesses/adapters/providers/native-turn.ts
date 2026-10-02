@@ -16,9 +16,12 @@ export function nativeExecutionCapabilities(
 ): HarnessExecutionCapabilities {
   return {
     streaming: true,
-    multi_turn: false,
-    session_continuation: false,
-    approval_policies: ["full_access"],
+    multi_turn: driver === "codex",
+    session_continuation: driver === "codex",
+    plan_mode: driver === "codex",
+    native_history: driver === "codex",
+    conversation_rollback: driver === "codex",
+    approval_policies: driver === "codex" ? ["ask", "auto_edits", "full_access"] : ["full_access"],
     sandbox_modes:
       driver === "codex"
         ? ["read_only", "workspace_write", "danger_full_access"]
@@ -31,6 +34,8 @@ export function validateNativeStart(
   driver: "codex" | "claude",
 ): void {
   const capabilities = nativeExecutionCapabilities(driver);
+  if (input.payload.continue_session && !input.payload.continuation_group_key)
+    throw new HarnessAdapterError("continuation_key_required", "Native continuation requires its durable conversation key.");
   if (input.payload.continue_session && !capabilities.session_continuation)
     throw new HarnessAdapterError(
       "continuation_unsupported",
@@ -87,7 +92,7 @@ export class NativeTurns {
         "The session already has an active turn.",
       );
     }
-    if (this.#usedSessions.has(sessionId)) {
+    if (this.driver !== "codex" && this.#usedSessions.has(sessionId)) {
       throw new HarnessAdapterError(
         "session_turn_limit",
         "This provider profile supports one turn per session; native multi-turn sessions are not implemented.",

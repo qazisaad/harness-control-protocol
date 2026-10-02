@@ -30,6 +30,7 @@ export class CodexRpc {
   readonly #decoder = new StringDecoder("utf8");
   readonly #handlers = new Map<string, RpcRequestHandler>();
   readonly #activeRequests = new Set<string | number>();
+  readonly #requestSignals = new Map<string | number, AbortController>();
   readonly #requestsAbort = new AbortController();
   onNotification: (message: RpcMessage) => void = () => {};
   onFailure: (error: Error) => void = () => {};
@@ -105,9 +106,11 @@ export class CodexRpc {
       return;
     }
     this.#activeRequests.add(id);
+    const controller = new AbortController();
+    this.#requestSignals.set(id, controller);
     try {
-      const result = await handler(params, this.#requestsAbort.signal);
-      if (!this.#failure) this.#write({ id, result });
+      const result = await handler(params, AbortSignal.any([this.#requestsAbort.signal, controller.signal]));
+      if (!this.#failure && !controller.signal.aborted) this.#write({ id, result });
     } catch {
       if (!this.#failure) {
         this.#write({ id, error: { code: -32603, message: "The native tool request could not complete." } });
@@ -116,6 +119,7 @@ export class CodexRpc {
       }
     } finally {
       this.#activeRequests.delete(id);
+      this.#requestSignals.delete(id);
     }
   }
 
@@ -155,6 +159,10 @@ export class CodexRpc {
       );
       void this.process.stop();
     } else if (message.method) {
+      if (message.method === "serverRequest/resolved") {
+        const resolved = z.object({requestId: z.union([z.string(), z.number()])}).safeParse(message.params);
+        if (resolved.success) this.#requestSignals.get(resolved.data.requestId)?.abort();
+      }
       this.onNotification(message);
     } else if (typeof message.id === "number") {
       const pending = this.#pending.get(message.id);

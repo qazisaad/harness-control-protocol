@@ -92,6 +92,7 @@ export class HcpHostConnection {
       case "hcp.command.ack":
       case "hcp.command.nack":
       case "host.workspaces.result":
+      case "harness.conversation.result":
       case "local.action.response":
       case "local.action.error":
         this.#settle(message);
@@ -143,7 +144,12 @@ export class HcpHostConnection {
     let pending: Pending | undefined;
     if (message.type === "hcp.command.ack" || message.type === "hcp.command.nack") {
       pending = this.#pending.get(message.payload.command_id);
-      if (message.type === "hcp.command.ack" && pending && ["host.accounts.read", "host.workspaces.request", "harness.session.snapshot.request", "local.action.request"].includes(pending.command.type)) return;
+      if (message.type === "hcp.command.ack" && pending && ["host.accounts.read", "host.workspaces.request", "harness.session.snapshot.request", "harness.conversation.request", "local.action.request"].includes(pending.command.type)) return;
+    } else if (message.type === "harness.conversation.result") {
+      pending = this.#pending.get(message.payload.command_id);
+      if (pending?.command.type !== "harness.conversation.request"
+        || pending.command.payload.session_id !== message.payload.session_id
+        || pending.command.payload.operation.kind !== message.payload.operation) return;
     } else if (message.type === "host.accounts.snapshot") {
       pending = this.#pending.get(message.payload.request_id);
       if (pending?.command.type !== "host.accounts.read") return;
@@ -176,6 +182,9 @@ export class HcpHostConnection {
   }
   requestSnapshot(payload: Payload<"harness.session.snapshot.request">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "harness.session.snapshot.request", payload }, command), wait);
+  }
+  conversation(payload: Payload<"harness.conversation.request">, command?: CommandOptions, wait?: WaitOptions) {
+    return this.send(createCommand({ type: "harness.conversation.request", payload }, command), wait);
   }
   respondToApproval(payload: Payload<"harness.approval.respond">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "harness.approval.respond", payload }, command), wait);

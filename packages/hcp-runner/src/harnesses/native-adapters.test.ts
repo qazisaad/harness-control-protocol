@@ -306,7 +306,7 @@ for (const driver of ["codex", "claude"]) {
         : new ClaudeHarnessAdapter();
     for (const changes of [
       { continue_session: true },
-      { approval_policy: "ask" as const },
+      ...(driver === "claude" ? [{ approval_policy: "ask" as const }] : []),
       {
         model_selection: {
           model: "test",
@@ -464,16 +464,15 @@ it("native probes advertise the same execution policies enforced at session star
     ];
     const status = await adapter.probe(selected);
     assert.equal(status.available, true);
-    assert.deepEqual(status.execution_capabilities?.approval_policies, [
-      "full_access",
-    ]);
+    assert.deepEqual(status.execution_capabilities?.approval_policies,
+      driver === "codex" ? ["ask", "auto_edits", "full_access"] : ["full_access"]);
     assert.deepEqual(
       status.execution_capabilities?.sandbox_modes,
       driver === "codex"
         ? ["read_only", "workspace_write", "danger_full_access"]
         : ["danger_full_access"],
     );
-    assert.equal(status.execution_capabilities?.session_continuation, false);
+    assert.equal(status.execution_capabilities?.session_continuation, driver === "codex");
   }
 });
 

@@ -16,6 +16,7 @@ import {
   type HcpHostHelloPayload,
   type HcpMessage,
   type HcpSessionSnapshotPayload,
+  type HcpConversationResultPayload,
   type HcpAckPayload,
   type HcpNackPayload,
   type ControlPlaneCommandMessageType,
@@ -46,6 +47,7 @@ type CommandRecord =
       payloadHash: string;
       outcome: "ack";
       snapshotPayload?: HcpSessionSnapshotPayload;
+      conversationPayload?: HcpConversationResultPayload;
     }
   | {
       payloadHash: string;
@@ -58,6 +60,7 @@ type SettledCommandRecord = Exclude<CommandRecord, { outcome: "pending" }>;
 type CommandExecutionResult = {
   events: HcpHarnessEventPayload[];
   snapshotPayload?: HcpSessionSnapshotPayload;
+  conversationPayload?: HcpConversationResultPayload;
 };
 
 type LocalActionRecord =
@@ -287,6 +290,10 @@ export class RunnerConnection {
       case "harness.session.start":
         await this.#handleCommand(envelope, (message) => this.#handleSessionStart(message));
         return;
+      case "harness.conversation.request":
+        await this.#handleCommand(envelope, async message => ({events: [],
+          conversationPayload: await this.#harnessSessions.conversationOperation(message.id, message.payload)}));
+        return;
       case "harness.session.snapshot.request":
         await this.#handleCommand(envelope, (message) => ({
           events: [],
@@ -331,6 +338,7 @@ export class RunnerConnection {
       case "host.capabilities.updated":
       case "host.replay.unavailable":
       case "harness.session.snapshot":
+      case "harness.conversation.result":
       case "local.action.response":
       case "local.action.error":
       case "harness.event":
@@ -390,6 +398,7 @@ export class RunnerConnection {
             if (settledRecord.snapshotPayload) {
               this.#send(createHcpEnvelope("harness.session.snapshot", settledRecord.snapshotPayload));
             }
+            if (settledRecord.conversationPayload) this.#send(createHcpEnvelope("harness.conversation.result", settledRecord.conversationPayload));
           } else {
             this.#sendNackPayload(settledRecord.nackPayload);
           }
@@ -400,6 +409,7 @@ export class RunnerConnection {
           if (existingRecord.snapshotPayload) {
             this.#send(createHcpEnvelope("harness.session.snapshot", existingRecord.snapshotPayload));
           }
+          if (existingRecord.conversationPayload) this.#send(createHcpEnvelope("harness.conversation.result", existingRecord.conversationPayload));
         } else {
           this.#sendNackPayload(existingRecord.nackPayload);
         }
@@ -432,6 +442,7 @@ export class RunnerConnection {
         payloadHash: commandHash,
         outcome: "ack",
         ...(result.snapshotPayload ? { snapshotPayload: result.snapshotPayload } : {}),
+        ...(result.conversationPayload ? {conversationPayload: result.conversationPayload} : {}),
       };
       this.#commandRecords.set(commandId, record);
       this.#stateStore.setCommandReceipt(commandId, {
@@ -439,12 +450,14 @@ export class RunnerConnection {
         outcome: "ack",
         settledAt,
         ...(result.snapshotPayload ? { snapshotPayload: result.snapshotPayload } : {}),
+        ...(result.conversationPayload ? {conversationPayload: result.conversationPayload} : {}),
       });
       settleCommand!(record);
       this.#sendAck(commandId, false);
       if (result.snapshotPayload) {
         this.#send(createHcpEnvelope("harness.session.snapshot", result.snapshotPayload));
       }
+      if (result.conversationPayload) this.#send(createHcpEnvelope("harness.conversation.result", result.conversationPayload));
       for (const event of result.events) {
         this.#send(createHcpEnvelope("harness.event", event));
       }
@@ -468,9 +481,20 @@ export class RunnerConnection {
   }
 
   async #handleSessionStart(envelope: Extract<HcpMessage, { type: "harness.session.start" }>): Promise<HcpHarnessEventPayload[]> {
+    const admittedSocket = this.#socket;
     this.#localActionDispatcher.markSessionActive(envelope.payload.session_id);
     try {
-      return await this.#harnessSessions.startSession(envelope.payload);
+      const events = await this.#harnessSessions.startSession(envelope.payload);
+      if (envelope.payload.first_turn) {
+        if (admittedSocket !== this.#socket || !this.#accepted || this.#socket?.readyState !== WebSocket.OPEN) {
+          await this.#harnessSessions.cancelTurn(envelope.payload.session_id, envelope.payload.first_turn.turn_id);
+        }
+        for (const event of events) this.#sendEventIfConnected(event);
+        this.#watchTurn(this.#harnessSessions.sendFirstTurn(envelope.payload, event => this.#sendEventIfConnected(event)),
+          envelope.payload.session_id, envelope.payload.first_turn.turn_id);
+        return [];
+      }
+      return events;
     } catch (error: unknown) {
       const replay = this.#harnessSessions.replayEventsAfter({sessions: [
         {session_id: envelope.payload.session_id, last_event_sequence: 0},
@@ -792,6 +816,7 @@ function commandRecordFromReceipt(receipt: PersistedCommandReceipt): SettledComm
         payloadHash: receipt.payloadHash,
         outcome: "ack",
         ...(receipt.snapshotPayload ? { snapshotPayload: receipt.snapshotPayload } : {}),
+        ...(receipt.conversationPayload ? {conversationPayload: receipt.conversationPayload} : {}),
       }
     : {
         payloadHash: receipt.payloadHash,

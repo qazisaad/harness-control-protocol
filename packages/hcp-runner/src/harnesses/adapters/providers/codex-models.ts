@@ -14,6 +14,7 @@ const pageSchema = z.object({
         z.object({ reasoningEffort: z.string() }),
       ),
       defaultReasoningEffort: z.string(),
+      inputModalities: z.array(z.string()).optional(),
     }),
   ),
   nextCursor: z.string().nullable().optional(),
@@ -49,6 +50,7 @@ export async function codexModels(
           label: model.displayName,
           is_default: model.isDefault,
           capabilities: {
+            image_input: model.inputModalities?.includes("image") === true,
             option_descriptors: [
               {
                 id: "reasoningEffort",

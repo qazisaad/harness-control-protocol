@@ -1,6 +1,6 @@
 import type { McpToolDescriptor, McpToolCallArguments, McpToolCallResult, McpReviewGrant } from "../../mcp/McpAttachmentClient.js";
 import type { McpInputReply } from "../../mcp/input-required.js";
-import type { HcpEventType, HcpSessionStartPayload, HcpTurnSendPayload } from "@harness-control/protocol";
+import type { HcpEventType, HcpSessionStartPayload, HcpTurnSendPayload, HcpApprovalResponsePayload, HcpInputResponsePayload } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../config/index.js";
 import type { ProviderDriverStatus } from "../../host/provider-registry.js";
@@ -13,6 +13,13 @@ export type HarnessAdapterEvent = {
 
 export type HarnessAdapterSession = {
   adapter_session_id: string;
+  native_thread_id?: string;
+};
+
+export type HarnessNativeInteractions = {
+  owns(requestId: string): boolean;
+  respondApproval(response: HcpApprovalResponsePayload): void;
+  respondInput(response: HcpInputResponsePayload): void;
 };
 
 export type HarnessAdapterMcpServer = {
@@ -70,6 +77,8 @@ export type HarnessAdapterTurnInput = {
   mcpToolsets?: readonly HarnessMcpToolset[];
   reviewMcpTool?: HarnessMcpReviewer;
   mcpContinuation?: HarnessMcpContinuation;
+  registerNativeInteractions?: (owner: HarnessNativeInteractions | undefined) => void;
+  persistNativeThread?: (threadId: string) => void;
   emitEvent?: (event: HarnessAdapterEvent) => void;
 };
 

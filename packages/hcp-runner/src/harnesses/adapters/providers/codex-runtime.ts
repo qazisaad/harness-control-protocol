@@ -10,6 +10,7 @@ import { selectedEffort, type NativeTurn } from "./native-turn.js";
 import { CodexRpc } from "./codex-rpc.js";
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
+import { NativeInteractions } from "../../native-interactions.js";
 
 const object = z.record(z.string(), z.unknown());
 const idObject = z.object({ id: z.string() });
@@ -36,6 +37,13 @@ const itemSchema = z.object({
     type: z.string(),
     text: z.string().optional(),
     phase: z.string().nullable().optional(),
+    command: z.string().optional(),
+    cwd: z.string().optional(),
+    status: z.string().optional(),
+    aggregatedOutput: z.string().nullable().optional(),
+    exitCode: z.number().int().nullable().optional(),
+    durationMs: z.number().nonnegative().nullable().optional(),
+    changes: z.array(z.json()).optional(),
   }),
 });
 const terminalSchema = z.object({
@@ -48,6 +56,7 @@ const terminalSchema = z.object({
 });
 
 export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
+  let interactions: NativeInteractions | undefined;
   signal.throwIfAborted();
   const selection =
     input.payload.model_selection ?? input.startPayload.model_selection;
@@ -91,16 +100,18 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     }
     const bridge = new NativeMcpBridge(toolsets, input.reviewMcpTool);
     const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
+    const approvalPolicy = {ask: "untrusted", auto_edits: "on-request", full_access: "never"}[input.startPayload.approval_policy];
+    const resumeThread = input.mcpContinuation?.native_thread_id ?? input.session.native_thread_id;
     const started = startedSchema.parse(
-      await rpc.request(input.mcpContinuation ? "thread/resume" : "thread/start", {
-        ...(input.mcpContinuation ? {threadId: input.mcpContinuation.native_thread_id} : {
-          ephemeral: !(input.reviewMcpTool && toolsets.some(toolset => toolset.tools.length > 0)),
+      await rpc.request(resumeThread ? "thread/resume" : "thread/start", {
+        ...(resumeThread ? {threadId: resumeThread} : {
+          ephemeral: false,
           dynamicTools: bridge.definitions,
         }),
         cwd: input.startPayload.cwd,
         model: selection.model,
         sandbox,
-        approvalPolicy: "never",
+        approvalPolicy,
 
         config: {
           mcp_servers: servers,
@@ -122,7 +133,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     }[input.startPayload.sandbox_mode];
     if (
       started.sandbox.type !== expectedSandbox ||
-      started.approvalPolicy !== "never"
+      started.approvalPolicy !== approvalPolicy
     ) {
       throw new HarnessAdapterError(
         "policy_mismatch",
@@ -147,9 +158,12 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       }
     }
     const threadId = started.thread.id;
-    if (input.mcpContinuation && threadId !== input.mcpContinuation.native_thread_id) {
+    if (resumeThread && threadId !== resumeThread) {
       throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
     }
+    input.session.native_thread_id = threadId;
+    input.persistNativeThread?.(threadId);
+    if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true}});
     let cursor: string | undefined;
     do {
       const inventory = z
@@ -186,6 +200,11 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       cursor = inventory.nextCursor ?? undefined;
     } while (cursor);
     let nativeTurnId: string | undefined;
+    interactions = new NativeInteractions(input.startPayload, input.payload, {threadId, turnId: () => nativeTurnId}, emit);
+    input.registerNativeInteractions?.(interactions);
+    rpc.setRequestHandler("item/commandExecution/requestApproval", (params, requestSignal) => interactions!.approval(params, "command", requestSignal));
+    rpc.setRequestHandler("item/fileChange/requestApproval", (params, requestSignal) => interactions!.approval(params, "file_change", requestSignal));
+    rpc.setRequestHandler("item/tool/requestUserInput", (params, requestSignal) => interactions!.questions(params, requestSignal));
     rpc.setRequestHandler("item/tool/call", async (params, requestSignal) => {
       if (!nativeTurnId) throw new HarnessAdapterError("codex_turn_missing", "Native tool calls require an active turn.");
       return bridge.call(params, {threadId, turnId: nativeTurnId}, requestSignal);
@@ -242,6 +261,14 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
           (nativeTurnId && event.turnId !== nativeTurnId)
         )
           return;
+        if (event.item.type === "commandExecution") {
+          emit({event_type: message.method === "item/started" ? "command.started" : "command.completed", turn_id: input.payload.turn_id,
+            data: {command_id: event.item.id, ...(event.item.command !== undefined ? {command: event.item.command} : {}),
+              ...(event.item.cwd ? {cwd: event.item.cwd} : {}), ...(event.item.status ? {status: event.item.status} : {}),
+              ...(event.item.exitCode != null ? {exit_code: event.item.exitCode} : {}),
+              ...(event.item.durationMs != null ? {duration_ms: event.item.durationMs} : {}),
+              ...(event.item.aggregatedOutput != null ? {output: boundedContent(event.item.aggregatedOutput)} : {})}});
+        }
         emit({
           event_type:
             message.method === "item/started"
@@ -250,10 +277,11 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
           turn_id: input.payload.turn_id,
           data: {
             item_id: event.item.id,
-            item_type: event.item.type,
+            item_type: event.item.type === "fileChange" ? "file_change" : event.item.type,
             ...(event.item.text !== undefined
               ? { content: event.item.text }
-              : {}),
+              : event.item.type === "fileChange" ? {content: boundedContent({changes: event.item.changes ?? []})} : {}),
+            ...(event.item.status ? {status: event.item.status} : {}),
           },
         });
         if (
@@ -262,6 +290,20 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
           event.item.phase !== "commentary"
         )
           finalText = event.item.text;
+      } else if (message.method === "item/commandExecution/outputDelta") {
+        const event = deltaSchema.extend({itemId: z.string()}).parse(message.params);
+        if (event.threadId !== threadId || event.turnId !== nativeTurnId) return;
+        emit({event_type: "item.updated", turn_id: input.payload.turn_id,
+          data: {item_id: event.itemId, item_type: "commandExecution", content: {output_delta: boundedContent(event.delta)}}});
+      } else if (message.method === "turn/plan/updated") {
+        const event = z.object({threadId: z.string(), turnId: z.string(), plan: z.array(z.json()), explanation: z.string().nullish()}).parse(message.params);
+        if (event.threadId !== threadId || event.turnId !== nativeTurnId) return;
+        emit({event_type: "turn.plan.updated", turn_id: input.payload.turn_id,
+          data: {plan: boundedContent(event.plan), ...(event.explanation ? {delta: event.explanation} : {})}});
+      } else if (message.method === "turn/diff/updated") {
+        const event = z.object({threadId: z.string(), turnId: z.string(), diff: z.string()}).parse(message.params);
+        if (event.threadId !== threadId || event.turnId !== nativeTurnId) return;
+        emit({event_type: "turn.diff.updated", turn_id: input.payload.turn_id, data: {diff_summary: boundedText(event.diff)}});
       } else if (message.method === "thread/tokenUsage/updated") {
         const event = z
           .object({
@@ -320,10 +362,12 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         threadId,
         model: selection.model,
         ...(effort ? { effort } : {}),
+        collaborationMode: {mode: input.payload.mode === "plan" ? "plan" : "default",
+          settings: {model: selection.model, reasoning_effort: effort ?? null, developer_instructions: null}},
         input: [{ type: "text", text: continuation
           ? (continuation.outcome.kind === "declined" ? "The user declined the pending tool call. Continue without executing it."
             : "Continue using the result of the separately approved tool operation recorded above.")
-          : input.payload.input, text_elements: [] }],
+          : input.payload.input, text_elements: [] }, ...(input.payload.images ?? []).map(image => ({type: "image", url: `data:${image.mime_type};base64,${image.data_base64}`}))],
       }),
     );
     if (nativeTurnId !== undefined && nativeTurnId !== turn.turn.id)
@@ -334,7 +378,18 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     nativeTurnId = turn.turn.id;
     return await terminal;
   } finally {
+    interactions?.close();
+    input.registerNativeInteractions?.(undefined);
     signal.removeEventListener("abort", abort);
     await rpc.process.stop();
   }
 };
+
+function boundedText(value: string): string {
+  if (Buffer.byteLength(value) <= 32 * 1024) return value;
+  return [...value].slice(0, 8192).join("") + "\n[output truncated by HCP; inspect the native conversation for the full output]";
+}
+function boundedContent(value: unknown): unknown {
+  const json = JSON.stringify(value);
+  return Buffer.byteLength(json) <= 48 * 1024 ? value : {truncated: true, summary: boundedText(json)};
+}

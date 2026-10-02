@@ -1,8 +1,11 @@
-import type { HarnessMcpToolset, HarnessMcpContinuation } from "./adapters/types.js";
+import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions } from "./adapters/types.js";
+import { nativeConversationOperation } from "./native-conversation.js";
+import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
 import { HarnessMcpReview } from "./mcp-review.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
 import type { McpInputReply } from "../mcp/input-required.js";
 import { realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import type {
@@ -72,6 +75,7 @@ export type HarnessSession = {
   mcpClients: HarnessMcpClient[];
   mcpServers: HarnessAdapterMcpServer[];
   mcpToolsets: HarnessMcpToolset[];
+  nativeBindingHash?: string;
 };
 
 export type HarnessMcpClient = {
@@ -140,6 +144,7 @@ class SessionStartCleanedError extends Error {
 const terminalTurnEvents = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.aborted"]);
 
 export class HarnessSessionManager {
+  readonly #nativeInteractions = new Map<string, HarnessNativeInteractions>();
   readonly #config: RunnerConfig;
   readonly #hostId: string;
   readonly #localCapabilities: LocalCapabilityLeaseManager;
@@ -154,6 +159,7 @@ export class HarnessSessionManager {
   readonly #mcpResumes = new Set<string>();
   #restoredMcpReviews = false;
   readonly #turnIdsBySession = new Map<string, Set<string>>();
+  readonly #startingSessions = new Map<string, { cancelled: boolean; firstTurnId?: string }>();
 
   constructor(config: RunnerConfig, options: string | HarnessSessionManagerOptions = {}) {
     const resolvedOptions: HarnessSessionManagerOptions = typeof options === "string" ? { hostId: options } : options;
@@ -253,6 +259,24 @@ export class HarnessSessionManager {
     return snapshot;
   }
 
+  conversationOperation(commandId: string, request: HcpConversationRequestPayload): Promise<HcpConversationResultPayload> {
+    return this.#serializeWorkspace(async () => {
+      const binding = this.#stateStore.nativeConversationForSession(request.session_id);
+      if (!binding || [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === binding.key))
+        throw new HarnessAdapterError("native_conversation_unavailable", "Read or change only an idle, retained native conversation.");
+      const {key, conversation} = binding;
+      await this.#assertWorkspaceAllowed(conversation.workspace_id, conversation.cwd);
+      const provider = this.#requireProvider(conversation.provider_instance_id, "codex");
+      if (nativeProviderHash(provider) !== conversation.provider_binding_hash)
+        throw new HarnessAdapterError("native_continuation_binding", "The native provider identity changed; retained history belongs to the original provider.");
+      if (request.operation.kind === "retire") {
+        this.#stateStore.retireNativeConversation(key);
+        return {command_id: commandId, session_id: request.session_id, operation: "retire", filesystem_undo: false};
+      }
+      return nativeConversationOperation(commandId, request, conversation, provider, updated => this.#stateStore.saveNativeConversation(key, updated));
+    });
+  }
+
   async resolveLocalActionContext(payload: LocalActionRequestPayload): Promise<LocalCapabilityExecutionContext> {
     const session: HarnessSession | undefined = this.#sessions.get(payload.attribution.session_id);
     if (!session) {
@@ -312,7 +336,45 @@ export class HarnessSessionManager {
   }
 
   startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
-    return this.#serializeWorkspace(() => this.#startSession(payload));
+    if (this.#startingSessions.has(payload.session_id)) {
+      throw new HarnessSessionError("session_exists", "Session startup is already in progress.");
+    }
+    const startup = { cancelled: false, ...(payload.first_turn ? {firstTurnId: payload.first_turn.turn_id} : {}) };
+    this.#startingSessions.set(payload.session_id, startup);
+    return this.#serializeWorkspace(async () => {
+      try {
+        if (payload.first_turn && Date.parse(payload.first_turn.not_after) <= Date.now()) {
+          throw new HarnessSessionError("startup_expired", "First-turn authorization expired before session startup.");
+        }
+        const events = await this.#startSession(payload);
+        if (startup.cancelled && payload.first_turn) {
+          const session = this.#sessions.get(payload.session_id)!;
+          session.cancelRequested = true;
+        }
+        return events;
+      } finally {
+        this.#startingSessions.delete(payload.session_id);
+      }
+    });
+  }
+
+  /** Called locally after session initialization, before acknowledging the one startup command. */
+  sendFirstTurn(payload: HcpSessionStartPayload, onEvent: (event: HcpHarnessEventPayload) => void): Promise<HcpHarnessEventPayload[]> {
+    const first = payload.first_turn;
+    if (!first) throw new HarnessSessionError("first_turn_missing", "Combined startup needs an admitted first turn.");
+    const session = this.#sessions.get(payload.session_id);
+    if (!session) {
+      if (this.#lastSavedEvent(payload.session_id)?.event_type === "session.exited") return Promise.resolve([]);
+      throw new HarnessSessionError("session_not_found", "Session startup did not finish.");
+    }
+    if (session.cancelRequested || Date.parse(first.not_after) <= Date.now()) {
+      const cancelled = this.#event(payload.session_id, first.turn_id, "turn.cancelled", {
+        status: "cancelled", final_output: {exit_reason: session.cancelRequested ? "cancel_requested" : "authorization_expired"},
+      });
+      onEvent(cancelled);
+      return this.stopSession(payload.session_id, "Combined startup cancelled before turn dispatch");
+    }
+    return this.sendTurn({session_id: payload.session_id, turn_id: first.turn_id, input: first.input, ...(first.mode ? {mode: first.mode} : {}), ...(first.images ? {images: first.images} : {})}, onEvent);
   }
 
   async #startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
@@ -409,12 +471,15 @@ export class HarnessSessionManager {
   async #prepareSession(payload: HcpSessionStartPayload): Promise<{session: HarnessSession; discoveredTools: HarnessMcpToolDiscovery[]}> {
     const provider: ProviderInstanceConfig = this.#requireProvider(payload.provider_instance_id, payload.driver_kind);
     await this.#assertWorkspaceAllowed(payload.workspace_id, payload.cwd);
+    payload = {...payload, cwd: await realpath(payload.cwd)};
     const localCapabilityLease: LocalCapabilityLease | undefined = this.#localCapabilities.validateSessionLease(
       payload,
       provider,
     );
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
     await adapter.validateStart({ payload, provider });
+    if (payload.continuation_group_key && [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === payload.continuation_group_key))
+      throw new HarnessAdapterError("native_conversation_busy", "This native conversation already has an active session.");
     const mcpAttachments: HarnessMcpAttachmentResult = await this.#attachMcpServers(payload, provider);
     const adapterStartPayload: HcpSessionStartPayload = payload;
 
@@ -428,6 +493,15 @@ export class HarnessSessionManager {
         provider,
         mcpServers: mcpAttachments.adapterAttachments,
       });
+      if (payload.continue_session) {
+        const conversation = this.#stateStore.getNativeConversation(payload.continuation_group_key!);
+        if (!conversation || conversation.binding_hash !== nativeBindingHash(payload, provider, mcpAttachments.toolsets))
+          throw new HarnessAdapterError("native_continuation_binding", "Native conversation is missing or its workspace, provider, tools, or policy changed.");
+        if (conversation.rollback?.phase === "pending") throw new HarnessAdapterError("native_rollback_unknown", "The previous rollback needs reconciliation; starting another turn is unsafe.");
+        adapterSession.native_thread_id = conversation.native_thread_id;
+      } else if (payload.continuation_group_key && this.#stateStore.getNativeConversation(payload.continuation_group_key)) {
+        throw new HarnessAdapterError("native_continuation_exists", "An existing native conversation requires explicit continuation.");
+      }
     } catch (error: unknown) {
       await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpAttachments.clients, "adapter_start_failed", error);
       throw new SessionStartCleanedError(error, "adapter_start_failed");
@@ -447,6 +521,7 @@ export class HarnessSessionManager {
       mcpClients: mcpAttachments.clients,
       mcpServers: mcpAttachments.adapterAttachments,
       mcpToolsets: mcpAttachments.toolsets,
+      ...(payload.continuation_group_key ? {nativeBindingHash: nativeBindingHash(payload, provider, mcpAttachments.toolsets)} : {}),
     };
     return {session, discoveredTools: mcpAttachments.discoveredTools};
   }
@@ -476,6 +551,8 @@ export class HarnessSessionManager {
   async respondToMcpReview(response: HcpApprovalResponsePayload, onEvent: (event: HcpHarnessEventPayload) => void): Promise<
     {kind: "live"} | {kind: "resumed"; completion: Promise<HcpHarnessEventPayload[]>}
   > {
+    const native = this.#nativeInteractions.get(response.session_id);
+    if (native?.owns(response.request_id)) {native.respondApproval(response); return {kind: "live"};}
     const live = this.#mcpReviews.get(response.session_id);
     if (live) {live.decide(response); return {kind: "live"};}
     const retained = this.#stateStore.getMcpReview(response.session_id);
@@ -490,6 +567,8 @@ export class HarnessSessionManager {
   async respondToMcpInput(response: HcpInputResponsePayload, onEvent: (event: HcpHarnessEventPayload) => void): Promise<
     {kind: "live"} | {kind: "resumed"; completion: Promise<HcpHarnessEventPayload[]>}
   > {
+    const native = this.#nativeInteractions.get(response.session_id);
+    if (native?.owns(response.request_id)) {native.respondInput(response); return {kind: "live"};}
     const live = this.#mcpReviews.get(response.session_id);
     if (live) {live.respondToInput(response); return {kind: "live"};}
     const retained = this.#stateStore.getMcpReview(response.session_id);
@@ -674,6 +753,17 @@ export class HarnessSessionManager {
       mcpToolsets: session.mcpToolsets,
       ...(reviewer ? {reviewMcpTool: reviewer} : {}),
       ...(continuation ? {mcpContinuation: continuation} : {}),
+      registerNativeInteractions: owner => {
+        if (owner) this.#nativeInteractions.set(payload.session_id, owner);
+        else this.#nativeInteractions.delete(payload.session_id);
+      },
+      ...(session.startPayload.continuation_group_key ? {persistNativeThread: (threadId: string) => {
+        this.#stateStore.saveNativeConversation(session.startPayload.continuation_group_key!, {
+          native_thread_id: threadId, binding_hash: session.nativeBindingHash!, updated_at: new Date().toISOString(),
+          last_session_id: session.sessionId, provider_instance_id: session.providerInstanceId, workspace_id: session.workspaceId, cwd: session.cwd,
+          provider_binding_hash: nativeProviderHash(this.#requireProvider(session.providerInstanceId, session.driverKind)),
+        });
+      }} : {}),
       emitEvent: emitAdapterEvent,
     });
     for (const adapterEvent of adapterEvents) {
@@ -705,6 +795,13 @@ export class HarnessSessionManager {
   }
 
   async cancelTurn(sessionId: string, turnId: string): Promise<HcpHarnessEventPayload[]> {
+    const startup = this.#startingSessions.get(sessionId);
+    if (startup) {
+      if (startup.firstTurnId !== undefined && startup.firstTurnId !== turnId) {
+        throw new HarnessSessionError("turn_mismatch", "Cancellation targets another startup turn.");
+      }
+      startup.cancelled = true; return [];
+    }
     const session: HarnessSession | undefined = this.#sessions.get(sessionId);
     if (!session) {
       const review = this.#stateStore.getMcpReview(sessionId);
@@ -727,6 +824,8 @@ export class HarnessSessionManager {
   }
 
   stopSession(sessionId: string, reason: string | undefined): Promise<HcpHarnessEventPayload[]> {
+    const startup = this.#startingSessions.get(sessionId);
+    if (startup) startup.cancelled = true;
     return this.#serializeWorkspace(() => this.#stopSession(sessionId, reason));
   }
 
@@ -742,6 +841,13 @@ export class HarnessSessionManager {
     session.cancelRequested = true;
     this.#mcpReviews.get(sessionId)?.interrupt();
     const events: HcpHarnessEventPayload[] = [];
+    const first = session.startPayload.first_turn;
+    if (first && !this.#turnIdsBySession.get(sessionId)?.has(first.turn_id)
+        && this.#lastSavedEvent(sessionId)?.event_type !== "turn.cancelled") {
+      events.push(this.#event(sessionId, first.turn_id, "turn.cancelled", {
+        status: "cancelled", final_output: {exit_reason: "cancel_requested"},
+      }));
+    }
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.stopSession({ sessionId, ...(reason ? { reason } : {}) });
     events.push(
       ...adapterEvents.map((event: HarnessAdapterEvent): HcpHarnessEventPayload =>
@@ -1147,6 +1253,23 @@ async function cleanupAdapterSessionStartFailure(
     const originalMessage: string = originalError instanceof Error ? originalError.message : "Adapter session start failed.";
     throw new HarnessSessionError("adapter_start_cleanup_failed", `${originalMessage}; cleanup failed: ${cleanupErrors.join("; ")}`);
   }
+}
+
+function nativeProviderHash(provider: ProviderInstanceConfig): string {
+  return createHash("sha256").update(JSON.stringify({id: provider.id, driver: provider.driver_kind,
+    executable: provider.executable_path ?? "codex", home: provider.home, env: Object.fromEntries(Object.entries(provider.env).sort(([a], [b]) => a.localeCompare(b)))})).digest("hex");
+}
+function nativeBindingHash(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig, toolsets: HarnessMcpToolset[]): string {
+  const scope = {provider: {id: provider.id, driver: provider.driver_kind, executable: provider.executable_path ?? "codex",
+    home: provider.home, env: provider.env}, workspace: {id: payload.workspace_id, cwd: payload.cwd},
+    sandbox: payload.sandbox_mode, approval: payload.approval_policy,
+    attachments: payload.mcp_servers.map(attachment => ({name: attachment.name, transport: attachment.transport,
+      ...(attachment.transport === "runner_stdio_profile" ? {profile: attachment.profile_id} : {}),
+      allowed: attachment.allowed_tools?.slice().sort(), denied: attachment.denied_tools?.slice().sort()})).sort((a, b) => a.name.localeCompare(b.name)),
+    tools: toolsets.map(set => ({name: set.name, tools: [...set.tools].sort((a, b) => a.name.localeCompare(b.name))})).sort((a, b) => a.name.localeCompare(b.name))};
+  const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, sorted(child)])) : value;
+  return createHash("sha256").update(JSON.stringify(sorted(scope))).digest("hex");
 }
 
 export {

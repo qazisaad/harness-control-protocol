@@ -1,5 +1,7 @@
 import { hcpAccountsReadPayloadSchema, hcpAccountsSnapshotPayloadSchema, type HcpAccountsReadPayload, type HcpAccountsSnapshotPayload } from "./accounts.js";
 export * from "./accounts.js";
+import { hcpConversationRequestPayloadSchema, hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "./conversation.js";
+export * from "./conversation.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -24,6 +26,7 @@ export const HOST_LIFECYCLE_MESSAGE_TYPES = [
 
 export const CONTROL_PLANE_COMMAND_MESSAGE_TYPES = [
   "harness.session.start",
+  "harness.conversation.request",
   "harness.session.snapshot.request",
   "harness.turn.send",
   "harness.turn.cancel",
@@ -42,7 +45,7 @@ export const LOCAL_ACTION_MESSAGE_TYPES = [
 ] as const;
 
 export const RUNTIME_EVENT_MESSAGE_TYPES = ["harness.event"] as const;
-export const SESSION_SNAPSHOT_MESSAGE_TYPES = ["harness.session.snapshot"] as const;
+export const SESSION_SNAPSHOT_MESSAGE_TYPES = ["harness.session.snapshot", "harness.conversation.result"] as const;
 
 export const KNOWN_HCP_EVENT_TYPES = [
   "session.started",
@@ -233,6 +236,7 @@ export type HarnessModel = {
   is_default?: boolean;
   capabilities: {
     option_descriptors: HarnessOptionDescriptor[];
+    image_input?: boolean;
   };
 };
 
@@ -240,6 +244,9 @@ export type HarnessExecutionCapabilities = {
   streaming: boolean;
   multi_turn: boolean;
   session_continuation: boolean;
+  plan_mode?: boolean;
+  native_history?: boolean;
+  conversation_rollback?: boolean;
   sandbox_modes: Array<"read_only" | "workspace_write" | "danger_full_access">;
   approval_policies: Array<"ask" | "auto_edits" | "full_access">;
 };
@@ -415,6 +422,7 @@ export type HcpSessionStartPayload = {
   workspace_preflight?: WorkspacePreflight;
   local_capability_lease?: LocalCapabilityLease;
   mcp_servers: McpServerAttachment[];
+  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[] };
 };
 
 export type HcpSessionSnapshotRequestPayload = {
@@ -425,6 +433,8 @@ export type HcpTurnSendPayload = {
   session_id: string;
   turn_id: string;
   input: string;
+  mode?: "execute" | "plan";
+  images?: HcpImageInput[];
   model_selection?: HarnessModelSelection;
 };
 
@@ -1036,6 +1046,7 @@ export const harnessModelSchema = z
     capabilities: z
       .object({
         option_descriptors: z.array(harnessOptionDescriptorSchema),
+        image_input: z.boolean().optional(),
       })
       .strict(),
   })
@@ -1047,6 +1058,9 @@ export const harnessProviderSnapshotSchema = z
       streaming: z.boolean(),
       multi_turn: z.boolean(),
       session_continuation: z.boolean(),
+      plan_mode: z.boolean().optional(),
+      native_history: z.boolean().optional(),
+      conversation_rollback: z.boolean().optional(),
       sandbox_modes: z.array(z.enum(["read_only", "workspace_write", "danger_full_access"])),
       approval_policies: z.array(z.enum(["ask", "auto_edits", "full_access"])),
     }).strict().optional(),
@@ -1289,6 +1303,14 @@ export const mcpServerAttachmentSchema = z.discriminatedUnion("transport", [
   runnerStdioMcpProfileAttachmentSchema,
 ]);
 
+export const HARNESS_IMAGE_MAX_BYTES = 384 * 1024;
+export const HARNESS_IMAGE_MIME_TYPES = ["image/gif", "image/jpeg", "image/png", "image/webp"] as const;
+export const hcpImageInputSchema = z.object({mime_type: z.enum(HARNESS_IMAGE_MIME_TYPES),
+  data_base64: z.string().min(4).max(HARNESS_IMAGE_MAX_BYTES * 4 / 3).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict();
+export type HcpImageInput = z.infer<typeof hcpImageInputSchema>;
+const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(images =>
+  images.reduce((bytes, image) => bytes + image.data_base64.length, 0) <= HARNESS_IMAGE_MAX_BYTES * 4 / 3, "Image aggregate exceeds the transport limit.");
+
 export const hcpSessionStartPayloadSchema = z
   .object({
     session_id: nonEmptyStringSchema,
@@ -1304,6 +1326,13 @@ export const hcpSessionStartPayloadSchema = z
     workspace_preflight: workspacePreflightSchema.optional(),
     local_capability_lease: localCapabilityLeaseSchema.optional(),
     mcp_servers: z.array(mcpServerAttachmentSchema),
+    first_turn: z.object({
+      turn_id: nonEmptyStringSchema,
+      input: z.string(),
+      not_after: timestampSchema,
+      mode: z.enum(["execute", "plan"]).optional(),
+      images: harnessImagesSchema.optional(),
+    }).strict().optional(),
   })
   .strict();
 
@@ -1318,6 +1347,8 @@ export const hcpTurnSendPayloadSchema = z
     session_id: nonEmptyStringSchema,
     turn_id: nonEmptyStringSchema,
     input: z.string(),
+    mode: z.enum(["execute", "plan"]).optional(),
+    images: harnessImagesSchema.optional(),
     model_selection: harnessModelSelectionSchema.optional(),
   })
   .strict();
@@ -2207,6 +2238,7 @@ const sessionEventDataSchema = z
     exit_code: z.number().int().optional(),
     model_selection: harnessModelSelectionSchema.optional(),
     mcp_server_count: z.number().int().nonnegative().optional(),
+    native_conversation_ready: z.literal(true).optional(),
     local_capabilities: z.array(nonEmptyStringSchema).optional(),
     message: z.string().optional(),
   })
@@ -2817,8 +2849,11 @@ export const hcpWorkspacesResultMessageSchema = hcpTypedEnvelopeSchema("host.wor
 
 export const hcpAccountsReadMessageSchema = hcpTypedEnvelopeSchema("host.accounts.read", hcpAccountsReadPayloadSchema);
 export const hcpAccountsSnapshotMessageSchema = hcpTypedEnvelopeSchema("host.accounts.snapshot", hcpAccountsSnapshotPayloadSchema);
+export const hcpConversationRequestMessageSchema = hcpTypedEnvelopeSchema("harness.conversation.request", hcpConversationRequestPayloadSchema);
+export const hcpConversationResultMessageSchema = hcpTypedEnvelopeSchema("harness.conversation.result", hcpConversationResultPayloadSchema);
 
 export const hcpMessageSchema = z.discriminatedUnion("type", [
+  hcpConversationRequestMessageSchema, hcpConversationResultMessageSchema,
   hcpAccountsReadMessageSchema,
   hcpAccountsSnapshotMessageSchema,
   hcpWorkspacesRequestMessageSchema,
@@ -2904,6 +2939,8 @@ export type HcpMessage =
   | LocalActionRequestMessage
   | LocalActionResponseMessage
   | LocalActionErrorMessage
+  | HcpEnvelope<"harness.conversation.request", HcpConversationRequestPayload>
+  | HcpEnvelope<"harness.conversation.result", HcpConversationResultPayload>
   | HcpHarnessEventMessage;
 
 export type HcpKnownMessageType = HcpMessage["type"];
@@ -3013,3 +3050,4 @@ export {
 export * from "./pairing.js";
 
 export * from "./mcp-review.js";
+export * from "./native-review.js";

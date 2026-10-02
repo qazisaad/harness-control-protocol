@@ -14,6 +14,7 @@ import {
   type HcpHarnessEventPayload,
   type HcpNackPayload,
   type HcpSessionSnapshotPayload,
+  hcpConversationResultPayloadSchema, type HcpConversationResultPayload,
   type HostRetainedEventRanges,
   type LocalActionErrorPayload,
   type LocalActionRequestPayload,
@@ -31,6 +32,7 @@ export type PersistedCommandReceipt =
       outcome: "ack";
       settledAt: string;
       snapshotPayload?: HcpSessionSnapshotPayload;
+      conversationPayload?: HcpConversationResultPayload;
     }
   | {
       payloadHash: string;
@@ -61,7 +63,13 @@ type RunnerStateData = {
   commandReceipts: Record<string, PersistedCommandReceipt>;
   localActionReceipts: Record<string, PersistedLocalActionReceipt>;
   mcpReviews: Record<string, PersistedMcpReview>;
+  nativeConversations: Record<string, NativeConversation>;
 };
+
+const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
+  rollback: z.object({command_id: z.string(), source_hash: z.string(), target_hash: z.string(), phase: z.enum(["pending", "completed"])}).strict().optional()}).strict();
+export type NativeConversation = z.infer<typeof nativeConversationSchema>;
 
 const persistedCommandReceiptSchema = z.discriminatedUnion("outcome", [
   z
@@ -70,6 +78,7 @@ const persistedCommandReceiptSchema = z.discriminatedUnion("outcome", [
       outcome: z.literal("ack"),
       settledAt: z.string().datetime({ offset: true }),
       snapshotPayload: hcpSessionSnapshotPayloadSchema.optional(),
+      conversationPayload: hcpConversationResultPayloadSchema.optional(),
     })
     .strict(),
   z
@@ -110,6 +119,7 @@ const runnerStateDataSchema = z
     commandReceipts: z.record(z.string(), persistedCommandReceiptSchema),
     localActionReceipts: z.record(z.string(), persistedLocalActionReceiptSchema),
     mcpReviews: z.record(z.string(), persistedMcpReviewSchema).default({}),
+    nativeConversations: z.record(z.string(), nativeConversationSchema).default({}),
   })
   .strict();
 
@@ -120,6 +130,10 @@ export type RunnerStateStoreOptions = {
 };
 
 export interface RunnerStateStore {
+  getNativeConversation(key: string): NativeConversation | undefined;
+  saveNativeConversation(key: string, conversation: NativeConversation): void;
+  nativeConversationForSession(sessionId: string): {key: string; conversation: NativeConversation} | undefined;
+  retireNativeConversation(key: string): void;
   getMcpReview(sessionId: string): PersistedMcpReview | undefined;
   pendingMcpReviews(): PersistedMcpReview[];
   saveMcpReview(review: PersistedMcpReview, event?: HcpHarnessEventPayload): void;
@@ -157,6 +171,37 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
   }
 
   abstract persist(): void;
+
+  getNativeConversation(key: string): NativeConversation | undefined {
+    const conversation = this.data.nativeConversations[key];
+    return conversation ? structuredClone(conversation) : undefined;
+  }
+
+  saveNativeConversation(key: string, input: NativeConversation): void {
+    if (!key || key.length > 512) throw new Error("Invalid native conversation key.");
+    const conversation = nativeConversationSchema.parse(input);
+    const previous = this.data.nativeConversations[key];
+    if (previous && (previous.binding_hash !== conversation.binding_hash || previous.native_thread_id !== conversation.native_thread_id))
+      throw new Error("Native conversation identity or execution scope changed.");
+    if (!previous && Object.keys(this.data.nativeConversations).length >= 1024)
+      throw new Error("Native conversation capacity exceeded; retire old runner conversations before starting another.");
+    this.data.nativeConversations[key] = conversation;
+    try {this.persist();} catch (error) {
+      if (previous) this.data.nativeConversations[key] = previous; else delete this.data.nativeConversations[key];
+      throw error;
+    }
+  }
+
+  nativeConversationForSession(sessionId: string): {key: string; conversation: NativeConversation} | undefined {
+    const entry = Object.entries(this.data.nativeConversations).find(([, conversation]) => conversation.last_session_id === sessionId);
+    return entry ? {key: entry[0], conversation: structuredClone(entry[1])} : undefined;
+  }
+
+  retireNativeConversation(key: string): void {
+    const prior = this.data.nativeConversations[key];
+    delete this.data.nativeConversations[key];
+    try {this.persist();} catch (error) {if (prior) this.data.nativeConversations[key] = prior; throw error;}
+  }
 
   nextEventSequence(sessionId: string): number {
     return (this.data.events[sessionId]?.at(-1)?.sequence ?? 0) + 1;
@@ -387,6 +432,7 @@ function emptyRunnerState(): RunnerStateData {
     commandReceipts: {},
     localActionReceipts: {},
     mcpReviews: {},
+    nativeConversations: {},
   };
 }
 
