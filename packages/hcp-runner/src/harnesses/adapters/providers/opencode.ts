@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { z } from "zod";
+import type { HarnessExecutionCapabilities, HarnessModelSelection } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import type { ProviderDriverStatus } from "../../../host/provider-registry.js";
@@ -31,6 +32,28 @@ import {
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
 const DEFAULT_SERVER_START_TIMEOUT_MS = 10_000;
 const DEFAULT_EVENT_SETTLE_TIMEOUT_MS = 5_000;
+
+const executionCapabilities: HarnessExecutionCapabilities = {
+  streaming: true, multi_turn: true, session_continuation: false,
+  sandbox_modes: ["danger_full_access"], approval_policies: ["full_access"],
+};
+
+function supportedVersion(version: string | undefined): boolean {
+  return version !== undefined && /^(?:opencode\s+)?1\.\d+\.\d+(?:[-+][^\s]+)?$/.test(version);
+}
+
+function openCodeModels(provider: ProviderInstanceConfig) {
+  return normalizeProviderModels(provider.models).map(model => ({...model,
+    capabilities: {option_descriptors: [], image_input: false}}));
+}
+
+function validateTurnOptions(input: {mode?: "execute" | "plan"; images?: unknown[]; model_selection?: HarnessModelSelection}): void {
+  if (input.mode === "plan") throw new HarnessAdapterError("plan_mode_unsupported", "OpenCode Plan mode is not implemented by this adapter.");
+  if (input.images?.length) throw new HarnessAdapterError("image_input_unsupported", "OpenCode image inputs are not implemented by this adapter.");
+  if (input.model_selection?.options?.length) throw new HarnessAdapterError("unsupported_model_option", "OpenCode model options are not implemented by this adapter.");
+  if (input.model_selection && !parseModel(input.model_selection.model))
+    throw new HarnessAdapterError("unsupported_model", "OpenCode requires a provider/model identifier.");
+}
 
 const sessionSchema = z.object({ id: z.string().min(1) }).passthrough();
 const promptResponseSchema = z
@@ -106,25 +129,35 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
               "OpenCode executable is not available.",
               provider.home ? [executable, provider.home] : [executable],
             ),
-        models: normalizeProviderModels(provider.models),
+        models: openCodeModels(provider),
       };
     }
     return {
       provider_instance_id: provider.id,
       driver_kind: this.driverKind,
       installed: true,
-      available: true,
-      status: "ready",
+      available: supportedVersion(version),
+      status: supportedVersion(version) ? "ready" : "unavailable",
+      ...(supportedVersion(version) ? {execution_capabilities: executionCapabilities} :
+        {message: "This OpenCode adapter supports only the 1.x HTTP/SSE runtime; configure a supported version."}),
       ...(version ? { version } : {}),
-      models: normalizeProviderModels(provider.models),
+      models: openCodeModels(provider),
     };
   }
 
-  async validateStart(): Promise<void> {
-    return;
+  async validateStart(input: HarnessAdapterStartInput): Promise<void> {
+    if (input.payload.sandbox_mode !== "danger_full_access")
+      throw new HarnessAdapterError("sandbox_unsupported", "This OpenCode adapter does not implement filesystem containment.");
+    if (input.payload.approval_policy !== "full_access")
+      throw new HarnessAdapterError("approval_policy_unsupported", "OpenCode interactive approval policies are not implemented by this adapter.");
+    if (input.payload.continue_session)
+      throw new HarnessAdapterError("continuation_unsupported", "OpenCode durable continuation is not implemented by this adapter.");
+    validateTurnOptions({model_selection: input.payload.model_selection});
+    if (input.payload.first_turn) validateTurnOptions(input.payload.first_turn);
   }
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
+    await this.validateStart(input);
     if (this.#runtimes.has(input.payload.session_id)) {
       throw new HarnessAdapterError("opencode_session_exists", `OpenCode session '${input.payload.session_id}' already exists.`);
     }
@@ -146,6 +179,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   }
 
   async sendTurn(input: HarnessAdapterTurnInput): Promise<HarnessAdapterEvent[]> {
+    validateTurnOptions(input.payload);
     const runtime: OpenCodeRuntime = this.#requireRuntime(input.payload.session_id);
     if (this.#activeTurns.has(input.payload.session_id)) {
       throw new HarnessAdapterError(
@@ -232,7 +266,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
 async function runProbe(
   executable: string,
   args: string[],
-  provider: ProviderInstanceConfig,
+  provider: Pick<ProviderInstanceConfig, "env" | "home">,
   timeoutMs: number,
 ): Promise<CliProcessResult> {
   const handle = spawnProviderCliProcess(executable, args, { cwd: process.cwd(), env: providerEnvironment(provider) });
@@ -249,6 +283,11 @@ async function runProbe(
 }
 
 async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<OpenCodeRuntime> {
+  // Check at launch too: a cached capability snapshot cannot authorize another runtime version.
+  const probe = await runProbe(input.executable, [...input.launchArgs, "--version"],
+    {env: input.env}, DEFAULT_PROBE_TIMEOUT_MS);
+  if (probe.timedOut || probe.error || probe.exitCode !== 0 || !supportedVersion(firstLine(probe.stdout)))
+    throw new HarnessAdapterError("provider_version_unsupported", "A readable OpenCode 1.x runtime is required before session launch.");
   const config: Record<string, unknown> = Object.keys(input.mcpServers).length > 0 ? { mcp: input.mcpServers } : {};
   const child: ChildProcessWithoutNullStreams = spawn(
     input.executable,
@@ -267,7 +306,11 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
       await fetchJson(new URL(`/session?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "HCP session" }),
+        body: JSON.stringify({ title: "HCP session", permission: [
+          {permission: "*", pattern: "*", action: "allow"},
+          {permission: "question", pattern: "*", action: "deny"},
+          {permission: "task", pattern: "*", action: "deny"},
+        ] }),
       }),
     );
     return new HttpOpenCodeRuntime(child, baseUrl, input.cwd, session.id);
@@ -502,7 +545,7 @@ function parseModel(model: string): { providerID: string; modelID: string } | un
   return { providerID: model.slice(0, separator), modelID: model.slice(separator + 1) };
 }
 
-function providerEnvironment(provider: ProviderInstanceConfig): Record<string, string> {
+function providerEnvironment(provider: Pick<ProviderInstanceConfig, "env" | "home">): Record<string, string> {
   return { ...(provider.home ? { HOME: provider.home } : {}), ...provider.env };
 }
 

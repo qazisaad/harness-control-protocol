@@ -80,6 +80,8 @@ function openCodeStartPayload(workspace: string): HcpSessionStartPayload {
     provider_instance_id: "opencode-local",
     driver_kind: "opencode",
     model_selection: { model: "anthropic/claude-sonnet-4" },
+    sandbox_mode: "danger_full_access",
+    approval_policy: "full_access",
   };
 }
 
@@ -114,6 +116,58 @@ function isMissingPathError(error: unknown): error is FilesystemError {
 }
 
 describe("OpenCodeHarnessAdapter", () => {
+  it("rejects unsupported policies and inputs before launching a runtime", async () => {
+    let launches = 0;
+    const adapter = new OpenCodeHarnessAdapter({runtimeFactory: async () => {launches++; throw new Error("must not launch");}});
+    const base = openCodeStartPayload(process.cwd());
+    for (const [change, code] of [
+      [{sandbox_mode: "read_only"}, "sandbox_unsupported"],
+      [{sandbox_mode: "workspace_write"}, "sandbox_unsupported"],
+      [{approval_policy: "ask"}, "approval_policy_unsupported"],
+      [{approval_policy: "auto_edits"}, "approval_policy_unsupported"],
+      [{continue_session: true}, "continuation_unsupported"],
+      [{model_selection: {model: "default"}}, "unsupported_model"],
+      [{model_selection: {model: "anthropic/claude-sonnet-4", options: [{id: "effort", value: "high"}]}}, "unsupported_model_option"],
+      [{first_turn: {turn_id: "turn", input: "hi", not_after: new Date().toISOString(), mode: "plan"}}, "plan_mode_unsupported"],
+      [{first_turn: {turn_id: "turn", input: "hi", not_after: new Date().toISOString(), images: [{}]}}, "image_input_unsupported"],
+    ] as const) {
+      await assert.rejects(adapter.startSession({payload: {...base, ...change} as HcpSessionStartPayload, provider: openCodeProvider()}),
+        (error: unknown) => error instanceof HarnessAdapterError && error.code === code);
+    }
+    assert.equal(launches, 0);
+  });
+
+  it("rejects unsupported turn settings without sending text to a live runtime", async () => {
+    let turns = 0;
+    const runtime: OpenCodeRuntime = {sessionId: "native", async sendTurn() {turns++; return "answer";},
+      async cancelTurn() {}, async close() {}};
+    const adapter = new OpenCodeHarnessAdapter({runtimeFactory: async () => runtime});
+    const start = openCodeStartPayload(process.cwd()), provider = openCodeProvider();
+    const session = await adapter.startSession({payload: start, provider});
+    for (const change of [{mode: "plan"}, {images: [{}]}, {model_selection: {model: "anthropic/claude", options: [{id: "effort", value: "high"}]}}]) {
+      await assert.rejects(adapter.sendTurn({session, provider, startPayload: start,
+        payload: {session_id: start.session_id, turn_id: "turn", input: "hi", ...change} as import("@harness-control/protocol").HcpTurnSendPayload}),
+        (error: unknown) => error instanceof HarnessAdapterError);
+    }
+    assert.equal(turns, 0);
+    await adapter.stopSession({sessionId: start.session_id});
+  });
+
+  it("marks unsupported OpenCode versions unavailable and checks again before launch", async () => {
+    const fixturePath = fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url));
+    for (const version of ["opencode 2.0.0", "unknown"]) {
+      const provider = {...openCodeProvider(), executable_path: process.execPath, launch_args: [fixturePath],
+        env: {HCP_TEST_OPENCODE_VERSION: version}};
+      const adapter = new OpenCodeHarnessAdapter();
+      const status = await adapter.probe(provider);
+      assert.equal(status.installed, true);
+      assert.equal(status.available, false);
+      assert.equal(status.execution_capabilities, undefined);
+      await assert.rejects(adapter.startSession({payload: openCodeStartPayload(process.cwd()), provider}),
+        (error: unknown) => error instanceof HarnessAdapterError && error.code === "provider_version_unsupported");
+    }
+  });
+
   it("runs the OpenCode server HTTP and SSE lifecycle", async () => {
     const workspace = await createWorkspace();
     const fixturePath: string = fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url));
@@ -121,6 +175,9 @@ describe("OpenCodeHarnessAdapter", () => {
       ...openCodeProvider(),
       executable_path: process.execPath,
       launch_args: [fixturePath],
+      models: [{id: "anthropic/claude-sonnet-4", label: "Claude", capabilities: {
+        option_descriptors: [{id: "effort", label: "Effort", type: "string"}],
+      }}],
     };
     const selectedStartPayload: HcpSessionStartPayload = openCodeStartPayload(workspace.root);
     const adapter = new OpenCodeHarnessAdapter();
@@ -130,6 +187,11 @@ describe("OpenCodeHarnessAdapter", () => {
       const status = await adapter.probe(selectedProvider);
       assert.equal(status.available, true);
       assert.equal(status.version, "opencode 1.2.3-test");
+      assert.deepEqual(status.execution_capabilities?.sandbox_modes, ["danger_full_access"]);
+      assert.deepEqual(status.execution_capabilities?.approval_policies, ["full_access"]);
+      assert.equal(status.execution_capabilities?.session_continuation, false);
+      assert.deepEqual(status.models[0]?.capabilities.option_descriptors, []);
+      assert.equal(status.models[0]?.capabilities.image_input, false);
       const session = await adapter.startSession({ payload: selectedStartPayload, provider: selectedProvider });
       started = true;
       const streamed: HarnessAdapterEvent[] = [];

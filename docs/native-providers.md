@@ -4,41 +4,48 @@ The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`
 
 ## Supported contract
 
-| Behavior | Codex | Claude |
-| --- | --- | --- |
-| Execution | Fresh ephemeral native thread per turn | Fresh SDK query per turn, persistence disabled |
-| Text/reasoning streaming | Native delta notifications | SDK partial messages |
-| Tool activity | Native item lifecycle | Tool-use/result item lifecycle |
-| Final output | Successful native terminal plus final assistant item required | Successful typed result required; limits/API errors never become success |
-| Usage | Native thread token totals for the fresh turn | SDK model totals, including cached input; reported cost is an estimate |
-| Sandbox | `read_only`, `workspace_write`, `danger_full_access` | Explicit `danger_full_access` only |
-| Approval policy | `full_access`, mapped to native `never` | `full_access`, mapped to `bypassPermissions` |
-| Model options | `reasoningEffort` forwarded to native `effort`; native catalog supplies choices | `effort` forwarded to SDK |
-| Continuation / interactive approvals / input | Unsupported | Unsupported |
+This table describes the current source implementation. The verification record below describes historical live runs; it does not certify every current operation or installed provider version.
+
+| Behavior | Codex | Claude | OpenCode |
+| --- | --- | --- | --- |
+| Execution | Persistent native thread; a process starts/resumes it for each turn | Fresh SDK query, persistence disabled | 1.x HTTP/SSE server and native session |
+| Text/reasoning streaming | Native delta notifications | SDK partial messages | Text/reasoning SSE deltas |
+| Tool activity | Items, commands/output, file changes, plan/diff updates | Tool-use/result item lifecycle | Rich tool normalization not implemented |
+| Final output | Successful native terminal plus final assistant item required | Successful typed result required | Message response plus session-idle event |
+| Usage | Native thread token totals; not necessarily per-turn usage after resume | SDK model totals, including cached input; estimated cost | Not normalized |
+| Sandbox | `read_only`, `workspace_write`, `danger_full_access` | `danger_full_access` only | `danger_full_access` only; no filesystem containment |
+| Approval policy | `ask` -> `untrusted`, `auto_edits` -> `on-request`, `full_access` -> `never` | `full_access` -> `bypassPermissions` | `full_access` only, explicit session allow rules |
+| Model options | `reasoningEffort`; native model catalog | SDK `effort` | `provider/model` identifier; nonempty options rejected |
+| Multi-turn and durable continuation | Supported through the retained native binding | Unsupported; one turn per session | Multiple live turns; durable continuation unsupported |
+| Native interactions | Command/file approvals and blocking structured questions; accept/decline/cancel only | Unsupported | Unsupported; question/task tools denied in this profile |
+| Plan mode and images | Supported | Unsupported | Unsupported and rejected |
+| Native history and conversation rollback | Read/rollback/retire; rollback never restores files | Unsupported | Unsupported |
 
 `full_access` describes approval behavior, not filesystem access. Codex workspace-write checks the returned policy and rejects extra writable roots or implicit temporary-directory writes. Claude restricted modes fail before provider execution; SDK permission modes are not treated as filesystem containment.
 
-Provider snapshots include optional `execution_capabilities`: `streaming`, `multi_turn`, `session_continuation`, `sandbox_modes`, and `approval_policies`. The same adapter contract advertises and validates these values. An omitted capability object means unknown support, not permission to assume support. `continuation_group_key` is an identity grouping, not a continuation guarantee. This pre-release schema addition requires matching runner/client builds; regenerate JSON Schema from source and pin the tested build.
+Provider snapshots include optional `execution_capabilities`: streaming, multi-turn, continuation, Plan mode, history/rollback and supported policies. An omitted capability object means unknown support. Model descriptors separately advertise image input. Use the advertised contract, not the presence of a field or command in the protocol, to authorize execution.
 
-Each session accepts one turn. A second turn is rejected before provider execution rather than silently starting a fresh conversation.
+Codex continuation requires an explicit durable `continuation_group_key` and the original provider/workspace/tool/policy binding. It does not replay earlier prompts. Claude rejects a second turn; OpenCode retains only its active native session and rejects durable continuation.
 
-Native drivers reject nonempty `launch_args`, unsupported/duplicate model options, and continuation requests. Use provider `executable_path`, `home`, `env`, and structured model selection. Host-local executable/environment configuration remains trusted configuration, not a remote escape hatch. Unknown provider-native optional notifications are ignored; unexpected interactive native requests fail the turn. HCP approval/input responses and live tool-server detach receive NACK instead of success for a no-op.
+Codex/Claude reject nonempty `launch_args` and unsupported/duplicate model options. Host-local executable/environment configuration remains trusted configuration, not a remote escape hatch. Codex routes supported native approval/input replies through the owning request; unhandled native requests fail honestly. Live tool-server detach remains unsupported.
+
+OpenCode probe and launch reject unknown/non-1.x versions rather than interpreting a different runtime as 1.x. Restricted sandboxes, interactive approval policies, Plan mode, images, durable continuation and model options are rejected before dispatch. Its unrestricted profile does not isolate inherited native hooks/configuration/MCP inventory; do not use it where that isolation is required. Version gating and session permission requests have automated fixture coverage, not new live-provider certification. See the native [permission semantics](https://opencode.ai/docs/permissions/) and the separate [v2 contract](https://opencode.ai/v2/docs/permissions).
 
 ## MCP and configuration
 
 Codex reads effective MCP configuration and disables inherited servers using configuration overrides; it does not copy serialized config values or modify the user's config file. Selected names cannot collide with inherited names. Before the prompt, it checks the thread MCP inventory: unselected servers must be explicitly disabled and expose no tools. Missing inventory support or unverifiable scope fails closed.
 
-For the supported `full_access` approval policy, selected proxy servers use Codex's `default_tools_approval_mode = "approve"`. Native `never` alone can refuse an MCP call that requires approval. This override is local to the fresh thread and selected servers; the proxy still enforces the attachment allowlist and upstream lease, and the filesystem sandbox remains unchanged. See the [official MCP configuration reference](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+Codex uses runner-authorized dynamic tools for the selected MCP attachments. Native tool calls pass through the runner's review/continuation owner. The native MCP inventory must remain disabled; a native approval does not grant application MCP authority.
 
-Claude uses `strictMcpConfig: true` even with zero attachments and `settingSources: []`. User/project/local settings, hooks, and settings-dependent customizations are intentionally not loaded into this execution profile. The Claude Code system-prompt preset is used. Interactive question/plan tools and child-agent tools are disabled in this first profile. Codex multi-agent and apps integration are disabled for this profile.
+Claude uses `strictMcpConfig: true` and `settingSources: []`. User/project/local settings, hooks and settings-dependent customizations are not loaded in this profile. The Claude Code system-prompt preset is used; question/plan and child-agent tools are disabled. Codex apps, plugins and multi-agent integration remain disabled. Broader interactive profiles are future work, not implied by multi-turn support.
 
-Both runtimes receive only runner-loopback MCP proxies. Platform proof credentials stay in the runner. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` retain provider-instance authentication scope; a connection token is not provider authentication.
+Claude receives runner-loopback MCP proxies; Codex uses the runner tool bridge. Platform proof credentials stay in the runner. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` retain provider-instance authentication scope; a connection token is not provider authentication.
 
 ## Lifecycle and validation
 
-One shared owner decides the terminal outcome after runtime cleanup. Cancellation/stop aborts the owned runtime, terminates the process group, escalates if needed, and waits for actual close. Sending SIGKILL is not itself proof of closure. The running turn publishes its single terminal event before a waiting cancel/stop operation resolves. Unexpected process loss, malformed output, provider limits, and timeouts fail the turn; they never restart it automatically.
+Codex and Claude use a shared owner to decide the terminal outcome after runtime cleanup. Cancellation/stop aborts the owned runtime, terminates the process group, escalates if needed, and waits for actual close. Sending SIGKILL is not itself proof of closure. The running turn publishes its single terminal event before a waiting cancel/stop operation resolves. Unexpected process loss, malformed output, provider limits, and timeouts fail the turn; they never restart it automatically. OpenCode has its own HTTP abort/server-stop path; equivalent process-closure guarantees still need separate validation.
 
-Diagnostic CLI capture remains bounded at 64 KiB. Structured turn traffic does not use that capture buffer. Codex decodes split UTF-8 frames and rejects oversized protocol frames at 8 MiB rather than silently truncating JSON. Claude streaming is parsed by the SDK. No durable provider continuation, crash reattachment, or independently detached/background-work recovery is claimed.
+Diagnostic CLI capture remains bounded at 64 KiB. Codex decodes split UTF-8 frames and rejects oversized protocol frames at 8 MiB. Command/change/plan/diff projections are separately bounded and can contain explicit summaries; full-content retrieval remains future work. Claude streaming is parsed by the SDK. Codex retains native conversation bindings, but does not recover a lost live native callback or independently detached/background work. Transport replay does not recreate a provider process.
 
 The fixture suite covers split/large output, native failures and EOF, policy rejection, MCP scope mismatch, option forwarding, cancellation races, and process cleanup. Event transcripts are validated with public schemas and the production reducer, including duplicate replay. Connection tests cover unsupported-command NACKs; session tests reject unimplemented preflight expectations.
 

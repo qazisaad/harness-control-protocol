@@ -11,7 +11,9 @@ import {
   type HarnessAdapterEvent,
   type HarnessAdapterCancelInput,
   type HarnessAdapterStopInput,
+  type HarnessAdapterConversationInput,
 } from "../types.js";
+import { nativeConversationOperation } from "../../native-conversation.js";
 import {
   type CliProcessSpawner,
   type CliProcessResult,
@@ -42,6 +44,11 @@ export type CodexHarnessAdapterOptions = {
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "codex";
   readonly durableMcpContinuation = true;
+  readonly conversationOperations = ["read", "rollback"] as const;
+
+  conversationOperation(input: HarnessAdapterConversationInput) {
+    return nativeConversationOperation(input.commandId, input.request, input.conversation, input.provider, input.save);
+  }
   readonly #processSpawner: CliProcessSpawner;
   readonly #probeTimeoutMs: number;
   readonly #processKillGraceMs: number;

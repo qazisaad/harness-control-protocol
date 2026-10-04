@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 
 if (process.argv.includes("--version")) {
-  process.stdout.write("opencode 1.2.3-test\n");
+  process.stdout.write((process.env.HCP_TEST_OPENCODE_VERSION ?? "opencode 1.2.3-test") + "\n");
   process.exit(0);
 }
 
@@ -9,6 +9,17 @@ const streams = new Set();
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method === "POST" && url.pathname === "/session") {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const permissions = JSON.parse(body).permission;
+    if (JSON.stringify(permissions) !== JSON.stringify([
+      {permission: "*", pattern: "*", action: "allow"},
+      {permission: "question", pattern: "*", action: "deny"},
+      {permission: "task", pattern: "*", action: "deny"},
+    ])) {
+      response.writeHead(400).end("Missing explicit session permissions");
+      return;
+    }
     writeJson(response, { id: "fake-opencode-session" });
     return;
   }

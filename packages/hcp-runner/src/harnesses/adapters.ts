@@ -2,6 +2,8 @@ export {
   HarnessAdapterError,
   type HarnessAdapter,
   type HarnessAdapterCancelInput,
+  type HarnessAdapterConversationInput,
+  type HarnessConversationOperation,
   type HarnessAdapterEvent,
   type HarnessAdapterMcpServer,
   type HarnessAdapterSession,

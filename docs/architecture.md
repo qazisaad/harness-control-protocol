@@ -61,3 +61,11 @@ Local leases, actions and their events use HCP session, lease, host, provider an
 Custom harness developers import `HarnessAdapter`, its input/output types, `ProviderDriverStatus` and `HarnessAdapterRegistry` from `@harness-control/runner/harnesses`. Supply the registry to `HarnessSessionManager`, then the manager to `RunnerConnection`. See [`examples/custom-harness.ts`](../examples/custom-harness.ts) and [`examples/public-sdk.mjs`](../examples/public-sdk.mjs). The packed release check compiles this adapter outside the monorepo and exercises it through terminal execution, a local capability action, snapshot reduction and session exit.
 
 The `connect` CLI discovers bundled providers. Applications embedding custom adapters configure their provider instances and registry themselves; they do not need to patch the default registry or import private package paths. User-facing product setup instructions belong to the consuming application.
+
+### Optional conversation controls
+
+Adapters can declare `conversationOperations` (`read`, `rollback`) and implement `conversationOperation(input)` using the exported `HarnessAdapterConversationInput` type. The existing `harness.conversation.request` wire command stays unchanged. The manager checks the retained provider identity, allowed workspace and idle conversation before calling the selected driver. It validates the returned command/session/operation binding and prevents the adapter's persistence callback from changing the authorized conversation identity or scope.
+
+Codex implements these hooks with its existing native history and fenced rollback logic. An adapter without the requested hook receives `conversation_operation_unsupported`; the manager never falls back to Codex. `retire` remains a runner-owned deletion of the local association and does not invoke or delete native provider history. No consumer database or thread/run identity is required.
+
+This is the initial generic control seam, not full interactive parity. Forking, steering, compaction, additional request scopes and richer provider controls still need their own typed contracts and capabilities. Existing adapters need not implement optional hooks to remain usable for their supported session operations.

@@ -4,6 +4,19 @@ import type { HcpEventType, HcpSessionStartPayload, HcpTurnSendPayload, HcpAppro
 
 import type { ProviderInstanceConfig } from "../../config/index.js";
 import type { ProviderDriverStatus } from "../../host/provider-registry.js";
+import type { NativeConversation } from "../../state/index.js";
+import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
+
+export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire">;
+
+/** The manager authorizes the retained binding; the adapter owns native history mechanics. */
+export type HarnessAdapterConversationInput = {
+  commandId: string;
+  request: HcpConversationRequestPayload;
+  conversation: NativeConversation;
+  provider: ProviderInstanceConfig;
+  save: (conversation: NativeConversation) => void;
+};
 
 export type HarnessAdapterEvent = {
   event_type: HcpEventType;
@@ -95,6 +108,8 @@ export type HarnessAdapterStopInput = {
 export type HarnessAdapter = {
   readonly driverKind: string;
   readonly durableMcpContinuation?: true;
+  readonly conversationOperations?: readonly HarnessConversationOperation[];
+  conversationOperation?(input: HarnessAdapterConversationInput): Promise<HcpConversationResultPayload>;
   probe(provider: ProviderInstanceConfig): Promise<ProviderDriverStatus>;
   validateStart(input: HarnessAdapterStartInput): Promise<void>;
   startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession>;

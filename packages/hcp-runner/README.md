@@ -52,6 +52,8 @@ Applications can import `AccountUsageReader` from `@harness-control/runner/accou
 
 The `@harness-control/runner/harnesses` export provides `HarnessAdapter`, all adapter input/output types, `ProviderDriverStatus`, `HarnessAdapterRegistry`, and `HarnessSessionManager`.
 
+Optional retained-conversation controls use `conversationOperations` and `conversationOperation`, with the public `HarnessAdapterConversationInput` type. The runner authorizes the idle binding, the adapter owns native read/rollback semantics, and local association retirement remains runner-owned. Unsupported operations fail explicitly; implementing a custom driver never requires importing Codex internals. See [architecture](../../docs/architecture.md#optional-conversation-controls).
+
 MCP input continuation retains result-level `_meta` in the private operation record. Server deadline hints can shorten the original caller deadline; input metadata is not copied to public tool events. The client scopes incoming metadata to each transport message because SDK 2.0.0's noncomplete-result decoder omits it. This adapter leaves the wire message, negotiated transport behavior and terminal output validation unchanged. Remove the message-scope bridge when the SDK's supported result hook retains metadata itself; concurrent-response and HTTP continuation tests cover that boundary.
 
 ```ts

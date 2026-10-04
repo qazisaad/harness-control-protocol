@@ -1,6 +1,5 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions } from "./adapters/types.js";
-import { nativeConversationOperation } from "./native-conversation.js";
-import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
+import { hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import { HarnessMcpReview } from "./mcp-review.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
 import type { McpInputReply } from "../mcp/input-required.js";
@@ -266,14 +265,31 @@ export class HarnessSessionManager {
         throw new HarnessAdapterError("native_conversation_unavailable", "Read or change only an idle, retained native conversation.");
       const {key, conversation} = binding;
       await this.#assertWorkspaceAllowed(conversation.workspace_id, conversation.cwd);
-      const provider = this.#requireProvider(conversation.provider_instance_id, "codex");
+      const provider = this.#requireProvider(conversation.provider_instance_id);
       if (nativeProviderHash(provider) !== conversation.provider_binding_hash)
         throw new HarnessAdapterError("native_continuation_binding", "The native provider identity changed; retained history belongs to the original provider.");
       if (request.operation.kind === "retire") {
         this.#stateStore.retireNativeConversation(key);
         return {command_id: commandId, session_id: request.session_id, operation: "retire", filesystem_undo: false};
       }
-      return nativeConversationOperation(commandId, request, conversation, provider, updated => this.#stateStore.saveNativeConversation(key, updated));
+      const adapter = this.#adapterRegistry.require(provider.driver_kind);
+      if (!adapter.conversationOperation || !adapter.conversationOperations?.includes(request.operation.kind))
+        throw new HarnessAdapterError("conversation_operation_unsupported", `Provider '${provider.driver_kind}' does not support '${request.operation.kind}'.`);
+      const result = hcpConversationResultPayloadSchema.parse(await adapter.conversationOperation({
+        commandId, request, conversation: structuredClone(conversation), provider,
+        save: updated => {
+          // Native mutation evidence cannot change the authorized conversation's identity or scope.
+          const {rollback: _priorRollback, updated_at: _priorTime, ...original} = conversation;
+          const {rollback: _nextRollback, updated_at: _nextTime, ...next} = updated;
+          if (Object.keys(original).length !== Object.keys(next).length ||
+              Object.entries(original).some(([field, value]) => value !== next[field as keyof typeof next]))
+            throw new HarnessAdapterError("native_history_binding", "An adapter cannot replace the retained conversation binding.");
+          this.#stateStore.saveNativeConversation(key, updated);
+        },
+      }));
+      if (result.command_id !== commandId || result.session_id !== request.session_id || result.operation !== request.operation.kind)
+        throw new HarnessAdapterError("native_history_binding", "Conversation result targets another command, session, or operation.");
+      return result;
     });
   }
 
@@ -890,7 +906,7 @@ export class HarnessSessionManager {
     return events;
   }
 
-  #requireProvider(providerInstanceId: string, driverKind: string): ProviderInstanceConfig {
+  #requireProvider(providerInstanceId: string, driverKind?: string): ProviderInstanceConfig {
     const provider: ProviderInstanceConfig | undefined = this.#config.provider_instances.find(
       (candidate: ProviderInstanceConfig): boolean => candidate.id === providerInstanceId,
     );
@@ -902,7 +918,7 @@ export class HarnessSessionManager {
       throw new HarnessSessionError("provider_disabled", `Provider '${providerInstanceId}' is disabled.`);
     }
 
-    if (provider.driver_kind !== driverKind) {
+    if (driverKind !== undefined && provider.driver_kind !== driverKind) {
       throw new HarnessSessionError(
         "provider_driver_mismatch",
         `Provider '${providerInstanceId}' is configured for '${provider.driver_kind}', not '${driverKind}'.`,
@@ -1257,10 +1273,10 @@ async function cleanupAdapterSessionStartFailure(
 
 function nativeProviderHash(provider: ProviderInstanceConfig): string {
   return createHash("sha256").update(JSON.stringify({id: provider.id, driver: provider.driver_kind,
-    executable: provider.executable_path ?? "codex", home: provider.home, env: Object.fromEntries(Object.entries(provider.env).sort(([a], [b]) => a.localeCompare(b)))})).digest("hex");
+    executable: provider.executable_path ?? provider.driver_kind, home: provider.home, env: Object.fromEntries(Object.entries(provider.env).sort(([a], [b]) => a.localeCompare(b)))})).digest("hex");
 }
 function nativeBindingHash(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig, toolsets: HarnessMcpToolset[]): string {
-  const scope = {provider: {id: provider.id, driver: provider.driver_kind, executable: provider.executable_path ?? "codex",
+  const scope = {provider: {id: provider.id, driver: provider.driver_kind, executable: provider.executable_path ?? provider.driver_kind,
     home: provider.home, env: provider.env}, workspace: {id: payload.workspace_id, cwd: payload.cwd},
     sandbox: payload.sandbox_mode, approval: payload.approval_policy,
     attachments: payload.mcp_servers.map(attachment => ({name: attachment.name, transport: attachment.transport,
@@ -1278,6 +1294,8 @@ export {
   createDefaultHarnessAdapterRegistry,
   type HarnessAdapter,
   type HarnessAdapterCancelInput,
+  type HarnessAdapterConversationInput,
+  type HarnessConversationOperation,
   type HarnessAdapterEvent,
   type HarnessAdapterMcpServer,
   type HarnessAdapterSession,
