@@ -84,6 +84,7 @@ test("OpenCode HTTP history forks and logical rollback retain permissions and ne
     await writeFile(historyFile, JSON.stringify(original));
     const read = await runner.conversationOperation("read", {session_id: "session", operation: {kind: "read", limit: 1}});
     assert.equal(read.history?.turn_count, 2);
+    assert.equal(read.history!.turns[0]!.portable_items?.[0]?.type, "message");
     const older = await runner.conversationOperation("older", {session_id: "session", operation: {kind: "read", cursor: read.history!.next_cursor!, limit: 1}});
     const forkRequest = {session_id: "session", operation: {kind: "fork" as const, target_session_id: "child", continuation_group_key: "child-key",
       expected_history_hash: read.history!.history_hash, last_turn_id: older.history!.turns[0]!.id}};

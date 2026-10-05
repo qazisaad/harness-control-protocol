@@ -39,7 +39,7 @@ export async function openCodeConversation(input: HarnessAdapterConversationInpu
   let turns = await history(runtime, nativeId);
   const operation = request.operation;
   if (operation.kind === "read") return {command_id: commandId, session_id: request.session_id, operation: "read", filesystem_undo: false,
-    history: publicHistory({id: nativeId, turns}, input.publishContent, operation)};
+    history: publicHistory({id: nativeId, turns}, input.publishContent, operation, "opencode")};
   if (operation.kind !== "fork" && operation.kind !== "rollback")
     throw new HarnessAdapterError("conversation_operation_unsupported", "The OpenCode adapter supports read, fork and rollback.");
   if (operation.kind === "rollback" && conversation.rollback?.command_id === commandId) {
@@ -79,5 +79,5 @@ export async function openCodeConversation(input: HarnessAdapterConversationInpu
     input.save({...conversation, rollback: {...intent, target_hash: hash(turns), phase: "completed", replacement_native_thread_id: nativeId}});
   }
   return {command_id: commandId, session_id: request.session_id, operation: "rollback", filesystem_undo: false, native_reference: nativeId,
-    history: publicHistory({id: nativeId, turns}, input.publishContent)};
+    history: publicHistory({id: nativeId, turns}, input.publishContent, undefined, "opencode")};
 }

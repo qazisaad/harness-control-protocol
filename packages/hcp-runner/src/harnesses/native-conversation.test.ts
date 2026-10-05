@@ -48,6 +48,9 @@ createInterface({input: process.stdin}).on('line', line => {
     const read = await nativeConversationOperation("read", {session_id: "session", operation: {kind: "read"}}, state, provider, save);
     const page = await nativeConversationOperation("page", {session_id: "session", operation: {kind: "read", limit: 1}}, state, provider, save);
     assert.equal(page.history!.turns[0]?.id, "turn-3");
+    const portable = page.history!.turns[0]!.portable_items![0]!;
+    assert.equal(portable.type === "message" && portable.role, "assistant");
+    assert.equal(portable.type === "message" && portable.body.storage === "inline" && portable.body.value, "Answer 3");
     const older = await nativeConversationOperation("older", {session_id: "session", operation: {kind: "read", limit: 1, cursor: page.history!.next_cursor!}}, state, provider, save);
     assert.equal(older.history!.turns[0]?.id, "turn-2");
     const request = {session_id: "session", operation: {kind: "rollback" as const, num_turns: 1, expected_history_hash: read.history!.history_hash}};

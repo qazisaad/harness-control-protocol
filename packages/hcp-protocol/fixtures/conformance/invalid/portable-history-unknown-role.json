@@ -1,0 +1,37 @@
+{
+  "id": "fixture-portable-history-unknown-role",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "read-1",
+    "session_id": "session-1",
+    "operation": "read",
+    "filesystem_undo": false,
+    "history": {
+      "history_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "turn_count": 1,
+      "truncated": false,
+      "turns": [
+        {
+          "id": "turn-1",
+          "status": "completed",
+          "items": [],
+          "portable_items": [
+            {
+              "id": "answer",
+              "status": "completed",
+              "type": "message",
+              "role": "native_raw_role",
+              "body": {
+                "storage": "inline",
+                "value": "Retained answer"
+              }
+            }
+          ],
+          "portable_fidelity": "full"
+        }
+      ]
+    }
+  }
+}

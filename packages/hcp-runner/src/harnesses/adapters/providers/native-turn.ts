@@ -30,6 +30,7 @@ export function nativeExecutionCapabilities(
     manual_compaction: true,
     content_retrieval: true,
     context_usage: true,
+    portable_history: true,
     approval_policies: ["ask", "auto_edits", "full_access"],
     sandbox_modes:
       driver === "codex"

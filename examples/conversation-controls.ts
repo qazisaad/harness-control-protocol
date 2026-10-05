@@ -9,6 +9,7 @@ const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(t
 /** A deterministic provider for public-package conformance; no native CLI or consumer-specific IDs. */
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "example.controls";
+  readonly portableHistory = true;
   readonly sessionEvents = true;
   readonly nativeWork = true;
   nativeCancellations = 0;
@@ -27,6 +28,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
         session_events: true,
         native_work: true,
         context_usage: true,
+        portable_history: true,
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
         manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
         approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
@@ -102,7 +104,9 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     }
     const current = this.histories.get(conversation.native_thread_id)!;
     return {command_id: commandId, session_id: request.session_id, operation: operation.kind, filesystem_undo: false,
-      history: {history_hash: revision(current), turn_count: current.length, turns: current, truncated: false}};
+      history: {history_hash: revision(current), turn_count: current.length, truncated: false, turns: current.map(turn => ({...turn,
+        portable_fidelity: "full", portable_items: turn.items.map(item => ({id: item.id!, status: "completed", type: "message", role: "assistant",
+          body: {storage: "inline", value: item.text!}}))}))}};
   }
   async cancelTurn(): Promise<HarnessAdapterEvent[]> {return [];}
   async stopSession(input: Parameters<HarnessAdapter["stopSession"]>[0]): Promise<HarnessAdapterEvent[]> {this.observations.delete(input.sessionId); return [];}

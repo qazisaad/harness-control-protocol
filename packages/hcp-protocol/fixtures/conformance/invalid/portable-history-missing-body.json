@@ -1,0 +1,33 @@
+{
+  "id": "fixture-portable-history-missing-body",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "read-1",
+    "session_id": "session-1",
+    "operation": "read",
+    "filesystem_undo": false,
+    "history": {
+      "history_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "turn_count": 1,
+      "truncated": false,
+      "turns": [
+        {
+          "id": "turn-1",
+          "status": "completed",
+          "items": [],
+          "portable_items": [
+            {
+              "id": "answer",
+              "status": "completed",
+              "type": "message",
+              "role": "assistant"
+            }
+          ],
+          "portable_fidelity": "full"
+        }
+      ]
+    }
+  }
+}

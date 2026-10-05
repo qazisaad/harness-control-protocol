@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {harnessContentChunkSchema} from "./content.js";
 import {harnessNativeWorkOperationSchema, harnessNativeWorkResultSchema} from "./native-work.js";
+import {harnessPortableHistoryItemSchema} from "./portable-history.js";
+import {harnessContentReferenceSchema} from "./content.js";
 
 export const hcpConversationRequestPayloadSchema = z.object({session_id: z.string().min(1).max(512),
   operation: z.discriminatedUnion("kind", [z.object({kind: z.literal("read"), cursor: z.string().min(1).max(1024).optional(), limit: z.number().int().min(1).max(100).optional()}).strict(),
@@ -14,7 +16,10 @@ export const hcpConversationRequestPayloadSchema = z.object({session_id: z.strin
 export const nativeConversationHistorySchema = z.object({history_hash: z.string().regex(/^[a-f0-9]{64}$/),
   turn_count: z.number().int().nonnegative(), truncated: z.boolean(),
   next_cursor: z.string().min(1).max(1024).optional(),
-  turns: z.array(z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json()))}).strict()).max(100)}).strict();
+  turns: z.array(z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json())),
+    items_ref: harnessContentReferenceSchema.optional(),
+    portable_items: z.array(harnessPortableHistoryItemSchema).max(100).optional(), portable_items_ref: harnessContentReferenceSchema.optional(),
+    portable_fidelity: z.enum(["full", "partial"]).optional()}).strict()).max(100)}).strict();
 export const hcpConversationResultPayloadSchema = z.object({command_id: z.string().min(1), session_id: z.string().min(1),
   operation: z.enum(["read", "rollback", "retire", "steer", "fork", "content", "work"]), filesystem_undo: z.literal(false),
   work: harnessNativeWorkResultSchema.optional(),

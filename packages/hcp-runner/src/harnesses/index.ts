@@ -419,6 +419,8 @@ export class HarnessSessionManager {
       }));
       if (result.command_id !== commandId || result.session_id !== request.session_id || result.operation !== request.operation.kind)
         throw new HarnessAdapterError("native_history_binding", "Conversation result targets another command, session, or operation.");
+      if (adapter.portableHistory && result.history?.turns.some(turn => turn.portable_fidelity === undefined || turn.portable_items === undefined && turn.portable_items_ref === undefined))
+        throw new HarnessAdapterError("portable_history_missing", "This adapter did not supply its declared portable history contract.");
       if (request.operation.kind === "rollback" && result.native_reference) {
         const saved = this.#stateStore.getNativeConversation(key)!;
         if (saved.rollback?.command_id !== commandId || saved.rollback.phase !== "completed" ||

@@ -24,6 +24,7 @@ This table describes the current source implementation. The verification record 
 | Steering | Native `turn/steer`, exact active-turn correlation | SDK input channel, exact active-turn correlation | Unsupported |
 | Manual compaction | Native compaction completion | `/compact` plus confirmed native compact boundary | Native summarize completion |
 | History, fork and conversation rollback | Read, fork, rollback and runner retirement | SDK history/fork; rollback replaces the logical binding with a verified retained-prefix copy | HTTP history/fork; rollback replaces the logical binding with a verified retained-prefix copy |
+| Portable history | Typed messages, reasoning, commands, file changes and optional extensions | Typed messages, reasoning, tool calls/results and optional extensions | Typed messages, reasoning, tool calls/results and optional extensions |
 | Large content | Scoped bounded retrieval | Scoped bounded retrieval | Scoped bounded retrieval |
 
 `full_access` describes approval behavior, not filesystem access. Codex workspace-write checks the returned policy and rejects extra writable roots or implicit temporary-directory writes. Claude restricted modes fail before provider execution; SDK permission modes are not treated as filesystem containment.

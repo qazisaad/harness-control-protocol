@@ -34,6 +34,8 @@ test("Claude SDK history, bounded forks and logical rollback preserve context wi
   try {
     let read = await claudeConversation(input({kind: "read"}));
     assert.equal(read.history?.turns.length, 2);
+    const portable = read.history!.turns[0]!.portable_items!;
+    assert.deepEqual(portable.map(item => item.type === "message" ? item.role : item.type), ["user", "assistant"]);
     const fork = await claudeConversation(input({kind: "fork", target_session_id: "child", continuation_group_key: "child-key",
       expected_history_hash: read.history!.history_hash, last_turn_id: read.history!.turns[0]!.id}));
     const child = await claudeSessionHelper(provider, cwd, {kind: "read", sessionId: fork.fork!.native_reference}) as {messages: unknown[]};

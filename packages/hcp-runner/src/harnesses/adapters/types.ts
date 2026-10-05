@@ -122,6 +122,7 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  readonly portableHistory?: true;
   readonly nativeWork?: true;
   cancelNativeWork?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
     provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload; signal: AbortSignal}): Promise<void>;

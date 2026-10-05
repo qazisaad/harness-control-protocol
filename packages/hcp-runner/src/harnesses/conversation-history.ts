@@ -3,13 +3,15 @@ import {z} from "zod";
 import type {HcpConversationRequestPayload, HcpConversationResultPayload} from "@harness-control/protocol";
 import {HarnessAdapterError} from "./adapters/types.js";
 import {retainedContent, type ContentPublisher} from "./adapters/providers/content-projection.js";
+import {portableHistoryItem, portableHistoryItemIsComplete} from "./portable-history.js";
+import {harnessPortableHistoryItemsSchema} from "@harness-control/protocol";
 export const conversationHistoryTurnSchema = z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json()))});
 export type HistoryTurn = z.infer<typeof conversationHistoryTurnSchema>;
 export type Thread = {id: string; turns: HistoryTurn[]; revision?: string};
 const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted) : value && typeof value === "object"
   ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, sorted(child)])) : value;
 export const hash = (turns: Thread["turns"]) => createHash("sha256").update(JSON.stringify(sorted(turns))).digest("hex");
-export function publicHistory(thread: Thread, publish?: ContentPublisher, request?: Extract<HcpConversationRequestPayload["operation"], {kind: "read"}>): NonNullable<HcpConversationResultPayload["history"]> {
+export function publicHistory(thread: Thread, publish?: ContentPublisher, request?: Extract<HcpConversationRequestPayload["operation"], {kind: "read"}>, namespace?: string): NonNullable<HcpConversationResultPayload["history"]> {
   const historyHash = thread.revision ?? hash(thread.turns);
   let offset = 0;
   if (request?.cursor) {
@@ -21,7 +23,7 @@ export function publicHistory(thread: Thread, publish?: ContentPublisher, reques
     offset = cursor.offset;
   }
   let size = 0, truncated = false;
-  const turns: Thread["turns"] = [];
+  const turns: NonNullable<HcpConversationResultPayload["history"]>["turns"] = [];
   const end = thread.turns.length - offset;
   for (const turn of thread.turns.slice(Math.max(0, end - (request?.limit ?? 100)), end).reverse()) {
     const items = turn.items.map(item => Object.fromEntries(Object.entries(item).filter(([key]) =>
@@ -31,7 +33,24 @@ export function publicHistory(thread: Thread, publish?: ContentPublisher, reques
         if (Buffer.byteLength(encoded) <= 32 * 1024) return [key, value];
         truncated = true; return [key, z.json().parse(retainedContent(value, publish))];
       })));
-    const entry = {...turn, items};
+    const entry: typeof turns[number] = {...turn, items};
+    if (namespace) {
+      const portable = harnessPortableHistoryItemsSchema.parse(turn.items.flatMap((item, index) => portableHistoryItem(item, namespace, `${turn.id}:${index}`, publish)));
+      entry.portable_items = portable.slice(0, 100);
+      entry.portable_fidelity = portable.every(portableHistoryItemIsComplete) ? "full" : "partial";
+      if (portable.length > 100) {
+        truncated = true;
+        if (publish) entry.portable_items_ref = publish(portable);
+        else entry.portable_fidelity = "partial";
+      }
+      if (Buffer.byteLength(JSON.stringify(entry)) > 192 * 1024 && publish) {
+        // A single busy native turn must still be retrievable through bounded content chunks.
+        entry.items_ref = publish(turn.items); entry.items = [];
+        entry.portable_items_ref ??= publish(portable);
+        while (entry.portable_items.length && Buffer.byteLength(JSON.stringify(entry)) > 96 * 1024) entry.portable_items.pop();
+        truncated = true;
+      }
+    }
     size += Buffer.byteLength(JSON.stringify(entry));
     if (size > 192 * 1024) {truncated = true; break;}
     turns.unshift(entry);

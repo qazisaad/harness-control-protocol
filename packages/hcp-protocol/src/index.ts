@@ -6,6 +6,7 @@ export * from "./conversation.js";
 export * from "./content.js";
 import {harnessNativeWorkRecordSchema} from "./native-work.js";
 export * from "./native-work.js";
+export * from "./portable-history.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -248,6 +249,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  portable_history?: boolean;
   context_usage?: boolean;
   native_work?: boolean;
   session_events?: boolean;
@@ -1097,6 +1099,7 @@ export const harnessProviderSnapshotSchema = z
     execution_capabilities: z.object({
       native_work: z.boolean().optional(),
       context_usage: z.boolean().optional(),
+      portable_history: z.boolean().optional(),
       session_events: z.boolean().optional(),
       instruction_roles: z.array(z.enum(["system", "developer"])).optional(),
       configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),

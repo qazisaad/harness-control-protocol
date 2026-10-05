@@ -45,7 +45,7 @@ const DEFAULT_EVENT_SETTLE_TIMEOUT_MS = 5_000;
 const executionCapabilities: HarnessExecutionCapabilities = {
   configuration_inheritance: {user_settings: true, project_settings: true, hooks: true, mcp_servers: true, plugins: true},
   streaming: true, multi_turn: true, session_continuation: true, plan_mode: true, manual_compaction: true, content_retrieval: true,
-  native_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
+  native_history: true, portable_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
   sandbox_modes: ["danger_full_access"], approval_policies: ["ask", "auto_edits", "full_access"],
 };
 
@@ -124,6 +124,7 @@ export type OpenCodeHarnessAdapterOptions = {
 };
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
+  readonly portableHistory = true;
   readonly configurationInheritance = executionCapabilities.configuration_inheritance!;
   readonly driverKind = "opencode";
   readonly conversationOperations = ["read", "rollback", "fork"] as const;

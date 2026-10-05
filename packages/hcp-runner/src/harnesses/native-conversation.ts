@@ -100,6 +100,6 @@ export async function nativeConversationOperation(commandId: string, request: Hc
       save({...conversation, rollback: {...conversation.rollback!, phase: "completed"}});
     }
     return hcpConversationResultPayloadSchema.parse({command_id: commandId, session_id: request.session_id,
-      operation: request.operation.kind, filesystem_undo: false, history: publicHistory(thread, publish, request.operation.kind === "read" ? request.operation : undefined)});
+      operation: request.operation.kind, filesystem_undo: false, history: publicHistory(thread, publish, request.operation.kind === "read" ? request.operation : undefined, "codex")});
   } finally {clearTimeout(timer); await rpc.process.stop();}
 }

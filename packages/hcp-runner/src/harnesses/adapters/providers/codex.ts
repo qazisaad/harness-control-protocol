@@ -42,6 +42,7 @@ export type CodexHarnessAdapterOptions = {
   processKillGraceMs?: number;
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
+  readonly portableHistory = true;
   readonly instructionRoles = ["system", "developer"] as const;
   readonly configurationInheritance = nativeExecutionCapabilities("codex").configuration_inheritance!;
   readonly driverKind = "codex";

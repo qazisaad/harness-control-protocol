@@ -93,3 +93,7 @@ For providers advertising `native_work`, call `readNativeWork(sessionId, {limit,
 ## Context observations
 
 Read `context.updated` events or a terminal output's optional `context` when `context_usage` is advertised. Keep this separate from `usage.updated` billing totals. Inspect `status`, `measurement_scope`, `source`, `observed_at` and `selection` before displaying counts. An unavailable observation clears previous context counts; omitted capacity stays unknown. Latest-request counters and retained-conversation counts are distinct native observations. Apps decide how old a measurement may be before it is considered stale.
+
+## Portable history
+
+When `portable_history` is advertised, read `history.turns[].portable_items` instead of parsing native `items`. Use the exported portable item schemas. Messages have explicit roles; tool results name their call ID. Value storage distinguishes inline JSON, retained references and unavailable content. Retrieve and decode `portable_items_ref` with `readContent`, then validate with `harnessPortableHistoryItemsSchema`. Read `portable_fidelity` before treating a view as complete. Namespaced display extensions can be ignored by generic clients. See the [history contract](../../docs/architecture.md#portable-conversation-history).

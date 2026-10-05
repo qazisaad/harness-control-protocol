@@ -39,7 +39,7 @@ The native-adapter update adds optional provider `execution_capabilities`. Its p
 
 The reference pairing HTTP contract now requires private exchange-secret binding, explicit pending/approved responses, and a dedicated MCP proof secret. Connection-token requests include the exported protocol schema digest. Upgrade the control plane and runner together; re-pair old development credentials. This does not change the WebSocket `hcp.v0` envelope schema. See [pairing](pairing.md).
 
-The native Codex/Claude drivers replace the old completion-only CLI paths. They reject `launch_args`, interactive policies, continuation, and second turns within a session. Claude also rejects restricted sandbox modes. `temporaryDirectoryRoot` is removed from Codex adapter options because final output files are no longer used. See [native provider support](native-providers.md) before updating a consumer. These restrictions replace previously ignored or unimplemented behavior; no compatibility fallback reruns work through the old drivers.
+The native Codex/Claude drivers replace the old completion-only CLI paths. Their current source supports retained continuation, multiple turns and the explicitly advertised approval policies. They reject nonempty `launch_args` and unsupported model options; Claude rejects restricted sandbox modes. `temporaryDirectoryRoot` is removed from Codex adapter options because final output files are no longer used. Optional conversation, context and portable-history contracts require matching public schemas. See [native provider support](native-providers.md) before updating a consumer. Unsupported behavior fails instead of rerunning work through an older driver.
 
 ## Runner Compatibility
 

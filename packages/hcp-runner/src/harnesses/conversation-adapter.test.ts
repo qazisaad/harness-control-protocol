@@ -67,6 +67,15 @@ test("configuration inheritance requirements fail before native launch when supp
   } finally {await f.cleanup();}
 });
 
+test("declared portable history cannot silently return only opaque native items", async () => {
+  const f = await fixture();
+  try {
+    await f.first.stopSession("session", "idle");
+    Object.assign(f.adapter, {portableHistory: true});
+    await assert.rejects(f.first.conversationOperation("read", {session_id: "session", operation: {kind: "read"}}), /declared portable history contract/);
+  } finally {await f.first.stopSession("session", "done"); await f.cleanup();}
+});
+
 test("instruction roles require explicit adapter support before native launch", async () => {
   const f = await fixture();
   let launches = 0;

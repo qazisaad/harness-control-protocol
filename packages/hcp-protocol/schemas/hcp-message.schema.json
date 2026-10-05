@@ -744,6 +744,1418 @@
                             "$ref": "#/$defs/__schema0"
                           }
                         }
+                      },
+                      "items_ref": {
+                        "type": "object",
+                        "properties": {
+                          "content_id": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "sha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "byte_length": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8388608
+                          },
+                          "format": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "json"
+                            ]
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                          }
+                        },
+                        "required": [
+                          "content_id",
+                          "sha256",
+                          "byte_length",
+                          "format",
+                          "expires_at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "portable_items": {
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "message"
+                                },
+                                "role": {
+                                  "type": "string",
+                                  "enum": [
+                                    "user",
+                                    "assistant",
+                                    "system",
+                                    "developer",
+                                    "unknown"
+                                  ]
+                                },
+                                "body": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "role",
+                                "body"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "reasoning"
+                                },
+                                "body": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "body"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "tool_call"
+                                },
+                                "tool_name": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "arguments": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "tool_name",
+                                "arguments"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "tool_result"
+                                },
+                                "call_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "result": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "call_id",
+                                "result"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "command"
+                                },
+                                "command": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                },
+                                "output": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                },
+                                "cwd": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "exit_code": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "command"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "file_change"
+                                },
+                                "changes": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "changes"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "plan"
+                                },
+                                "body": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "body"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "context_marker"
+                                },
+                                "body": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "body"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "waiting",
+                                    "completed",
+                                    "failed",
+                                    "cancelled",
+                                    "unknown"
+                                  ]
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "const": "extension"
+                                },
+                                "namespace": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "body": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "inline"
+                                        },
+                                        "value": {
+                                          "$ref": "#/$defs/__schema1"
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "value"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "reference"
+                                        },
+                                        "content_ref": {
+                                          "type": "object",
+                                          "properties": {
+                                            "content_id": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "sha256": {
+                                              "type": "string",
+                                              "pattern": "^[a-f0-9]{64}$"
+                                            },
+                                            "byte_length": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 8388608
+                                            },
+                                            "format": {
+                                              "type": "string",
+                                              "enum": [
+                                                "text",
+                                                "json"
+                                              ]
+                                            },
+                                            "expires_at": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                                            }
+                                          },
+                                          "required": [
+                                            "content_id",
+                                            "sha256",
+                                            "byte_length",
+                                            "format",
+                                            "expires_at"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "preview": {
+                                          "type": "string",
+                                          "maxLength": 8192
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "content_ref"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "storage": {
+                                          "type": "string",
+                                          "const": "unavailable"
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_retained",
+                                            "unsupported_native_shape"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "storage",
+                                        "reason"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "status",
+                                "type",
+                                "namespace",
+                                "name",
+                                "body"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "portable_items_ref": {
+                        "type": "object",
+                        "properties": {
+                          "content_id": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "sha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "byte_length": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8388608
+                          },
+                          "format": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "json"
+                            ]
+                          },
+                          "expires_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                          }
+                        },
+                        "required": [
+                          "content_id",
+                          "sha256",
+                          "byte_length",
+                          "format",
+                          "expires_at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "portable_fidelity": {
+                        "type": "string",
+                        "enum": [
+                          "full",
+                          "partial"
+                        ]
                       }
                     },
                     "required": [
@@ -2055,6 +3467,9 @@
                         "type": "boolean"
                       },
                       "context_usage": {
+                        "type": "boolean"
+                      },
+                      "portable_history": {
                         "type": "boolean"
                       },
                       "session_events": {
@@ -22372,6 +23787,37 @@
           },
           "additionalProperties": {
             "$ref": "#/$defs/__schema0"
+          }
+        }
+      ]
+    },
+    "__schema1": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema1"
           }
         }
       ]

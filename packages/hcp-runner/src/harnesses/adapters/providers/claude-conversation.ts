@@ -98,5 +98,5 @@ export async function claudeConversation(input: HarnessAdapterConversationInput,
   }
   return {command_id: commandId, session_id: request.session_id, operation: request.operation.kind, filesystem_undo: false,
     ...(request.operation.kind === "rollback" ? {native_reference: nativeId, ...(fresh ? {native_fresh: true} : {})} : {}),
-    history: publicHistory({id: nativeId, turns, revision}, input.publishContent, request.operation.kind === "read" ? request.operation : undefined)};
+    history: publicHistory({id: nativeId, turns, revision}, input.publishContent, request.operation.kind === "read" ? request.operation : undefined, "claude")};
 }

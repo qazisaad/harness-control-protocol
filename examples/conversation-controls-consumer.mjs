@@ -84,6 +84,8 @@ try {
   await until(() => events.some(event => event.turn_id === "compact" && event.event_type === "turn.completed"));
   await peer.stopSession({session_id: "session"});
   const read = await peer.readConversation("session");
+  assert.equal(read.payload.history.turns[0].portable_items[0].type, "message");
+  assert.equal(read.payload.history.turns[0].portable_items[0].body.value, "steered");
   const fork = {target_session_id: "child", continuation_group_key: "child-key", expected_history_hash: read.payload.history.history_hash,
     last_turn_id: "turn"};
   const first = await peer.forkConversation("session", fork, {id: "durable-fork"});
