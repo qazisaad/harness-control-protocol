@@ -12,7 +12,7 @@ import { CodexRpc } from "./codex-rpc.js";
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
-import { CodexProcessPool } from "./codex-pool.js";
+import { RuntimeProcessPool } from "./runtime-process-pool.js";
 
 export function createCodexTurnRuntime(onProcessLease?: (reused: boolean) => void) {
   type Launch = {executable: string; cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal};
@@ -30,7 +30,7 @@ export function createCodexTurnRuntime(onProcessLease?: (reused: boolean) => voi
     } catch (error) {await rpc.process.stop(); throw error;}
     finally {clearTimeout(timer); launch.signal.removeEventListener("abort", abort);}
   };
-  const pool = new CodexProcessPool<CodexRpc>(async () => {throw new Error("Codex runtime requires invocation-scoped launch settings");});
+  const pool = new RuntimeProcessPool<CodexRpc>(async () => {throw new Error("Provider runtime requires invocation-scoped launch settings");});
   const run: NativeTurn = async (input, signal, emit) => {
     const env = {...process.env, ...input.provider.env, ...(input.provider.home ? {CODEX_HOME: input.provider.home} : {})};
     const key = createHash("sha256").update(JSON.stringify({provider: input.provider,
@@ -88,7 +88,7 @@ const terminalSchema = z.object({
 });
 
 const runCodexTurn = async (input: Parameters<NativeTurn>[0], signal: AbortSignal,
-  emit: Parameters<NativeTurn>[2], pool: CodexProcessPool<CodexRpc>, key: string, create: () => Promise<CodexRpc>,
+  emit: Parameters<NativeTurn>[2], pool: RuntimeProcessPool<CodexRpc>, key: string, create: () => Promise<CodexRpc>,
   onProcessLease?: (reused: boolean) => void): ReturnType<NativeTurn> => {
   let interactions: NativeInteractions | undefined;
   signal.throwIfAborted();

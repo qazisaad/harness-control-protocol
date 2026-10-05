@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {CodexProcessPool} from "./codex-pool.js";
+import {RuntimeProcessPool} from "./runtime-process-pool.js";
 
 function fixture(capacity = 2, idle = 120_000) {
   let created = 0, stopped = 0;
-  const pool = new CodexProcessPool(async () => {
+  const pool = new RuntimeProcessPool(async () => {
     let closed!: () => void;
     let done = false;
     return {id: ++created, process: {closed: new Promise<void>(r => {closed=r;}),
@@ -45,7 +45,7 @@ test("idle timeout retires process; close prevents new leases", async () => {
 });
 test("shutdown during initialization cannot register a surviving process", async () => {
   let ready!: () => void;let stopped=0;
-  const pool = new CodexProcessPool(async () => {
+  const pool = new RuntimeProcessPool(async () => {
     await new Promise<void>(r=>{ready=r;});
     return {process:{closed:new Promise<void>(()=>{}),stop:async()=>{stopped++;}}};
   });
@@ -55,7 +55,7 @@ test("shutdown during initialization cannot register a surviving process", async
 
 test("retiring process continues to consume capacity until physically stopped", async () => {
   let finish!: () => void;
-  const pool = new CodexProcessPool(async () => ({process: {
+  const pool = new RuntimeProcessPool(async () => ({process: {
     closed: new Promise<void>(() => {}),
     stop: () => new Promise<void>(resolve => {finish = resolve;}),
   }}), 1);

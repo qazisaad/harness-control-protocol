@@ -233,9 +233,10 @@ function fakeQuery(
   messages: unknown[],
   inspect: (options: Options) => void = () => {},
 ): ClaudeQueryFactory {
-  return ({ options }) => {
+  return ({ options, prompt }) => {
     inspect(options!);
     const stream = (async function* () {
+      if (typeof prompt !== "string") await prompt[Symbol.asyncIterator]().next();
       for (const message of messages) yield message as SDKMessage;
     })();
     return Object.assign(stream, { close() {} }) as Query;
@@ -257,7 +258,7 @@ for (const [label, result] of Object.entries({
   failure: { ...success, subtype: "error_during_execution" },
   tokenLimit: { ...success, stop_reason: "max_tokens" },
 })) {
-  it(`Claude SDK ${label} is classified truthfully`, async () => {
+  it(`Claude SDK ${label} is classified truthfully`, async (t) => {
     const delta = {
       type: "stream_event",
       event: {
@@ -275,6 +276,7 @@ for (const [label, result] of Object.entries({
         assert.equal(options.persistSession, false);
       }),
     });
+    t.after(() => adapter.close());
     const payload = start("claude", tmpdir());
     payload.model_selection.options = [{ id: "effort", value: "high" }];
     const events: HarnessAdapterEvent[] = [];
@@ -488,15 +490,12 @@ it("a second turn cannot silently start a fresh Claude conversation", async () =
   });
   const input = turn(start("claude", tmpdir()), provider("claude"));
   await adapter.sendTurn(input);
-  await assert.rejects(
-    adapter.sendTurn({
+  const ended = await adapter.sendTurn({
       ...input,
       payload: { ...input.payload, turn_id: "second" },
-    }),
-    (error: unknown) =>
-      error instanceof HarnessAdapterError &&
-      error.code === "session_turn_limit",
-  );
+    });
+  assert.equal(ended.at(-1)?.event_type, "turn.failed");
+  assert.equal((ended.at(-1)?.data.error as {code:string}).code, "claude_missing_result");
   assert.equal(calls, 1);
   await adapter.stopSession({ sessionId: "session" });
 });
