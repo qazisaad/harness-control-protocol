@@ -204,10 +204,11 @@ describe("OpenCodeHarnessAdapter", () => {
       });
       assert.deepEqual(
         streamed.map((event: HarnessAdapterEvent): string => event.event_type),
-        ["reasoning.delta", "content.delta", "usage.updated", "turn.completed"],
+        ["context.updated", "reasoning.delta", "content.delta", "usage.updated", "context.updated", "turn.completed"],
       );
       assert.deepEqual(terminal, []);
-      assert.deepEqual(streamed.at(-1)?.data.final_output, {final_text: "hello", usage: streamed.find(event => event.event_type === "usage.updated")?.data});
+      assert.deepEqual(streamed.at(-1)?.data.final_output, {final_text: "hello", usage: streamed.find(event => event.event_type === "usage.updated")?.data,
+        context: streamed.filter(event => event.event_type === "context.updated").at(-1)?.data});
     } finally {
       if (started) await adapter.stopSession({ sessionId: "session-1" });
       await workspace.cleanup();
@@ -251,10 +252,11 @@ describe("OpenCodeHarnessAdapter", () => {
 
       assert.deepEqual(
         streamed.map((event: HarnessAdapterEvent): string => event.event_type),
-        ["reasoning.delta", "content.delta", "turn.completed"],
+        ["context.updated", "reasoning.delta", "content.delta", "turn.completed"],
       );
       assert.deepEqual(terminal, []);
-      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello" });
+      assert.equal(streamed[0]?.data.status, "unavailable");
+      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello", context: streamed[0]?.data });
       assert.deepEqual(runtimeCalls, ["anthropic/claude-sonnet-4:Say hello."]);
       await adapter.stopSession({ sessionId: "session-1" });
       assert.deepEqual(runtimeCalls, ["anthropic/claude-sonnet-4:Say hello.", "close"]);
@@ -344,8 +346,7 @@ describe("OpenCodeHarnessAdapter", () => {
       const cancellation = await adapter.cancelTurn({ sessionId: "session-1", turnId: "turn-cancel" });
       const events = await turnCompletion;
       assert.deepEqual(cancellation, []);
-      assert.equal(events.length, 1);
-      assert.equal(events[0]?.event_type, "turn.cancelled");
+      assert.deepEqual(events.map(event => event.event_type), ["context.updated", "turn.cancelled"]);
       await adapter.stopSession({ sessionId: "session-1" });
     } finally {
       await workspace.cleanup();

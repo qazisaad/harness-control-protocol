@@ -1,0 +1,23 @@
+{
+  "id": "invalid-content-base64",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-10-05T00:00:00.000Z",
+  "payload": {
+    "command_id": "content-command",
+    "session_id": "session",
+    "operation": "content",
+    "filesystem_undo": false,
+    "content": {
+      "reference": {
+        "content_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "byte_length": 1,
+        "format": "text",
+        "expires_at": "2026-10-06T00:00:00.000Z"
+      },
+      "offset": 0,
+      "data_base64": "eB=="
+    }
+  }
+}

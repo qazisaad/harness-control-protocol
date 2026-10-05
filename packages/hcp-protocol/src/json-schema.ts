@@ -184,8 +184,9 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     }
     if (hasMessageTypeConst(messageSchema, "harness.conversation.result")) {
       const payload = getObjectProperty(messageSchema, "payload", "conversation result");
-      payload.allOf = [["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"]]
-        .map(([operation, field]) => ({if: {properties: {operation: {const: operation}}, required: ["operation"]}, then: {required: [field]}}));
+      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"]]
+        .map(([operation, field]) => ({if: {properties: {operation: {const: operation}}, required: ["operation"]}, then: {required: [field]}})),
+        {if: {required: ["native_fresh"]}, then: {properties: {operation: {enum: ["fork", "rollback"]}}}}];
     }
     if (hasMessageTypeConst(messageSchema, "harness.turn.send")) {
       const payload = getObjectProperty(messageSchema, "payload", "turn send");

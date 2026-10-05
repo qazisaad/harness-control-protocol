@@ -122,6 +122,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "context.updated",
   "native.work.updated",
   "native.work.retired",
+  "native.work.owner_lost",
   "runtime.warning",
   "runtime.error",
 ] as const;
@@ -2679,6 +2680,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType === "context.updated") return harnessContextUsageSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
+  if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"])}).strict();
   if (eventType === "config.warning" || eventType === "deprecation.notice") {
     return runtimeDiagnosticEventDataSchema;
   }

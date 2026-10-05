@@ -15,6 +15,7 @@ async function fixture() {
   let calls = 0;
   let lost = false;
   let acknowledgementOnly = false;
+  let loseOwnerDuringCancel = false;
   const work = (work_id = "child", status: HarnessNativeWorkObservation["status"] = "running", parent_work_id?: string): HarnessNativeWorkObservation =>
     ({work_id, native_reference: `native-${work_id}`, origin_turn_id: "turn", kind: "task", background: true, status, supports_cancel: true, ...(parent_work_id ? {parent_work_id} : {})});
   const publish = (value: HarnessNativeWorkObservation) => emit({event_type: "native.work.updated", data: {work: value}});
@@ -27,6 +28,11 @@ async function fixture() {
       calls++;
       assert.equal(state.nativeWorkState("session")!.items[input.work.work_id]!.control?.phase, "pending", "intent is durable before dispatch");
       assert.equal(input.signal.aborted, false);
+      if (loseOwnerDuringCancel) {
+        emit({event_type: "native.work.owner_lost", data: {reason: "transport_lost"}});
+        assert.equal(input.signal.aborted, true);
+        return new Promise<void>(() => {});
+      }
       if (lost) throw new Error("Lost native acknowledgement");
       if (!acknowledgementOnly) publish(work(input.work.work_id, "cancelled", input.work.parent_work_id));
     },
@@ -45,8 +51,75 @@ async function fixture() {
     if (result.work?.action !== "read") throw new Error("Expected native work read");
     return result.work;
   };
-  return {cwd, state, manager, makeManager, operation, read, work, publish, get calls() {return calls;}, lose() {lost = true;}, acknowledgeOnly() {acknowledgementOnly = true;}, cleanup: () => rm(cwd, {recursive: true, force: true})};
+  return {cwd, state, manager, makeManager, operation, read, work, publish,
+    ownerLost: () => emit({event_type: "native.work.owner_lost", data: {reason: "native_exit"}}),
+    loseOwnerDuringCancel: () => {loseOwnerDuringCancel = true;},
+    get calls() {return calls;}, lose() {lost = true;}, acknowledgeOnly() {acknowledgementOnly = true;}, cleanup: () => rm(cwd, {recursive: true, force: true})};
 }
+
+test("native owner loss fences task controls without inventing terminal execution and permits closure proof", async () => {
+  const f = await fixture();
+  try {
+    f.ownerLost();
+    assert.equal((await f.read()).owner_status, "unavailable");
+    assert.equal((await f.read()).items[0]!.owner_status, "unavailable");
+    assert.equal((await f.read()).items[0]!.work.status, "running");
+    await assert.rejects(f.operation({kind: "work", action: "cancel", work_id: "child", expected_revision: 1}), /no live native cancellation owner/);
+    assert.equal(f.calls, 0);
+    assert.throws(() => f.publish(f.work("new")), /cannot admit active work/);
+    assert.throws(() => f.publish(f.work("new", "completed")), /cannot admit active work/);
+    f.publish(f.work("child", "unknown"));
+    await assert.rejects(f.manager.stopSession("session", "stop"), /closure is unconfirmed/);
+    f.publish(f.work("child", "completed"));
+    await f.manager.stopSession("session", "closed");
+    assert.equal((await f.read(f.makeManager())).items[0]!.work.status, "completed");
+    assert.throws(f.ownerLost, /owner is no longer active/);
+  } finally {await f.cleanup();}
+});
+
+test("owner loss during native cancellation aborts promptly and preserves its pending fence", async () => {
+  const f = await fixture();
+  try {
+    f.loseOwnerDuringCancel();
+    const cancel = {kind: "work", action: "cancel", work_id: "child", expected_revision: 1} as const;
+    await assert.rejects(f.operation(cancel, "cancel"), /unknown outcome/);
+    assert.equal((await f.read()).owner_status, "unavailable");
+    assert.equal((await f.read()).items[0]!.work.control?.phase, "pending");
+    await assert.rejects(f.operation(cancel, "cancel"), /will not be repeated/);
+    await assert.rejects(f.operation(cancel, "cancel", f.makeManager()), /will not be repeated/);
+    assert.equal(f.calls, 1);
+    f.publish(f.work("child", "cancelled"));
+    await f.manager.stopSession("session", "closed");
+  } finally {await f.cleanup();}
+});
+
+test("physical owner loss still fences cancellation when durable event persistence fails", async () => {
+  const f = await fixture();
+  const persist = f.state.persist.bind(f.state);
+  try {
+    f.state.persist = () => {throw new Error("Disk unavailable");};
+    assert.throws(f.ownerLost, /Disk unavailable/);
+    f.state.persist = persist;
+    assert.equal((await f.read()).owner_status, "unavailable");
+    await assert.rejects(f.operation({kind: "work", action: "cancel", work_id: "child", expected_revision: 1}), /no live native cancellation owner/);
+    assert.equal(f.calls, 0);
+  } finally {f.state.persist = persist; await f.cleanup();}
+});
+
+test("owner loss during cancellation publication prevents native dispatch", async () => {
+  const f = await fixture();
+  try {
+    const unsubscribe = f.manager.subscribeEvents(event => {
+      if (event.event_type === "native.work.updated" && (event.data as {work: {control?: {phase: string}}}).work.control?.phase === "pending") f.ownerLost();
+    });
+    const cancel = {kind: "work", action: "cancel", work_id: "child", expected_revision: 1} as const;
+    await assert.rejects(f.operation(cancel, "cancel"), /ownership was lost/);
+    unsubscribe();
+    assert.equal(f.calls, 0);
+    assert.equal((await f.read()).owner_status, "unavailable");
+    await assert.rejects(f.operation(cancel, "cancel"), /will not be repeated/);
+  } finally {await f.cleanup();}
+});
 
 test("failed cancellation persistence prevents native dispatch and leaves the prior revision", async () => {
   const f = await fixture();

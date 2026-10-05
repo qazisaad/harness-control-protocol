@@ -119,7 +119,9 @@ const server = createServer(async (request, response) => {
       });
       sendEvent(stream, { type: "session.idle", properties: { sessionID: executionId } });
     }
-    writeJson(response, { parts: [{ type: "text", text: "hello" }] });
+    writeJson(response, {info: {id: `answer-${payload.messageID}`, sessionID: executionId, role: "assistant", parentID: payload.messageID,
+      providerID: payload.model?.providerID, modelID: payload.model?.modelID, variant: payload.variant,
+      tokens: {input: 10, output: 3, reasoning: 2, cache: {read: 20, write: 4}}}, parts: [{ type: "text", text: "hello" }] });
     return;
   }
   if (request.method === "POST" && (url.pathname === "/permission/approval/reply" || url.pathname === "/question/question/reply")) {

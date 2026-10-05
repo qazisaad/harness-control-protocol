@@ -96,6 +96,16 @@ try {
   await peer.startSession({...start, session_id: "child", continuation_group_key: "child-key", continue_session: true});
   await peer.sendTurn({session_id: "child", turn_id: "child-turn", input: "followup"});
   await until(() => events.some(event => event.turn_id === "child-turn" && event.event_type === "turn.completed"));
+  adapter.emitWork("child", "child-turn", "running");
+  adapter.loseWorkOwner("child");
+  await until(() => events.some(event => event.session_id === "child" && event.event_type === "native.work.owner_lost"));
+  const lostOwner = (await peer.readNativeWork("child")).payload.work;
+  assert.equal(lostOwner.owner_status, "unavailable");
+  assert.equal(lostOwner.items[0].owner_status, "unavailable");
+  assert.equal(lostOwner.items[0].work.status, "running");
+  await assert.rejects(peer.cancelNativeWork("child", lostOwner.items[0].work.work_id, lostOwner.items[0].work.revision), /no live native cancellation owner/);
+  assert.equal(adapter.nativeCancellations, 1);
+  adapter.emitWork("child", "child-turn", "cancelled");
   await peer.stopSession({session_id: "child"}); await peer.retireConversation("child");
   console.log("Public SDK controls, session observations, native adapter hooks, content chunks, mutation receipts and fork resume passed");
 } finally {

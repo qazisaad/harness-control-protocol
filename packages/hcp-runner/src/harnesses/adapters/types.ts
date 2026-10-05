@@ -55,7 +55,7 @@ export type HarnessAdapterMcpServer = {
 };
 
 export type HarnessAdapterStartInput = {
-  /** Session-owned observations may continue between turns; this is not an alternate root-turn control channel. */
+  /** Session-owned observations may continue between turns. Native-work adapters report owner death with native.work.owner_lost; it permanently fences this owner's controls. */
   emitSessionEvent?: (event: HarnessAdapterEvent) => void;
   publishContent?: (value: unknown) => HarnessContentReference;
   payload: HcpSessionStartPayload;

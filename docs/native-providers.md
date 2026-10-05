@@ -13,7 +13,7 @@ This table describes the current source implementation. The verification record 
 | Tool activity | Items, commands/output, file changes, plan/diff updates | Tool-use/result item lifecycle | Tool arguments/output/errors and todo updates |
 | Final output | Successful native terminal plus final assistant item required | Successful typed result required | Message response plus session-idle event |
 | Usage | Native conversation token totals, explicitly scoped | SDK turn model totals, including cache counts; estimated cost | Owned root-prompt step totals, with duplicate/order handling and uncertainty |
-| Context measurements | Latest native request counters and reported model capacity, separate from conversation totals | Latest root-request counters and compaction post-token counts; no inferred capacity | Not yet projected |
+| Context measurements | Latest native request counters and reported model capacity, separate from conversation totals | Latest root-request counters and compaction post-token counts; no inferred capacity | Final owned prompt response's last-request counters; validated model/variant; no inferred capacity |
 | Sandbox | `read_only`, `workspace_write`, `danger_full_access` | `danger_full_access` only | `danger_full_access` only; no filesystem containment |
 | Approval policy | `ask` -> `untrusted`, `auto_edits` -> `on-request`, `full_access` -> `never` | `ask` -> `default`, `auto_edits` -> `acceptEdits`, `full_access` -> `bypassPermissions` | Explicit session rules for all three policies |
 | Model options | `reasoningEffort`; native model catalog | SDK `effort` | `provider/model` and one string `variant` |

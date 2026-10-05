@@ -4,7 +4,7 @@ import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
-import {hcpHarnessEventPayloadSchema, HcpSessionEventReducer, type HcpHarnessEventPayload, type HcpSessionStartPayload} from "@harness-control/protocol";
+import {harnessContextUsageSchema, hcpHarnessEventPayloadSchema, HcpSessionEventReducer, type HcpHarnessEventPayload, type HcpSessionStartPayload} from "@harness-control/protocol";
 import {HarnessSessionManager} from "./index.js";
 import {RunnerConfigSchema} from "../config/index.js";
 import {JsonRunnerStateStore} from "../state/index.js";
@@ -45,8 +45,16 @@ for (const kind of ["approval", "question"] as const) test(`OpenCode ${kind} rep
     assert.deepEqual(usage, {scope: "turn", status: "complete", source: "opencode.message.step-finish", input_tokens: 34,
       output_tokens: 5, total_tokens: 39, cached_input_tokens: 20, cache_creation_input_tokens: 4, reasoning_output_tokens: 2, cost_usd: 0.5});
     assert.deepEqual((followup.at(-1)?.data as {final_output: {usage: unknown}}).final_output.usage, usage);
+    assert.equal((followup.find(event => event.event_type === "context.updated")?.data as {status: string}).status, "unavailable");
+    const context = harnessContextUsageSchema.parse(followup.filter(event => event.event_type === "context.updated").at(-1)!.data);
+    assert.equal(context.status, "measured");
+    if (context.status !== "measured") throw new Error("Expected native context measurement");
+    assert.equal(context.used_tokens, 37);
+    assert.deepEqual(context.selection, {model: "anthropic/claude", options: [{id: "variant", value: "high"}]});
+    assert.deepEqual((followup.at(-1)?.data as {final_output: {context: unknown}}).final_output.context, context);
     const compact = await runner.sendTurn({session_id: "second-session", turn_id: "compact", input: "", action: "compact"});
     assert.equal(compact.at(-1)?.event_type, "turn.completed");
+    assert.equal((compact.at(-1)?.data as {final_output: {context: {status: string}}}).final_output.context.status, "unavailable");
     const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.equal(requests.filter(request => request.path === "/session" && request.method === "POST").length, 1);
     const prompt = requests.filter(request => request.path.endsWith("/message")).at(-1).payload;

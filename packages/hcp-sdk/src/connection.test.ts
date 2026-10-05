@@ -55,7 +55,7 @@ test("content results must name the requested object and byte offset", async () 
   void waiting.then(() => {settled = true;});
   const receipt = {command_id: command.id, session_id: "session", operation: "content" as const, filesystem_undo: false as const,
     content: {reference: {content_id: contentId, sha256: "b".repeat(64), byte_length: 6, format: "text" as const, expires_at: new Date(Date.now() + 60_000).toISOString()}, offset: 5, data_base64: "eA=="}};
-  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, content: {...receipt.content, offset: 0}}));
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, content: {...receipt.content, offset: 0, next_offset: 1}}));
   await Promise.resolve(); assert.equal(settled, false);
   peer.receive(createHcpEnvelope("harness.conversation.result", receipt));
   assert.equal((await waiting).payload.content?.offset, 5);

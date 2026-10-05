@@ -1,0 +1,14 @@
+{
+  "id": "invalid-fresh-steer",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-10-05T00:00:00.000Z",
+  "payload": {
+    "command_id": "steer-command",
+    "session_id": "session",
+    "operation": "steer",
+    "filesystem_undo": false,
+    "turn_id": "turn",
+    "native_fresh": true
+  }
+}

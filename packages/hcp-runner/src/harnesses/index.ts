@@ -72,6 +72,7 @@ export type HarnessSession = {
   sessionId: string;
   cancelRequested: boolean;
   nativeWorkOwnerAvailable?: boolean;
+  nativeWorkCancellation?: AbortController;
   workspaceId: string;
   providerInstanceId: string;
   driverKind: string;
@@ -259,15 +260,28 @@ export class HarnessSessionManager {
     // Publication can synchronously deliver terminal proof before native dispatch.
     if (isNativeWorkTerminal(this.#stateStore.nativeWorkState(request.session_id)!.items[work.work_id]!.status))
       return result({action: "cancel", work_id: work.work_id, accepted: true, already_terminal: true});
+    if (!session.nativeWorkOwnerAvailable)
+      throw new HarnessAdapterError("native_work_cancel_unknown", "Native ownership was lost before cancellation dispatch; reconcile retained observations.");
     const abort = new AbortController();
+    session.nativeWorkCancellation = abort;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let aborted!: () => void;
     try {
       await Promise.race([
         session.adapter.cancelNativeWork({commandId, sessionId: request.session_id, work: structuredClone(work), provider, startPayload: session.startPayload, signal: abort.signal}),
         new Promise<never>((_, reject) => {timer = setTimeout(() => {abort.abort(); reject(new Error("Native cancellation timed out."));}, 30_000);}),
+        new Promise<never>((_, reject) => {
+          aborted = () => reject(new Error("Native cancellation owner was lost."));
+          abort.signal.addEventListener("abort", aborted, {once: true});
+          if (abort.signal.aborted) aborted();
+        }),
       ]);
     } catch {throw new HarnessAdapterError("native_work_cancel_unknown", "Native cancellation has an unknown outcome; reconcile observations before trying again.");}
-    finally {if (timer) clearTimeout(timer);}
+    finally {
+      if (timer) clearTimeout(timer);
+      if (aborted) abort.signal.removeEventListener("abort", aborted);
+      if (session.nativeWorkCancellation === abort) delete session.nativeWorkCancellation;
+    }
     const accepted = this.#stateStore.nativeWorkState(request.session_id)!;
     const current = accepted.items[work.work_id]!;
     accepted.items[work.work_id] = {...current, revision: current.revision + 1, control: {...current.control!, phase: "accepted"}};
@@ -668,10 +682,12 @@ export class HarnessSessionManager {
         throw new HarnessAdapterError("native_session_event_closed", "The native event owner is no longer active.");
       if (nativeProviderHash(this.#requireProvider(provider.id)) !== eventProviderHash)
         throw new HarnessAdapterError("native_session_event_binding", "Native observations belong to the original provider configuration.");
-      if (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated"].includes(event.event_type)
+      if (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated", "native.work.owner_lost"].includes(event.event_type)
           && !event.event_type.startsWith("provider.") && !event.event_type.startsWith("extension."))
         throw new HarnessAdapterError("native_session_event_unsupported", "Session observations cannot publish root turns or interaction requests.");
       let validationData = event.data;
+      if (event.event_type === "native.work.owner_lost" && !adapter.nativeWork)
+        throw new HarnessAdapterError("native_work_unsupported", "Native owner loss requires its declared adapter contract.");
       if (event.event_type === "native.work.updated") {
         if (!adapter.nativeWork || Object.keys(event.data).some(key => key !== "work"))
           throw new HarnessAdapterError("native_work_unsupported", "Native work requires its declared adapter contract.");
@@ -1106,6 +1122,7 @@ export class HarnessSessionManager {
       }));
     }
     session.nativeWorkOwnerAvailable = false;
+    session.nativeWorkCancellation?.abort();
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.stopSession({ sessionId, ...(reason ? { reason } : {}) });
     events.push(
       ...adapterEvents.map((event: HarnessAdapterEvent): HcpHarnessEventPayload =>
@@ -1321,6 +1338,15 @@ export class HarnessSessionManager {
     data: Record<string, unknown>,
     nativeWorkState?: NativeWorkState,
   ): HcpHarnessEventPayload {
+    if (eventType === "native.work.owner_lost") {
+      const owner = this.#sessions.get(sessionId);
+      if (turnId || !owner?.adapter.nativeWork)
+        throw new HarnessAdapterError("native_work_unsupported", "Native owner loss requires its session-owned native-work contract.");
+      hcpHarnessEventPayloadSchema.parse({session_id: sessionId, sequence: 1, event_type: eventType, created_at: new Date().toISOString(), data});
+      // Loss of physical ownership must fence controls even when journaling fails.
+      owner.nativeWorkOwnerAvailable = false;
+      owner.nativeWorkCancellation?.abort();
+    }
     if (this.#publishing && this.#publicationAdmissions >= 128)
       throw new HarnessSessionError("event_publication_backpressure", "Reentrant event observations exceeded their bounded publication queue.");
     if (eventType === "native.work.updated" && !nativeWorkState) {
@@ -1330,6 +1356,8 @@ export class HarnessSessionManager {
         throw new HarnessAdapterError("native_work_unsupported", "Native work requires the owning adapter's declared contract.");
       const observation = harnessNativeWorkObservationSchema.parse(data.work);
       const previous = state.items[observation.work_id];
+      if (!session.nativeWorkOwnerAvailable && (!previous || !isNativeWorkTerminal(observation.status) && observation.status !== "unknown"))
+        throw new HarnessAdapterError("native_work_owner_unavailable", "A lost native owner may only reconcile retained work; it cannot admit active work.");
       const parent = observation.parent_work_id ? state.items[observation.parent_work_id] ?? state.retired[observation.parent_work_id] : undefined;
       if (state.retired[observation.work_id]) throw new HarnessAdapterError("native_work_retired", "A retired native execution cannot be reopened.");
       if ((!previous && !this.#turnIdsBySession.get(sessionId)?.has(observation.origin_turn_id) && parent?.origin_turn_id !== observation.origin_turn_id)

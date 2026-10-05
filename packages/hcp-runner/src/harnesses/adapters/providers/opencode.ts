@@ -4,6 +4,8 @@ import { NativeProcess } from "./native-process.js";
 import { NativeTurns } from "./native-turn.js";
 import { NativeInteractions } from "../../native-interactions.js";
 import {OpenCodeUsage, openCodeMessageId} from "./opencode-usage.js";
+import {openCodeContext} from "./opencode-context.js";
+import {unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks, type ContentPublisher} from "./content-projection.js";
 
 import { z } from "zod";
@@ -44,7 +46,7 @@ const DEFAULT_EVENT_SETTLE_TIMEOUT_MS = 5_000;
 
 const executionCapabilities: HarnessExecutionCapabilities = {
   configuration_inheritance: {user_settings: true, project_settings: true, hooks: true, mcp_servers: true, plugins: true},
-  streaming: true, multi_turn: true, session_continuation: true, plan_mode: true, manual_compaction: true, content_retrieval: true,
+  streaming: true, multi_turn: true, session_continuation: true, plan_mode: true, manual_compaction: true, content_retrieval: true, context_usage: true,
   native_history: true, portable_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
   sandbox_modes: ["danger_full_access"], approval_policies: ["ask", "auto_edits", "full_access"],
 };
@@ -105,6 +107,8 @@ export type OpenCodeRuntimeTurnInput = {
   interactions?: NativeInteractions;
   publishContent?: ContentPublisher;
   onUsage?: (usage: HarnessUsageSnapshot) => void;
+  onContext?: (context: import("@harness-control/protocol").HarnessContextUsage) => void;
+  modelSelection?: HarnessModelSelection;
 };
 
 export type OpenCodeRuntime = {
@@ -237,12 +241,17 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       signal.addEventListener("abort", abort, {once: true});
       try {
       let usage: HarnessUsageSnapshot | undefined;
+      const selection = input.payload.model_selection ?? input.startPayload.model_selection;
+      let context = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "request_started");
+      emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: context});
       const finalText = await runtime.sendTurn({
         turnId: input.payload.turn_id,
         input: input.payload.input,
         model: input.payload.model_selection?.model ?? input.startPayload.model_selection.model,
         emitEvent: emit, signal, interactions,
         onUsage: value => {usage = value; emit({event_type: "usage.updated", turn_id: input.payload.turn_id, data: {...value}});},
+        modelSelection: selection,
+        onContext: value => {context = value; emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: value});},
         ...(input.publishContent ? {publishContent: input.publishContent} : {}),
         ...(input.payload.mode ? {mode: input.payload.mode} : {}),
         ...(input.payload.action ? {action: input.payload.action} : {}),
@@ -250,7 +259,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
         ...((input.payload.model_selection ?? input.startPayload.model_selection).options?.[0] ?
           {variant: String((input.payload.model_selection ?? input.startPayload.model_selection).options![0]!.value)} : {}),
       });
-      return {...retainedFinalText(finalText, input.publishContent), ...(usage ? {usage} : {})};
+      return {...retainedFinalText(finalText, input.publishContent), ...(usage ? {usage} : {}), context};
       } finally {
         interactions.close(); input.registerNativeInteractions?.(undefined);
         signal.removeEventListener("abort", abort);
@@ -427,6 +436,8 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       for (const part of response.parts) usage.part(part);
       const measured = usage.snapshot();
       if (measured) input.onUsage?.(measured);
+      input.onContext?.(openCodeContext(response.info, this.sessionId, messageId,
+        input.modelSelection ?? {model: input.model, ...(input.variant ? {options: [{id: "variant", value: input.variant}]} : {})}));
       return response.parts
         .filter((part): boolean => part.type === "text" && part.text !== undefined)
         .map((part): string => part.text ?? "")

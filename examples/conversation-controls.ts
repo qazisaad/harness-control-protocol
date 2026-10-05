@@ -55,6 +55,9 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       kind: "task", background: true, status, supports_cancel: true,
     }}});
   }
+  loseWorkOwner(sessionId: string) {
+    this.observations.get(sessionId)!({event_type: "native.work.owner_lost", data: {reason: "transport_lost"}});
+  }
   async cancelNativeWork(input: Parameters<NonNullable<HarnessAdapter["cancelNativeWork"]>>[0]) {
     this.nativeCancellations++;
     this.emitWork(input.sessionId, input.work.origin_turn_id, "cancelled");
