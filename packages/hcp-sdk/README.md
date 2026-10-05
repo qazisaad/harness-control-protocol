@@ -89,3 +89,7 @@ Employee mapping, billing scope verification, retention, polling, policy and aut
 ## Native background work
 
 For providers advertising `native_work`, call `readNativeWork(sessionId, {limit, cursor})` to reconcile session-owned tasks after root completion or a replay gap. Each entry includes a revision and live `owner_status`. Use `cancelNativeWork(sessionId, workId, revision, {id: durableCommandId})` and `retireNativeWork(sessionId, workId, revision)`. Cancellation acceptance is distinct from a terminal task observation; uncertain cancellation is fenced against repetition. Retirement requires terminal status and removes only HCP metadata. Retained work whose owner is unavailable remains readable after restart. See the [native work contract](../../docs/architecture.md#native-work-ownership).
+
+## Context observations
+
+Read `context.updated` events or a terminal output's optional `context` when `context_usage` is advertised. Keep this separate from `usage.updated` billing totals. Inspect `status`, `measurement_scope`, `source`, `observed_at` and `selection` before displaying counts. An unavailable observation clears previous context counts; omitted capacity stays unknown. Latest-request counters and retained-conversation counts are distinct native observations. Apps decide how old a measurement may be before it is considered stale.

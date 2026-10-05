@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import type {
   HarnessTurnFinalOutput,
   HarnessUsageSnapshot,
+  HarnessContextUsage,
 } from "@harness-control/protocol";
 import { HarnessAdapterError } from "../types.js";
 import { adapterMcpServers } from "./shared.js";
@@ -12,6 +13,7 @@ import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
+import {measuredContext, unavailableContext} from "./native-context.js";
 
 const object = z.record(z.string(), z.unknown());
 const idObject = z.object({ id: z.string() });
@@ -61,6 +63,8 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
   signal.throwIfAborted();
   const selection =
     input.payload.model_selection ?? input.startPayload.model_selection;
+  let context: HarnessContextUsage = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "new_native_request");
+  emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
   const effort = selectedEffort(selection, "codex");
   const rpc = new CodexRpc(
     input.provider.executable_path ?? "codex",
@@ -324,11 +328,15 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         emit({event_type: "turn.diff.updated", turn_id: input.payload.turn_id, data: {diff_summary: boundedText(event.diff),
           ...(Buffer.byteLength(event.diff) > 32 * 1024 && input.publishContent ? {content_ref: input.publishContent(event.diff)} : {})}});
       } else if (message.method === "thread/tokenUsage/updated") {
+        const binding = z.object({threadId: z.string(), turnId: z.string()}).parse(message.params);
+        if (binding.threadId !== threadId || !nativeTurnId || binding.turnId !== nativeTurnId) return;
         const event = z
           .object({
             threadId: z.string(),
             turnId: z.string(),
             tokenUsage: z.object({
+              last: z.object({totalTokens: z.number().int().nonnegative()}).optional(),
+              modelContextWindow: z.number().int().nonnegative().nullable().optional(),
               total: z.object({
                 inputTokens: z.number().int().nonnegative(),
                 outputTokens: z.number().int().nonnegative(),
@@ -337,11 +345,10 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
             }),
           })
           .parse(message.params);
-        if (
-          event.threadId !== threadId ||
-          (nativeTurnId && event.turnId !== nativeTurnId)
-        )
-          return;
+        if (event.tokenUsage.last) {
+          context = measuredContext(selection, "codex.thread.tokenUsage.last", event.tokenUsage.last.totalTokens, event.tokenUsage.modelContextWindow);
+          emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
+        }
         usage = {
           scope: "conversation", status: "complete", source: "codex.thread.tokenUsage.total",
           input_tokens: event.tokenUsage.total.inputTokens,
@@ -373,7 +380,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
               "Codex ended without a successful final answer.",
             ),
           );
-        } else resolve({ ...retainedFinalText(finalText ?? "", input.publishContent), ...(usage ? { usage } : {}) });
+        } else resolve({ ...retainedFinalText(finalText ?? "", input.publishContent), context, ...(usage ? { usage } : {}) });
       }
     };
     const continuation = input.mcpContinuation;

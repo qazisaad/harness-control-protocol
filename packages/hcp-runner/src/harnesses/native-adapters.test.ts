@@ -115,6 +115,10 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   if(process.env.MODE==='request') return send({id:'approval-1',method:'item/commandExecution/requestApproval',params});
   if(process.env.MODE==='malformed') return process.stdout.write('not json\n');
   const finish=()=>{
+  const tokenUsage={total:{inputTokens:900,outputTokens:100,totalTokens:1000},last:{totalTokens:50},modelContextWindow:200000};
+  notify('thread/tokenUsage/updated',{...params,tokenUsage});
+  notify('thread/tokenUsage/updated',{...params,turnId:'old-turn',tokenUsage:{...tokenUsage,last:{totalTokens:99999}}});
+  notify('thread/tokenUsage/updated',{...params,turnId:'foreign-turn',tokenUsage:{total:{inputTokens:-1}}});
   const delta=JSON.stringify({method:'item/agentMessage/delta',params:{...params,delta:'🙂hello'}})+'\n';
   const bytes=Buffer.from(delta); const i=bytes.indexOf(Buffer.from('🙂'))+1;
   process.stdout.write(bytes.subarray(0,i));
@@ -179,6 +183,11 @@ for (const mode of [
       mode === "success" ? "turn.completed" : "turn.failed",
     );
     if (mode === "success") {
+      const context = events.filter(event => event.event_type === "context.updated").at(-1)!.data;
+      assert.equal(context.used_tokens, 50);
+      assert.equal(context.capacity_tokens, 200000);
+      assert.equal(context.measurement_scope, "last_request");
+      assert.equal(events.find(event => event.event_type === "usage.updated")?.data.total_tokens, 1000);
       assert.equal(
         events.find((e) => e.event_type === "content.delta")?.data.delta,
         "🙂hello",
@@ -251,6 +260,23 @@ const success = {
   terminal_reason: "completed",
   stop_reason: "end_turn",
 };
+it("Claude root context uses latest request counters and excludes subagent and accumulated billing", async () => {
+  const assistant = (tokens: number, parent: string | null = null) => ({type: "assistant", parent_tool_use_id: parent,
+    message: {content: [], usage: {input_tokens: tokens, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30}}});
+  const adapter = new ClaudeHarnessAdapter({queryFactory: fakeQuery([assistant(400), assistant(100), assistant(9000, "agent-tool"),
+    {...success, modelUsage: {model: {inputTokens: 500, outputTokens: 100, cacheReadInputTokens: 200, cacheCreationInputTokens: 300}}}])});
+  const events: HarnessAdapterEvent[] = [];
+  events.push(...await adapter.sendTurn(turn(start("claude", tmpdir()), provider("claude"), event => events.push(event))));
+  const context = events.filter(event => event.event_type === "context.updated").at(-1)!.data;
+  assert.equal(context.used_tokens, 160);
+  assert.equal(context.capacity_tokens, undefined);
+  assert.equal(context.status, "measured");
+  assert.equal(events.at(-1)?.event_type, "turn.completed");
+  const output = events.at(-1)!.data.final_output as {context: unknown; usage: {total_tokens: number}};
+  assert.deepEqual(output.context, context);
+  assert.equal(output.usage.total_tokens, 1100);
+  verifyTranscript(events);
+});
 for (const [kind, initialization] of Object.entries({workspace: {cwd: process.cwd()}, mode: {permissionMode: "default"},
   mcp: {mcp_servers: [{name: "unselected", status: "connected"}]}, plugins: {plugins: [{name: "unselected", path: "/plugin"}]}})) {
   it(`Claude rejects ${kind} initialization mismatch before publishing a retained binding`, async () => {
@@ -298,7 +324,8 @@ for (const [label, result] of Object.entries({
         turn(payload, provider("claude"), (event) => events.push(event)),
       )),
     );
-    assert.equal(events[0]?.event_type, "content.delta");
+    assert.equal(events.find(event => event.event_type === "content.delta")?.data.delta, "partial");
+    assert.equal(events[0]?.event_type, "context.updated");
     assert.equal(
       events.at(-1)?.event_type,
       label === "success" ? "turn.completed" : "turn.failed",

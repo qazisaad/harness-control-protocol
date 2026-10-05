@@ -26,6 +26,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
         instruction_roles: [...this.instructionRoles],
         session_events: true,
         native_work: true,
+        context_usage: true,
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
         manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
         approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
@@ -71,7 +72,11 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     turns.push({id: input.payload.turn_id, status: "completed", items: [{id: input.payload.turn_id, type: "text", text}]});
     const full = text.repeat(30_000);
     const reference = input.publishContent!(full);
-    return [{event_type: "turn.completed", turn_id: input.payload.turn_id, data: {final_output: {final_text: text, content_ref: reference}}}];
+    const context = {status: "measured" as const, source: "example.native.context", observed_at: new Date().toISOString(),
+      selection: input.payload.model_selection ?? input.startPayload.model_selection, measurement_scope: "last_request" as const,
+      used_tokens: 160, capacity_tokens: 1000};
+    input.emitEvent?.({event_type: "context.updated", turn_id: input.payload.turn_id, data: context});
+    return [{event_type: "turn.completed", turn_id: input.payload.turn_id, data: {final_output: {final_text: text, content_ref: reference, context}}}];
   }
   async conversationOperation(input: HarnessAdapterConversationInput): Promise<HcpConversationResultPayload> {
     const {request, commandId, conversation} = input;

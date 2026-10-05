@@ -30,7 +30,8 @@ for (const kind of ["approval", "file-read", "other", "question", "steer"] as co
         mcp_servers: Object.keys(options!.mcpServers ?? {}).map(name => ({name, status: "connected"})), plugins: [],
         apiKeySource: "none", claude_code_version: "fixture", tools: [], model: options!.model!, slash_commands: [], output_style: "default", skills: [],
         uuid: "00000000-0000-0000-0000-000000000000"} as SDKMessage;
-      if (text === "/compact" && compactProof) yield {type: "system", subtype: "compact_boundary", session_id: nativeId} as SDKMessage;
+      if (text === "/compact" && compactProof) yield {type: "system", subtype: "compact_boundary", session_id: nativeId,
+        compact_metadata: {trigger: "manual", pre_tokens: 400, post_tokens: 100}} as SDKMessage;
       let result = text;
       if (text === "first") {
         if (kind === "steer") {
@@ -92,6 +93,9 @@ for (const kind of ["approval", "file-read", "other", "question", "steer"] as co
     assert.deepEqual(optionsSeen[0]?.settings, {disableAllHooks: true});
     const compact = await runner.sendTurn({session_id: "second-session", turn_id: "compact", input: "", action: "compact"});
     assert.equal(compact.at(-1)?.event_type, "turn.completed");
+    const context = compact.filter(event => event.event_type === "context.updated").at(-1)?.data as {used_tokens?: number; measurement_scope?: string};
+    assert.equal(context.used_tokens, 100);
+    assert.equal(context.measurement_scope, "retained_conversation");
     assert.equal(optionsSeen[2]?.resume, optionsSeen[0]?.sessionId);
     assert.equal(turns[2], "/compact");
     compactProof = false;

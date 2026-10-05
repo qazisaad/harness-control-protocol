@@ -118,6 +118,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "files.persisted",
   "workspace.preflight.completed",
   "usage.updated",
+  "context.updated",
   "native.work.updated",
   "native.work.retired",
   "runtime.warning",
@@ -247,6 +248,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  context_usage?: boolean;
   native_work?: boolean;
   session_events?: boolean;
   instruction_roles?: Array<"system" | "developer">;
@@ -847,7 +849,10 @@ export type HarnessUsageSnapshot = {
   cost_usd?: number;
 };
 
+export type HarnessContextUsage = z.infer<typeof harnessContextUsageSchema>;
+
 export type HarnessTurnFinalOutput = {
+  context?: HarnessContextUsage;
   content_ref?: HarnessContentReference;
   final_text?: string;
   structured_output?: unknown;
@@ -1091,6 +1096,7 @@ export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
       native_work: z.boolean().optional(),
+      context_usage: z.boolean().optional(),
       session_events: z.boolean().optional(),
       instruction_roles: z.array(z.enum(["system", "developer"])).optional(),
       configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
@@ -2213,6 +2219,17 @@ function requireLocalActionOutputLimit(
   }
 }
 
+const harnessContextUsageBaseSchema = z.object({
+  source: z.string().min(1).max(128), observed_at: z.string().datetime({offset: true}), selection: harnessModelSelectionSchema,
+  measurement_scope: z.enum(["last_request", "retained_conversation"]),
+});
+export const harnessContextUsageSchema = z.discriminatedUnion("status", [
+  harnessContextUsageBaseSchema.extend({status: z.enum(["measured", "estimated"]),
+    used_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    capacity_tokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()}).strict(),
+  harnessContextUsageBaseSchema.extend({status: z.literal("unavailable"), reason: z.string().min(1).max(512).optional()}).strict(),
+]);
+
 export const harnessUsageSnapshotSchema = z
   .object({
     scope: z.enum(["turn", "conversation"]).optional(),
@@ -2230,6 +2247,7 @@ export const harnessUsageSnapshotSchema = z
 
 export const harnessTurnFinalOutputSchema = z
   .object({
+    context: harnessContextUsageSchema.optional(),
     final_text: z.string().optional(),
     content_ref: harnessContentReferenceSchema.optional(),
     structured_output: z.unknown().optional(),
@@ -2655,6 +2673,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType === "usage.updated") {
     return harnessUsageSnapshotSchema;
   }
+  if (eventType === "context.updated") return harnessContextUsageSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
   if (eventType === "config.warning" || eventType === "deprecation.notice") {

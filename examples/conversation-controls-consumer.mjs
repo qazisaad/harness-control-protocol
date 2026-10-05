@@ -56,6 +56,10 @@ try {
   adapter.emitObservation("session", "between-turns");
   await until(() => events.some(event => event.event_type === "extension.example.observation" && event.data.fields.phase === "between-turns"));
   assert.equal(events.filter(event => event.turn_id === "turn" && event.event_type === "turn.completed").length, 1);
+  const context = events.find(event => event.turn_id === "turn" && event.event_type === "context.updated").data;
+  assert.equal(context.used_tokens, 160);
+  assert.deepEqual(context.selection, start.model_selection);
+  assert.deepEqual(events.find(event => event.turn_id === "turn" && event.event_type === "turn.completed").data.final_output.context, context);
   adapter.emitWork("session", "turn", "running");
   await until(() => events.some(event => event.event_type === "native.work.updated"));
   const children = await peer.readNativeWork("session");

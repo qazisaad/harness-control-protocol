@@ -14,6 +14,7 @@ import {realpath} from "node:fs/promises";
 import { NativeInteractions } from "../../native-interactions.js";
 import { ClaudeInput } from "./claude-input.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
+import {measuredContext, unavailableContext} from "./native-context.js";
 
 const resultSchema = z.object({
   type: z.literal("result"),
@@ -57,6 +58,8 @@ export function createClaudeTurn(
     let initialized = false;
     const selection =
       input.payload.model_selection ?? input.startPayload.model_selection;
+    let context = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "new_native_request");
+    emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
     const effort = selectedEffort(selection, "claude") as Options["effort"];
     const mcpServers: NonNullable<Options["mcpServers"]> = {};
     for (const attachment of adapterMcpServers(
@@ -160,7 +163,13 @@ export function createClaudeTurn(
           input.registerActiveTurnControls?.({async steer(text) {signal.throwIfAborted(); channel.offer(userMessage(text));}});
           if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true}});
         }
-        if (message.type === "system" && message.subtype === "compact_boundary") compacted = true;
+        if (message.type === "system" && message.subtype === "compact_boundary") {
+          compacted = true;
+          const tokens = message.compact_metadata.post_tokens;
+          context = tokens !== undefined ? measuredContext(selection, "claude.sdk.compact_boundary.post_tokens", tokens, undefined, "retained_conversation")
+            : unavailableContext(selection, "native_compaction_has_no_measurement");
+          emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
+        }
         if (
           message.type === "stream_event" &&
           message.event.type === "content_block_delta"
@@ -180,6 +189,15 @@ export function createClaudeTurn(
             });
           }
         } else if (message.type === "assistant") {
+          // Nested agents have their own context; do not project them onto the root conversation.
+          if (!message.parent_tool_use_id) {
+            const counters = z.object({input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
+              cache_read_input_tokens: z.number().int().nonnegative().nullish(), cache_creation_input_tokens: z.number().int().nonnegative().nullish()}).safeParse(message.message.usage);
+            context = counters.success ? measuredContext(selection, "claude.sdk.assistant.usage", counters.data.input_tokens + counters.data.output_tokens
+              + (counters.data.cache_read_input_tokens ?? 0) + (counters.data.cache_creation_input_tokens ?? 0))
+              : unavailableContext(selection, "native_request_has_no_measurement");
+            emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
+          }
           for (const block of message.message.content) {
             if (block.type === "tool_use")
               emit({
@@ -265,6 +283,7 @@ export function createClaudeTurn(
       }
       return {
         ...retainedFinalText(result.result, input.publishContent),
+        context,
         usage: {
           scope: "turn", status: result.modelUsage ? "complete" : "partial", source: "claude.sdk.result.modelUsage",
           ...(result.modelUsage
