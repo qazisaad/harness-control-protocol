@@ -27,6 +27,7 @@ export const harnessNativeWorkOperationSchema = z.discriminatedUnion("action", [
 ]);
 export const harnessNativeWorkResultSchema = z.discriminatedUnion("action", [
   z.object({action: z.literal("read"), owner_status: z.enum(["active", "unavailable"]), observation_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    closure_unconfirmed: z.literal(true).optional(),
     total_count: z.number().int().nonnegative().max(128), next_cursor: z.string().min(1).max(1024).optional(), items: z.array(z.object({
     work: harnessNativeWorkRecordSchema, owner_status: z.enum(["active", "unavailable"])}).strict()).max(32)}).strict(),
   z.object({action: z.literal("cancel"), work_id: z.string().min(1).max(512), accepted: z.literal(true), already_terminal: z.literal(true).optional()}).strict(),

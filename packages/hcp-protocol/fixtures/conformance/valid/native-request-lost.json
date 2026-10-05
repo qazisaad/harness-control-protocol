@@ -1,0 +1,21 @@
+{
+  "id": "fixture-native-request-lost",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-10-05T00:00:00Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 5,
+    "created_at": "2026-10-05T00:00:00Z",
+    "event_type": "native.request.lost",
+    "data": {
+      "request_id": "native-request",
+      "turn_id": "turn-1",
+      "reason": "owner_closed",
+      "session_id": "session-1",
+      "lost_at": "2026-10-05T00:00:00.000Z",
+      "request_kind": "input"
+    },
+    "turn_id": "turn-1"
+  }
+}

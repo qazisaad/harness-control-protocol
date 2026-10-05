@@ -1,0 +1,16 @@
+{
+  "id": "fixture-native-owner-loss",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-10-05T00:00:00Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 5,
+    "created_at": "2026-10-05T00:00:00Z",
+    "event_type": "native.work.owner_lost",
+    "data": {
+      "reason": "transport_lost",
+      "closure_unconfirmed": false
+    }
+  }
+}

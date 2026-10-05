@@ -15,6 +15,10 @@ export function nativeExecutionCapabilities(
   driver: "codex" | "claude",
 ): HarnessExecutionCapabilities {
   return {
+    ...(driver === "claude" ? {execution_profiles: [
+      {id: "isolated" as const, runtime_lifetime: "turn" as const, native_work: false, session_events: false},
+      {id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true},
+    ]} : {}),
     instruction_roles: driver === "codex" ? ["system", "developer"] : ["system"],
     configuration_inheritance: driver === "codex" ? {mcp_servers: false, plugins: false} :
       {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false},

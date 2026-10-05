@@ -43,6 +43,7 @@ try {
   await runner.connect(); await until(() => ready);
   const start = {session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example.controls",
     model_selection: {model: "fixture"}, approval_policy: "full_access", sandbox_mode: "read_only", continue_session: false,
+    execution_profile: "interactive",
     continuation_group_key: "conversation", mcp_servers: [],
     instructions: {system: "Application instructions"},
     configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}};
@@ -56,6 +57,22 @@ try {
   adapter.emitObservation("session", "between-turns");
   await until(() => events.some(event => event.event_type === "extension.example.observation" && event.data.fields.phase === "between-turns"));
   assert.equal(events.filter(event => event.turn_id === "turn" && event.event_type === "turn.completed").length, 1);
+  const lateRequest = adapter.requestLateInput("session", "turn");
+  await until(() => events.some(event => event.event_type === "user_input.requested" && event.data.request_id === lateRequest));
+  await assert.rejects(peer.respondToInput({session_id: "session", turn_id: "wrong-turn", request_id: lateRequest, actor_id: "app-user", value: {answer: "continue"}}));
+  assert.equal(adapter.inputsReceived, 0);
+  await peer.respondToInput({session_id: "session", turn_id: "turn", request_id: lateRequest, actor_id: "app-user", value: {answer: "continue"}});
+  await until(() => events.some(event => event.event_type === "user_input.resolved" && event.data.request_id === lateRequest));
+  assert.equal(adapter.inputsReceived, 1);
+  const sessionRequest = adapter.requestLateInput("session");
+  await until(() => events.some(event => event.event_type === "user_input.requested" && event.data.request_id === sessionRequest));
+  const observedSessionInput = events.find(event => event.data.request_id === sessionRequest);
+  assert.equal(observedSessionInput.turn_id, undefined);
+  assert.equal(observedSessionInput.data.request_scope, "session");
+  await assert.rejects(peer.respondToInput({session_id: "session", turn_id: "turn", request_id: sessionRequest, actor_id: "app-user", value: {answer: "continue"}}));
+  await peer.respondToInput({session_id: "session", request_scope: "session", request_id: sessionRequest, actor_id: "app-user", value: {answer: "continue"}});
+  await until(() => events.some(event => event.event_type === "user_input.resolved" && event.data.request_id === sessionRequest));
+  assert.equal(adapter.inputsReceived, 2);
   const context = events.find(event => event.turn_id === "turn" && event.event_type === "context.updated").data;
   assert.equal(context.used_tokens, 160);
   assert.deepEqual(context.selection, start.model_selection);
@@ -97,12 +114,15 @@ try {
   await peer.sendTurn({session_id: "child", turn_id: "child-turn", input: "followup"});
   await until(() => events.some(event => event.turn_id === "child-turn" && event.event_type === "turn.completed"));
   adapter.emitWork("child", "child-turn", "running");
+  const lostSessionInput = adapter.requestLateInput("child");
   adapter.loseWorkOwner("child");
   await until(() => events.some(event => event.session_id === "child" && event.event_type === "native.work.owner_lost"));
   const lostOwner = (await peer.readNativeWork("child")).payload.work;
   assert.equal(lostOwner.owner_status, "unavailable");
   assert.equal(lostOwner.items[0].owner_status, "unavailable");
   assert.equal(lostOwner.items[0].work.status, "running");
+  await assert.rejects(peer.respondToInput({session_id: "child", request_scope: "session", request_id: lostSessionInput, actor_id: "app-user", value: {answer: "continue"}}), /No live native session input owner/);
+  assert.equal(adapter.inputsReceived, 2);
   await assert.rejects(peer.cancelNativeWork("child", lostOwner.items[0].work.work_id, lostOwner.items[0].work.revision), /no live native cancellation owner/);
   assert.equal(adapter.nativeCancellations, 1);
   adapter.emitWork("child", "child-turn", "cancelled");

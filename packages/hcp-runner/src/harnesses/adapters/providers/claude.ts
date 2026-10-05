@@ -35,6 +35,7 @@ import {
 } from "./native-turn.js";
 import { createClaudeTurn, type ClaudeQueryFactory } from "./claude-runtime.js";
 import {claudeConversation, type ClaudeSessionHelper} from "./claude-conversation.js";
+import {PersistentClaudeSession} from "./claude-session.js";
 export type ClaudeHarnessAdapterOptions = {
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
@@ -44,6 +45,11 @@ export type ClaudeHarnessAdapterOptions = {
   sessionHelper?: ClaudeSessionHelper;
 };
 export class ClaudeHarnessAdapter implements HarnessAdapter {
+  readonly executionProfiles = nativeExecutionCapabilities("claude").execution_profiles!;
+  readonly sessionEvents = true;
+  readonly nativeWork = true;
+  readonly #persistent = new Map<string, PersistentClaudeSession>();
+  readonly #queryFactory: ClaudeQueryFactory | undefined;
   readonly portableHistory = true;
   readonly instructionRoles = ["system"] as const;
   readonly configurationInheritance = nativeExecutionCapabilities("claude").configuration_inheritance!;
@@ -56,6 +62,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly #turns: NativeTurns;
   readonly #execute: ReturnType<typeof createClaudeTurn>;
   constructor(options: ClaudeHarnessAdapterOptions = {}) {
+    this.#queryFactory = options.queryFactory;
     this.#sessionHelper = options.sessionHelper;
     this.#processSpawner = options.processSpawner ?? spawnProviderCliProcess;
     this.#probeTimeoutMs = options.probeTimeoutMs ?? 5_000;
@@ -216,6 +223,12 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       throw new HarnessAdapterError("native_continuation_binding", "Claude resume requires the runner-authorized retained binding.");
     for (const attachment of adapterMcpServers(input.mcpServers, input.payload))
       assertCliMcpAttachmentProxied(attachment, "Claude", "claude");
+    if (input.payload.execution_profile === "interactive") {
+      if (this.#persistent.has(input.payload.session_id)) throw new HarnessAdapterError("session_exists", "The interactive Claude session already has a native owner.");
+      const runtime = new PersistentClaudeSession(input, this.#queryFactory);
+      this.#persistent.set(input.payload.session_id, runtime);
+      return {adapter_session_id: input.payload.session_id, native_thread_id: runtime.nativeId};
+    }
     return { adapter_session_id: input.payload.session_id };
   }
   async sendTurn(
@@ -226,6 +239,11 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
         payload: request.startPayload,
         provider: request.provider,
       });
+      if (request.startPayload.execution_profile === "interactive") {
+        const runtime = this.#persistent.get(request.payload.session_id);
+        if (!runtime) throw new HarnessAdapterError("native_owner_unavailable", "The interactive Claude session has no live owner.");
+        return runtime.run(request, signal, emit);
+      }
       return this.#execute(request, signal, emit);
     });
   }
@@ -237,7 +255,15 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   async stopSession(
     input: HarnessAdapterStopInput,
   ): Promise<HarnessAdapterEvent[]> {
-    return this.#turns.stop(input.sessionId);
+    const events = await this.#turns.stop(input.sessionId);
+    const runtime = this.#persistent.get(input.sessionId);
+    if (runtime) {await runtime.stop(); this.#persistent.delete(input.sessionId);}
+    return events;
+  }
+  async cancelNativeWork(input: Parameters<NonNullable<HarnessAdapter["cancelNativeWork"]>>[0]): Promise<void> {
+    const runtime = this.#persistent.get(input.sessionId);
+    if (!runtime || input.startPayload.execution_profile !== "interactive") throw new HarnessAdapterError("native_work_unsupported", "Native task control requires the interactive Claude profile.");
+    await runtime.cancel(input.work.work_id, input.signal);
   }
   #runProcess(
     executable: string,

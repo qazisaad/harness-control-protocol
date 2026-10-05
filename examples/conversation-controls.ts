@@ -12,6 +12,9 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly portableHistory = true;
   readonly sessionEvents = true;
   readonly nativeWork = true;
+  readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true}];
+  readonly requests = new Map<string, {id: string; turnId?: string}>();
+  inputsReceived = 0;
   nativeCancellations = 0;
   readonly observations = new Map<string, NonNullable<HarnessAdapterStartInput["emitSessionEvent"]>>();
   readonly instructionRoles = ["system"] as const;
@@ -26,6 +29,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       execution_capabilities: {streaming: true, multi_turn: true, session_continuation: true, native_history: true,
         instruction_roles: [...this.instructionRoles],
         session_events: true,
+        execution_profiles: this.executionProfiles,
         native_work: true,
         context_usage: true,
         portable_history: true,
@@ -40,6 +44,20 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   async startSession(input: HarnessAdapterStartInput) {
     this.instructionsSeen = input.payload.instructions;
     this.observations.set(input.payload.session_id, input.emitSessionEvent!);
+    input.registerSessionInteractions!({
+      owns: id => this.requests.get(input.payload.session_id)?.id === id,
+      respondApproval: () => {throw new HarnessAdapterError("unexpected_approval", "Fixture expects input.");},
+      respondInput: response => {
+        const request = this.requests.get(input.payload.session_id);
+        if (!request || response.request_id !== request.id || response.turn_id !== request.turnId || response.session_id !== input.payload.session_id
+            || (response.request_scope ?? "turn") !== (request.turnId ? "turn" : "session"))
+          throw new HarnessAdapterError("input_binding", "Wrong native input owner.");
+        if (JSON.stringify(response.value) !== JSON.stringify({answer: "continue"})) throw new HarnessAdapterError("input_shape", "Expected fixture answer.");
+        input.emitSessionEvent!({event_type: "user_input.resolved", ...(request.turnId ? {turn_id: request.turnId} : {}), data: {
+          request_id: request.id, session_id: response.session_id, ...(request.turnId ? {turn_id: request.turnId} : {request_scope: "session"}), actor_id: response.actor_id, cancelled: false, resolved_at: new Date().toISOString()}});
+        this.inputsReceived++; this.requests.delete(input.payload.session_id);
+      },
+    });
     this.emitObservation(input.payload.session_id, "startup");
     const nativeId = input.nativeConversation?.native_thread_id ?? randomUUID();
     if (!input.nativeConversation) this.histories.set(nativeId, []);
@@ -48,6 +66,14 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   }
   emitObservation(sessionId: string, phase: string) {
     this.observations.get(sessionId)!({event_type: "extension.example.observation", data: {summary: "Native observation", fields: {phase}}});
+  }
+  requestLateInput(sessionId: string, turnId?: string) {
+    const id = randomUUID(); this.requests.set(sessionId, {id, ...(turnId ? {turnId} : {})});
+    this.observations.get(sessionId)!({event_type: "user_input.requested", ...(turnId ? {turn_id: turnId} : {}), data: {
+      request_id: id, session_id: sessionId, ...(turnId ? {turn_id: turnId} : {request_scope: "session"}), prompt: "Continue background work?", input_kind: "form", required: true,
+      form_schema: {type: "object", properties: {answer: {type: "string"}}, required: ["answer"], additionalProperties: false},
+      expires_at: new Date(Date.now() + 60_000).toISOString(), redaction: "none"}});
+    return id;
   }
   emitWork(sessionId: string, originTurnId: string, status: "running" | "cancelled") {
     this.observations.get(sessionId)!({event_type: "native.work.updated", data: {work: {

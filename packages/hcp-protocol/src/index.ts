@@ -123,6 +123,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "native.work.updated",
   "native.work.retired",
   "native.work.owner_lost",
+  "native.request.lost",
   "runtime.warning",
   "runtime.error",
 ] as const;
@@ -250,6 +251,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  execution_profiles?: HarnessExecutionProfileCapabilities[];
   portable_history?: boolean;
   context_usage?: boolean;
   native_work?: boolean;
@@ -272,6 +274,10 @@ export type HarnessExecutionCapabilities = {
 };
 
 /** Describes which native configuration sources this execution path permits; omitted fields are unknown. */
+export const harnessExecutionProfileCapabilitiesSchema = z.object({id: z.enum(["isolated", "interactive"]),
+  runtime_lifetime: z.enum(["turn", "session"]), native_work: z.boolean(), session_events: z.boolean()}).strict();
+export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;
+
 export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.boolean().optional(), project_settings: z.boolean().optional(),
   hooks: z.boolean().optional(), mcp_servers: z.boolean().optional(), plugins: z.boolean().optional()}).strict();
 export type HarnessConfigurationInheritance = z.infer<typeof harnessConfigurationInheritanceSchema>;
@@ -439,6 +445,7 @@ export type RunnerStdioMcpProfileAttachment = {
 export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
+  execution_profile?: "isolated" | "interactive";
   instructions?: HarnessInstructions;
   configuration_inheritance?: HarnessConfigurationInheritance;
   session_id: string;
@@ -494,11 +501,10 @@ export type HcpApprovalResponsePayload = {
 export type HcpInputResponsePayload = {
   request_id: string;
   session_id: string;
-  turn_id: string;
   actor_id: string;
   value?: unknown;
   cancelled?: boolean;
-};
+} & ({request_scope?: "turn"; turn_id: string} | {request_scope: "session"; turn_id?: never});
 
 export type ToolServersDetachPayload = {
   session_id: string;
@@ -1098,6 +1104,7 @@ export const harnessModelSchema = z
 export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
+      execution_profiles: z.array(harnessExecutionProfileCapabilitiesSchema).min(1).max(2).refine(profiles => new Set(profiles.map(profile => profile.id)).size === profiles.length, "Execution profiles must have unique identities.").optional(),
       native_work: z.boolean().optional(),
       context_usage: z.boolean().optional(),
       portable_history: z.boolean().optional(),
@@ -1368,6 +1375,7 @@ const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(im
 export const hcpSessionStartPayloadSchema = z
   .object({
     instructions: harnessInstructionsSchema.optional(),
+    execution_profile: z.enum(["isolated", "interactive"]).optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     session_id: nonEmptyStringSchema,
     workspace_id: nonEmptyStringSchema,
@@ -1439,16 +1447,19 @@ export const hcpApprovalResponsePayloadSchema = z
   })
   .strict();
 
-export const hcpInputResponsePayloadSchema = z
+const inputResponseFieldsSchema = z
   .object({
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
-    turn_id: nonEmptyStringSchema,
     actor_id: nonEmptyStringSchema,
     value: z.unknown().optional(),
     cancelled: z.boolean().optional(),
   })
   .strict();
+export const hcpInputResponsePayloadSchema = z.union([
+  inputResponseFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional()}),
+  inputResponseFieldsSchema.extend({request_scope: z.literal("session")}),
+]);
 
 export const toolServersDetachPayloadSchema = z
   .object({
@@ -2307,7 +2318,9 @@ export const hcpRawDiagnosticPayloadSchema = z
 
 const sessionEventDataSchema = z
   .object({
+    mode: z.enum(["execute", "plan"]).optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
+    execution_profile: z.enum(["isolated", "interactive"]).optional(),
     provider_instance_id: nonEmptyStringSchema.optional(),
     driver_kind: nonEmptyStringSchema.optional(),
     workspace_id: nonEmptyStringSchema.optional(),
@@ -2479,11 +2492,10 @@ const approvalResolvedEventDataSchema = z
   })
   .strict();
 
-const inputRequestedEventDataSchema = z
+const inputRequestedFieldsSchema = z
   .object({
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
-    turn_id: nonEmptyStringSchema,
     prompt: z.string(),
     input_kind: z.enum(["text", "choice", "multi_choice", "form"]),
     form_schema: z.record(z.string(), z.json()).optional(),
@@ -2503,18 +2515,25 @@ const inputRequestedEventDataSchema = z
     redaction: z.enum(["none", "secret"]),
   })
   .strict();
+const inputRequestedEventDataSchema = z.union([
+  inputRequestedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional()}),
+  inputRequestedFieldsSchema.extend({request_scope: z.literal("session")}),
+]);
 
-const inputResolvedEventDataSchema = z
+const inputResolvedFieldsSchema = z
   .object({
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
-    turn_id: nonEmptyStringSchema,
     actor_id: nonEmptyStringSchema.optional(),
     cancelled: z.boolean().optional(),
     value: z.unknown().optional(),
     resolved_at: timestampSchema.optional(),
   })
   .strict();
+const inputResolvedEventDataSchema = z.union([
+  inputResolvedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional()}),
+  inputResolvedFieldsSchema.extend({request_scope: z.literal("session")}),
+]);
 
 const requestEventDataSchema = z
   .object({
@@ -2680,7 +2699,15 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType === "context.updated") return harnessContextUsageSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
-  if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"])}).strict();
+  if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"]), closure_unconfirmed: z.literal(true).optional()}).strict();
+  if (eventType === "native.request.lost") {
+    const fields = z.object({request_id: nonEmptyStringSchema, session_id: nonEmptyStringSchema,
+      reason: z.enum(["interrupted", "expired", "owner_closed"]), lost_at: timestampSchema}).strict();
+    return z.union([
+      fields.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), request_kind: z.enum(["approval", "input"])}),
+      fields.extend({request_scope: z.literal("session"), request_kind: z.literal("input")}),
+    ]);
+  }
   if (eventType === "config.warning" || eventType === "deprecation.notice") {
     return runtimeDiagnosticEventDataSchema;
   }
@@ -2762,6 +2789,9 @@ export const hcpHarnessEventPayloadSchema = z
         });
       }
     }
+    if (dataResult.success && ["input.requested", "input.resolved", "user_input.requested", "user_input.resolved", "native.request.lost"].includes(eventType)
+        && (dataResult.data as {request_scope?: string}).request_scope === "session" && payload.turn_id !== undefined)
+      context.addIssue({code: "custom", path: ["turn_id"], message: "Session-owned native input cannot claim an originating turn."});
     if (eventType.startsWith("local_capability.action.") && payload.turn_id === undefined) {
       context.addIssue({
         code: "custom",

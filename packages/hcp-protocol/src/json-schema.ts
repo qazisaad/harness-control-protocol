@@ -129,6 +129,9 @@ function createHarnessEventMessageSchemas(baseMessageSchema: JsonSchema): JsonSc
       dataSchema,
       eventType.startsWith("local_capability.action."),
     );
+    if (["input.requested", "input.resolved", "user_input.requested", "user_input.resolved", "native.request.lost"].includes(eventType))
+      payloadSchema.allOf = [{if: {properties: {data: {properties: {request_scope: {const: "session"}}, required: ["request_scope"]}}, required: ["data"]},
+        then: {not: {required: ["turn_id"]}}}];
     return createHarnessEventMessageSchema(baseMessageSchema, payloadSchema);
   });
 

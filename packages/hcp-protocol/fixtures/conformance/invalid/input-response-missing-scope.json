@@ -1,0 +1,14 @@
+{
+  "id": "fixture-session-input-response",
+  "sent_at": "2026-10-05T00:00:00.000Z",
+  "payload": {
+    "value": {
+      "name": "example"
+    },
+    "actor_id": "app-user",
+    "request_id": "native-request",
+    "session_id": "session-1"
+  },
+  "version": "hcp.v0",
+  "type": "harness.input.respond"
+}

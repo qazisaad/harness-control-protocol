@@ -55,6 +55,8 @@ export type HarnessAdapterMcpServer = {
 };
 
 export type HarnessAdapterStartInput = {
+  /** A persistent owner may retain interactions beyond root completion; clearing it fences all such replies. */
+  registerSessionInteractions?: (owner: HarnessNativeInteractions | undefined) => void;
   /** Session-owned observations may continue between turns. Native-work adapters report owner death with native.work.owner_lost; it permanently fences this owner's controls. */
   emitSessionEvent?: (event: HarnessAdapterEvent) => void;
   publishContent?: (value: unknown) => HarnessContentReference;
@@ -122,6 +124,7 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  readonly executionProfiles?: readonly import("@harness-control/protocol").HarnessExecutionProfileCapabilities[];
   readonly portableHistory?: true;
   readonly nativeWork?: true;
   cancelNativeWork?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;

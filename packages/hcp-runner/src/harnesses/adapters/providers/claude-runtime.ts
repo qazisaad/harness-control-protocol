@@ -12,11 +12,13 @@ import { NativeProcess } from "./native-process.js";
 import { randomUUID } from "node:crypto";
 import {realpath} from "node:fs/promises";
 import { NativeInteractions } from "../../native-interactions.js";
+import {claudePermissions} from "./claude-permissions.js";
+import {claudeElicitation} from "./claude-elicitation.js";
 import { ClaudeInput } from "./claude-input.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
 
-const resultSchema = z.object({
+export const claudeResultSchema = z.object({
   type: z.literal("result"),
   subtype: z.literal("success"),
   is_error: z.literal(false),
@@ -103,24 +105,8 @@ export function createClaudeTurn(
           mcpServers,
           permissionMode,
           allowDangerouslySkipPermissions: input.startPayload.approval_policy === "full_access",
-          canUseTool: async (tool, arguments_, options) => {
-            if (!initialized) throw new HarnessAdapterError("native_request_binding", "Claude requested a tool before confirming its conversation.");
-            const binding = {threadId: nativeId, turnId: input.payload.turn_id, itemId: options.toolUseID};
-            const requestSignal = AbortSignal.any([signal, options.signal]);
-            if (tool === "AskUserQuestion") {
-              const parsed = z.object({questions: z.array(z.object({question: z.string(), header: z.string(),
-                options: z.array(z.object({label: z.string(), description: z.string()})), multiSelect: z.boolean().optional()})).min(1).max(16)}).parse(arguments_);
-              const reply = z.object({answers: z.record(z.string(), z.object({answers: z.array(z.string())}))}).parse(await interactions.questions({...binding,
-                questions: parsed.questions.map((question, index) => ({...question, id: `question-${index}`, isOther: true}))}, requestSignal));
-              if (!Object.keys(reply.answers).length) return {behavior: "deny", message: "The user cancelled the native question.", interrupt: true};
-              return {behavior: "allow", updatedInput: {...arguments_, answers: Object.fromEntries(parsed.questions.map((question, index) =>
-                [question.question, reply.answers[`question-${index}`]?.answers.join(", ") ?? ""]))}};
-            }
-            const requestType = tool === "Bash" ? "command" : tool === "Read" ? "file_read" : ["Write", "Edit", "NotebookEdit"].includes(tool) ? "file_change" : "other";
-            const answer = await interactions.approval({...binding, tool, arguments: z.record(z.string(), z.json()).parse(arguments_), availableDecisions: ["accept", "decline", "cancel"]}, requestType, requestSignal);
-            return answer.decision === "accept" ? {behavior: "allow", updatedInput: arguments_}
-              : {behavior: "deny", message: "The user declined the native action.", interrupt: answer.decision === "cancel"};
-          },
+          canUseTool: claudePermissions(() => initialized ? {threadId: nativeId, turnId: input.payload.turn_id, interactions, signal} : undefined),
+          onElicitation: claudeElicitation(() => initialized ? {threadId: nativeId, turnId: input.payload.turn_id, interactions, signal, serverNames: Object.keys(mcpServers)} : undefined),
           disallowedTools: [
             ...(input.startPayload.approval_policy === "full_access" ? ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"] : []),
             "Agent",
@@ -139,7 +125,7 @@ export function createClaudeTurn(
           },
         },
       });
-      let result: z.infer<typeof resultSchema> | undefined;
+      let result: z.infer<typeof claudeResultSchema> | undefined;
       let compacted = false;
       let streamed = false;
       for await (const message of stream) {
@@ -230,7 +216,7 @@ export function createClaudeTurn(
           }
         } else if (message.type === "result") {
           if (!initialized) throw new HarnessAdapterError("native_continuation_binding", "Claude ended without confirming its native conversation identity.");
-          const parsed = resultSchema.safeParse(message);
+          const parsed = claudeResultSchema.safeParse(message);
           if (!parsed.success || result !== undefined)
             throw new HarnessAdapterError(
               "claude_result_error",

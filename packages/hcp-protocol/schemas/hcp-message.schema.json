@@ -368,6 +368,10 @@
                       "type": "string",
                       "pattern": "^[a-f0-9]{64}$"
                     },
+                    "closure_unconfirmed": {
+                      "type": "boolean",
+                      "const": true
+                    },
                     "total_count": {
                       "type": "integer",
                       "minimum": 0,
@@ -3481,6 +3485,43 @@
                   "execution_capabilities": {
                     "type": "object",
                     "properties": {
+                      "execution_profiles": {
+                        "minItems": 1,
+                        "maxItems": 2,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "enum": [
+                                "isolated",
+                                "interactive"
+                              ]
+                            },
+                            "runtime_lifetime": {
+                              "type": "string",
+                              "enum": [
+                                "turn",
+                                "session"
+                              ]
+                            },
+                            "native_work": {
+                              "type": "boolean"
+                            },
+                            "session_events": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "runtime_lifetime",
+                            "native_work",
+                            "session_events"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
                       "native_work": {
                         "type": "boolean"
                       },
@@ -4174,6 +4215,13 @@
                 }
               },
               "additionalProperties": false
+            },
+            "execution_profile": {
+              "type": "string",
+              "enum": [
+                "isolated",
+                "interactive"
+              ]
             },
             "configuration_inheritance": {
               "type": "object",
@@ -5451,36 +5499,76 @@
           "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         },
         "payload": {
-          "type": "object",
-          "properties": {
-            "request_id": {
-              "type": "string",
-              "minLength": 1
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "session_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "actor_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "value": {},
+                "cancelled": {
+                  "type": "boolean"
+                },
+                "turn_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "request_scope": {
+                  "type": "string",
+                  "const": "turn"
+                }
+              },
+              "required": [
+                "request_id",
+                "session_id",
+                "actor_id",
+                "turn_id"
+              ],
+              "additionalProperties": false
             },
-            "session_id": {
-              "type": "string",
-              "minLength": 1
-            },
-            "turn_id": {
-              "type": "string",
-              "minLength": 1
-            },
-            "actor_id": {
-              "type": "string",
-              "minLength": 1
-            },
-            "value": {},
-            "cancelled": {
-              "type": "boolean"
+            {
+              "type": "object",
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "session_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "actor_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "value": {},
+                "cancelled": {
+                  "type": "boolean"
+                },
+                "request_scope": {
+                  "type": "string",
+                  "const": "session"
+                }
+              },
+              "required": [
+                "request_id",
+                "session_id",
+                "actor_id",
+                "request_scope"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "request_id",
-            "session_id",
-            "turn_id",
-            "actor_id"
-          ],
-          "additionalProperties": false
+          ]
         },
         "metadata": {
           "type": "object",
@@ -10435,6 +10523,13 @@
             "data": {
               "type": "object",
               "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "execute",
+                    "plan"
+                  ]
+                },
                 "configuration_inheritance": {
                   "type": "object",
                   "properties": {
@@ -10455,6 +10550,13 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "execution_profile": {
+                  "type": "string",
+                  "enum": [
+                    "isolated",
+                    "interactive"
+                  ]
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -10654,6 +10756,13 @@
             "data": {
               "type": "object",
               "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "execute",
+                    "plan"
+                  ]
+                },
                 "configuration_inheritance": {
                   "type": "object",
                   "properties": {
@@ -10674,6 +10783,13 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "execution_profile": {
+                  "type": "string",
+                  "enum": [
+                    "isolated",
+                    "interactive"
+                  ]
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -10873,6 +10989,13 @@
             "data": {
               "type": "object",
               "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "execute",
+                    "plan"
+                  ]
+                },
                 "configuration_inheritance": {
                   "type": "object",
                   "properties": {
@@ -10893,6 +11016,13 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "execution_profile": {
+                  "type": "string",
+                  "enum": [
+                    "isolated",
+                    "interactive"
+                  ]
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -11092,6 +11222,13 @@
             "data": {
               "type": "object",
               "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "execute",
+                    "plan"
+                  ]
+                },
                 "configuration_inheritance": {
                   "type": "object",
                   "properties": {
@@ -11112,6 +11249,13 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "execution_profile": {
+                  "type": "string",
+                  "enum": [
+                    "isolated",
+                    "interactive"
+                  ]
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -19792,91 +19936,186 @@
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "data": {
-              "type": "object",
-              "properties": {
-                "request_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "session_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "turn_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "prompt": {
-                  "type": "string"
-                },
-                "input_kind": {
-                  "type": "string",
-                  "enum": [
-                    "text",
-                    "choice",
-                    "multi_choice",
-                    "form"
-                  ]
-                },
-                "form_schema": {
+              "anyOf": [
+                {
                   "type": "object",
-                  "propertyNames": {
-                    "type": "string"
-                  },
-                  "additionalProperties": {
-                    "$ref": "#/$defs/__schema0"
-                  }
-                },
-                "choices": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "label": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "description": {
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "input_kind": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "choice",
+                        "multi_choice",
+                        "form"
+                      ]
+                    },
+                    "form_schema": {
+                      "type": "object",
+                      "propertyNames": {
                         "type": "string"
+                      },
+                      "additionalProperties": {
+                        "$ref": "#/$defs/__schema0"
                       }
                     },
-                    "required": [
-                      "id",
-                      "label"
-                    ],
-                    "additionalProperties": false
-                  }
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "redaction": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "secret"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "turn"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "prompt",
+                    "input_kind",
+                    "required",
+                    "redaction",
+                    "turn_id"
+                  ],
+                  "additionalProperties": false
                 },
-                "required": {
-                  "type": "boolean"
-                },
-                "expires_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-                },
-                "redaction": {
-                  "type": "string",
-                  "enum": [
-                    "none",
-                    "secret"
-                  ]
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "input_kind": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "choice",
+                        "multi_choice",
+                        "form"
+                      ]
+                    },
+                    "form_schema": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "$ref": "#/$defs/__schema0"
+                      }
+                    },
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "redaction": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "secret"
+                      ]
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "session"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "prompt",
+                    "input_kind",
+                    "required",
+                    "redaction",
+                    "request_scope"
+                  ],
+                  "additionalProperties": false
                 }
-              },
-              "required": [
-                "request_id",
-                "session_id",
-                "turn_id",
-                "prompt",
-                "input_kind",
-                "required",
-                "redaction"
               ],
-              "additionalProperties": false,
               "$defs": {
                 "__schema0": {
                   "anyOf": [
@@ -19941,7 +20180,35 @@
             "created_at",
             "data"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "request_scope": {
+                        "const": "session"
+                      }
+                    },
+                    "required": [
+                      "request_scope"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "turn_id"
+                  ]
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -20006,40 +20273,84 @@
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "data": {
-              "type": "object",
-              "properties": {
-                "request_id": {
-                  "type": "string",
-                  "minLength": 1
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "actor_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cancelled": {
+                      "type": "boolean"
+                    },
+                    "value": {},
+                    "resolved_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "turn"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "turn_id"
+                  ],
+                  "additionalProperties": false
                 },
-                "session_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "turn_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "actor_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "cancelled": {
-                  "type": "boolean"
-                },
-                "value": {},
-                "resolved_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "actor_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cancelled": {
+                      "type": "boolean"
+                    },
+                    "value": {},
+                    "resolved_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "session"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "request_scope"
+                  ],
+                  "additionalProperties": false
                 }
-              },
-              "required": [
-                "request_id",
-                "session_id",
-                "turn_id"
               ],
-              "additionalProperties": false,
               "$id": "https://schemas.harness-control.local/hcp.v0/events/input.resolved.schema.json"
             },
             "raw": {
@@ -20071,7 +20382,35 @@
             "created_at",
             "data"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "request_scope": {
+                        "const": "session"
+                      }
+                    },
+                    "required": [
+                      "request_scope"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "turn_id"
+                  ]
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -20392,91 +20731,186 @@
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "data": {
-              "type": "object",
-              "properties": {
-                "request_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "session_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "turn_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "prompt": {
-                  "type": "string"
-                },
-                "input_kind": {
-                  "type": "string",
-                  "enum": [
-                    "text",
-                    "choice",
-                    "multi_choice",
-                    "form"
-                  ]
-                },
-                "form_schema": {
+              "anyOf": [
+                {
                   "type": "object",
-                  "propertyNames": {
-                    "type": "string"
-                  },
-                  "additionalProperties": {
-                    "$ref": "#/$defs/__schema0"
-                  }
-                },
-                "choices": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "label": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "description": {
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "input_kind": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "choice",
+                        "multi_choice",
+                        "form"
+                      ]
+                    },
+                    "form_schema": {
+                      "type": "object",
+                      "propertyNames": {
                         "type": "string"
+                      },
+                      "additionalProperties": {
+                        "$ref": "#/$defs/__schema0"
                       }
                     },
-                    "required": [
-                      "id",
-                      "label"
-                    ],
-                    "additionalProperties": false
-                  }
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "redaction": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "secret"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "turn"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "prompt",
+                    "input_kind",
+                    "required",
+                    "redaction",
+                    "turn_id"
+                  ],
+                  "additionalProperties": false
                 },
-                "required": {
-                  "type": "boolean"
-                },
-                "expires_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-                },
-                "redaction": {
-                  "type": "string",
-                  "enum": [
-                    "none",
-                    "secret"
-                  ]
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "input_kind": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "choice",
+                        "multi_choice",
+                        "form"
+                      ]
+                    },
+                    "form_schema": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "$ref": "#/$defs/__schema0"
+                      }
+                    },
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "redaction": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "secret"
+                      ]
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "session"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "prompt",
+                    "input_kind",
+                    "required",
+                    "redaction",
+                    "request_scope"
+                  ],
+                  "additionalProperties": false
                 }
-              },
-              "required": [
-                "request_id",
-                "session_id",
-                "turn_id",
-                "prompt",
-                "input_kind",
-                "required",
-                "redaction"
               ],
-              "additionalProperties": false,
               "$defs": {
                 "__schema0": {
                   "anyOf": [
@@ -20541,7 +20975,35 @@
             "created_at",
             "data"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "request_scope": {
+                        "const": "session"
+                      }
+                    },
+                    "required": [
+                      "request_scope"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "turn_id"
+                  ]
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -20606,40 +21068,84 @@
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             },
             "data": {
-              "type": "object",
-              "properties": {
-                "request_id": {
-                  "type": "string",
-                  "minLength": 1
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "actor_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cancelled": {
+                      "type": "boolean"
+                    },
+                    "value": {},
+                    "resolved_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "turn"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "turn_id"
+                  ],
+                  "additionalProperties": false
                 },
-                "session_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "turn_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "actor_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "cancelled": {
-                  "type": "boolean"
-                },
-                "value": {},
-                "resolved_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "actor_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cancelled": {
+                      "type": "boolean"
+                    },
+                    "value": {},
+                    "resolved_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "session"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "request_scope"
+                  ],
+                  "additionalProperties": false
                 }
-              },
-              "required": [
-                "request_id",
-                "session_id",
-                "turn_id"
               ],
-              "additionalProperties": false,
               "$id": "https://schemas.harness-control.local/hcp.v0/events/user_input.resolved.schema.json"
             },
             "raw": {
@@ -20671,7 +21177,35 @@
             "created_at",
             "data"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "request_scope": {
+                        "const": "session"
+                      }
+                    },
+                    "required": [
+                      "request_scope"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "turn_id"
+                  ]
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -23335,6 +23869,10 @@
                     "transport_lost",
                     "runtime_error"
                   ]
+                },
+                "closure_unconfirmed": {
+                  "type": "boolean",
+                  "const": true
                 }
               },
               "required": [
@@ -23373,6 +23911,225 @@
             "data"
           ],
           "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "harness.event"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "turn_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sequence": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "event_type": {
+              "type": "string",
+              "const": "native.request.lost"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "data": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "interrupted",
+                        "expired",
+                        "owner_closed"
+                      ]
+                    },
+                    "lost_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "turn"
+                    },
+                    "request_kind": {
+                      "type": "string",
+                      "enum": [
+                        "approval",
+                        "input"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "reason",
+                    "lost_at",
+                    "turn_id",
+                    "request_kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "interrupted",
+                        "expired",
+                        "owner_closed"
+                      ]
+                    },
+                    "lost_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "request_scope": {
+                      "type": "string",
+                      "const": "session"
+                    },
+                    "request_kind": {
+                      "type": "string",
+                      "const": "input"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "session_id",
+                    "reason",
+                    "lost_at",
+                    "request_scope",
+                    "request_kind"
+                  ],
+                  "additionalProperties": false
+                }
+              ],
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/native.request.lost.schema.json"
+            },
+            "raw": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "payload": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              },
+              "required": [
+                "source",
+                "payload"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "session_id",
+            "sequence",
+            "event_type",
+            "created_at",
+            "data"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "request_scope": {
+                        "const": "session"
+                      }
+                    },
+                    "required": [
+                      "request_scope"
+                    ]
+                  }
+                },
+                "required": [
+                  "data"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "turn_id"
+                  ]
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",

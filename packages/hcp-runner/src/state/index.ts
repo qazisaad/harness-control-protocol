@@ -86,7 +86,7 @@ const nativeWorkDictionarySchema = z.unknown().transform((input, context): Recor
 });
 const nativeWorkStateSchema = z.object({scope: z.object({provider_instance_id: z.string(), provider_binding_hash: z.string(),
   workspace_id: z.string(), cwd: z.string(), execution_binding_hash: z.string()}).strict(),
-  items: nativeWorkDictionarySchema, retired: nativeWorkDictionarySchema.default({})}).strict();
+  items: nativeWorkDictionarySchema, retired: nativeWorkDictionarySchema.default({}), closure_unconfirmed: z.literal(true).optional()}).strict();
 export type NativeWorkState = z.infer<typeof nativeWorkStateSchema>;
 
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -236,6 +236,7 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     state.items = Object.assign(Object.create(null), state.items);
     state.retired = Object.assign(Object.create(null), state.retired);
     const previous = this.data.nativeWork[sessionId];
+    if (previous?.closure_unconfirmed && !state.closure_unconfirmed) throw new Error("Unconfirmed native closure requires authoritative reconciliation; it cannot be cleared by metadata updates.");
     if (!previous && Object.keys(this.data.nativeWork).length >= 1024) throw new Error("Native work session capacity exceeded.");
     if (Object.keys(state.items).length > 128) throw new Error("Native work capacity exceeded; retire completed work before admitting another child.");
     if (Object.keys(state.retired).length > 1024) throw new Error("Native work tombstone capacity exceeded; close the execution lease before retiring further work.");
@@ -256,7 +257,7 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
 
   removeEmptyNativeWorkState(sessionId: string): void {
     const previous = this.data.nativeWork[sessionId];
-    if (!previous || Object.keys(previous.items).length) return;
+    if (!previous || previous.closure_unconfirmed || Object.keys(previous.items).length) return;
     delete this.data.nativeWork[sessionId];
     try {this.persist();} catch (error) {this.data.nativeWork[sessionId] = previous; throw error;}
   }

@@ -325,7 +325,7 @@ export class RunnerConnection {
       case "harness.input.respond":
         await this.#handleCommand(envelope, async message => {
           const resolution = await this.#harnessSessions.respondToMcpInput(message.payload, event => this.#sendEventIfConnected(event));
-          if (resolution.kind === "resumed") this.#watchTurn(resolution.completion, message.payload.session_id, message.payload.turn_id);
+          if (resolution.kind === "resumed" && message.payload.request_scope !== "session") this.#watchTurn(resolution.completion, message.payload.session_id, message.payload.turn_id);
           return [];
         });
         return;
