@@ -96,6 +96,13 @@ const server = createServer(async (request, response) => {
       return;
     }
     for (const stream of streams) {
+      const usagePart = {id: `usage-${payload.messageID}`, messageID: `answer-${payload.messageID}`, sessionID: executionId,
+        type: "step-finish", cost: 0.5, tokens: {input: 10, output: 3, reasoning: 2, cache: {read: 20, write: 4}}};
+      sendEvent(stream, {type: "message.part.updated", properties: {part: usagePart}});
+      sendEvent(stream, {type: "message.part.updated", properties: {part: usagePart}});
+      sendEvent(stream, {type: "message.updated", properties: {info: {id: usagePart.messageID, sessionID: executionId, role: "assistant", parentID: payload.messageID}}});
+      sendEvent(stream, {type: "message.updated", properties: {info: {id: "older-answer", sessionID: executionId, role: "assistant", parentID: "older-prompt"}}});
+      sendEvent(stream, {type: "message.part.updated", properties: {part: {...usagePart, id: "old-usage", messageID: "older-answer"}}});
       sendEvent(stream, {
         type: "message.part.updated",
         properties: {

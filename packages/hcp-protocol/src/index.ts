@@ -243,6 +243,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  instruction_roles?: Array<"system" | "developer">;
   configuration_inheritance?: HarnessConfigurationInheritance;
   streaming: boolean;
   multi_turn: boolean;
@@ -263,6 +264,11 @@ export type HarnessExecutionCapabilities = {
 export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.boolean().optional(), project_settings: z.boolean().optional(),
   hooks: z.boolean().optional(), mcp_servers: z.boolean().optional(), plugins: z.boolean().optional()}).strict();
 export type HarnessConfigurationInheritance = z.infer<typeof harnessConfigurationInheritanceSchema>;
+
+/** Explicit native instruction roles. System replaces the provider's base prompt; developer uses its native higher-priority role. */
+export const harnessInstructionsSchema = z.object({system: z.string().min(1).max(64 * 1024).optional(),
+  developer: z.string().min(1).max(64 * 1024).optional()}).strict();
+export type HarnessInstructions = z.infer<typeof harnessInstructionsSchema>;
 
 export type HarnessProviderSnapshot = {
   execution_capabilities?: HarnessExecutionCapabilities;
@@ -422,6 +428,7 @@ export type RunnerStdioMcpProfileAttachment = {
 export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
+  instructions?: HarnessInstructions;
   configuration_inheritance?: HarnessConfigurationInheritance;
   session_id: string;
   workspace_id: string;
@@ -822,6 +829,12 @@ export type LocalActionErrorPayload = {
 };
 
 export type HarnessUsageSnapshot = {
+  scope?: "turn" | "conversation";
+  status?: "complete" | "partial";
+  source?: string;
+  cached_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  reasoning_output_tokens?: number;
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
@@ -1071,6 +1084,7 @@ export const harnessModelSchema = z
 export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
+      instruction_roles: z.array(z.enum(["system", "developer"])).optional(),
       configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
       streaming: z.boolean(),
       multi_turn: z.boolean(),
@@ -1335,6 +1349,7 @@ const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(im
 
 export const hcpSessionStartPayloadSchema = z
   .object({
+    instructions: harnessInstructionsSchema.optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     session_id: nonEmptyStringSchema,
     workspace_id: nonEmptyStringSchema,
@@ -2192,6 +2207,12 @@ function requireLocalActionOutputLimit(
 
 export const harnessUsageSnapshotSchema = z
   .object({
+    scope: z.enum(["turn", "conversation"]).optional(),
+    status: z.enum(["complete", "partial"]).optional(),
+    source: z.string().min(1).max(128).optional(),
+    cached_input_tokens: z.number().int().nonnegative().optional(),
+    cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+    reasoning_output_tokens: z.number().int().nonnegative().optional(),
     input_tokens: z.number().int().nonnegative().optional(),
     output_tokens: z.number().int().nonnegative().optional(),
     total_tokens: z.number().int().nonnegative().optional(),

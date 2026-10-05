@@ -12,13 +12,14 @@ This table describes the current source implementation. The verification record 
 | Text/reasoning streaming | Native delta notifications | SDK partial messages | Text/reasoning SSE deltas |
 | Tool activity | Items, commands/output, file changes, plan/diff updates | Tool-use/result item lifecycle | Tool arguments/output/errors and todo updates |
 | Final output | Successful native terminal plus final assistant item required | Successful typed result required | Message response plus session-idle event |
-| Usage | Native thread token totals; not necessarily per-turn usage after resume | SDK model totals, including cached input; estimated cost | Not normalized |
+| Usage | Native conversation token totals, explicitly scoped | SDK turn model totals, including cache counts; estimated cost | Owned root-prompt step totals, with duplicate/order handling and uncertainty |
 | Sandbox | `read_only`, `workspace_write`, `danger_full_access` | `danger_full_access` only | `danger_full_access` only; no filesystem containment |
 | Approval policy | `ask` -> `untrusted`, `auto_edits` -> `on-request`, `full_access` -> `never` | `ask` -> `default`, `auto_edits` -> `acceptEdits`, `full_access` -> `bypassPermissions` | Explicit session rules for all three policies |
 | Model options | `reasoningEffort`; native model catalog | SDK `effort` | `provider/model` and one string `variant` |
 | Multi-turn and durable continuation | Retained native binding | Retained SDK session, including runner recreation | Retained directory-bound session, including runner recreation |
 | Native interactions | Command/file approvals and blocking structured questions; accept/decline/cancel | Tool callbacks and blocking structured questions; accept/decline/cancel | Permission replies once/reject; blocking single/multiple-choice questions |
 | Plan mode and images | Supported | Supported | Supported |
+| Instruction roles | Native system/base and developer | Explicit system prompt | Unsupported |
 | Steering | Native `turn/steer`, exact active-turn correlation | SDK input channel, exact active-turn correlation | Unsupported |
 | Manual compaction | Native compaction completion | `/compact` plus confirmed native compact boundary | Native summarize completion |
 | History, fork and conversation rollback | Read, fork, rollback and runner retirement | SDK history/fork; rollback replaces the logical binding with a verified retained-prefix copy | HTTP history/fork; rollback replaces the logical binding with a verified retained-prefix copy |
@@ -27,6 +28,8 @@ This table describes the current source implementation. The verification record 
 `full_access` describes approval behavior, not filesystem access. Codex workspace-write checks the returned policy and rejects extra writable roots or implicit temporary-directory writes. Claude restricted modes fail before provider execution; SDK permission modes are not treated as filesystem containment.
 
 Provider snapshots include optional `execution_capabilities`: streaming, multi-turn, continuation, Plan mode, history/rollback and supported policies. An omitted capability object means unknown support. Model descriptors separately advertise image input. Use the advertised contract, not the presence of a field or command in the protocol, to authorize execution.
+
+Usage observations can declare `scope` (`turn` or `conversation`), `status` (`complete` or `partial`) and a provider source. Missing metadata is unknown, not complete turn usage. Input totals include cached and cache-creation input; these components are separately available. Output totals include reasoning tokens where the provider reports them separately. OpenCode counts only assistant steps whose native parent matches the admitted prompt, regardless of event order; duplicate steps do not inflate totals. Conflicting or unresolved observations remain partial. No observed owned steps means no usage claim. These counts do not describe context capacity, account quotas or application billing.
 
 `configuration_inheritance` describes permitted native user/project settings, hooks, inherited MCP servers and plugins separately. Omitted fields mean unknown enforcement. A start command can require specific values; unknown or different enforcement fails before native launch. The runner reports its declared values in `session.configured`. Selected runner-authorized MCP attachments are distinct from inherited MCP servers. Claude disables settings sources and all hooks, requires its requested workspace/permission mode, and verifies the selected MCP and empty plugin inventories. Codex disables inherited MCP/plugins; its other configuration sources are not yet claimed isolated. OpenCode currently permits native configuration inheritance and rejects a request to disable it.
 

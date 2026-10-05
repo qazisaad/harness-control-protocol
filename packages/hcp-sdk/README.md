@@ -44,6 +44,8 @@ Capabilities advertise `native_history`, `history_pagination`, `conversation_for
 
 Use `configuration_inheritance` in a start payload to require which native sources may be inherited: `user_settings`, `project_settings`, `hooks`, `mcp_servers`, and `plugins`. Each requested boolean must match the adapter's declared enforcement; unknown or different enforcement rejects the start before provider launch. `session.configured` reports the adapter's declaration. An inherited MCP inventory is distinct from runner-authorized attachments. Only request properties your app needs; omission makes no isolation claim.
 
+Optional start `instructions` accepts bounded `system` and `developer` strings, gated by `instruction_roles`. System instructions replace the native base prompt; developer instructions use the provider's native developer role. Omission preserves native defaults. A provider never flattens an unsupported role into user input. Instructions form part of the continuation binding, so resume must use the same values. Supply app-specific instructions here instead of adding product prompts to HCP adapters.
+
 ```ts
 const read = await host.readConversation("session-1", {limit: 50});
 const fork = await host.forkConversation("session-1", {

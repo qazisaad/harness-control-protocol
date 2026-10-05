@@ -3,10 +3,11 @@ import { realpath } from "node:fs/promises";
 import { NativeProcess } from "./native-process.js";
 import { NativeTurns } from "./native-turn.js";
 import { NativeInteractions } from "../../native-interactions.js";
+import {OpenCodeUsage, openCodeMessageId} from "./opencode-usage.js";
 import {retainedContent, retainedFinalText, textChunks, type ContentPublisher} from "./content-projection.js";
 
 import { z } from "zod";
-import type { HarnessExecutionCapabilities, HarnessModelSelection } from "@harness-control/protocol";
+import type { HarnessExecutionCapabilities, HarnessModelSelection, HarnessUsageSnapshot } from "@harness-control/protocol";
 import { hcpImageInputSchema } from "@harness-control/protocol";
 
 import type { ProviderInstanceConfig } from "../../../config/index.js";
@@ -34,6 +35,7 @@ import {
   cliMcpServerConfigName,
   normalizeProviderModels,
   validateConfigurationInheritance,
+  validateInstructionRoles,
 } from "./shared.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
@@ -102,6 +104,7 @@ export type OpenCodeRuntimeTurnInput = {
   variant?: string;
   interactions?: NativeInteractions;
   publishContent?: ContentPublisher;
+  onUsage?: (usage: HarnessUsageSnapshot) => void;
 };
 
 export type OpenCodeRuntime = {
@@ -171,6 +174,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     validateConfigurationInheritance(input.payload, this.configurationInheritance);
+    validateInstructionRoles(input.payload, []);
     if (input.payload.sandbox_mode !== "danger_full_access")
       throw new HarnessAdapterError("sandbox_unsupported", "This OpenCode adapter does not implement filesystem containment.");
     if (input.payload.continue_session && !input.payload.continuation_group_key)
@@ -231,11 +235,13 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       const abort = () => {cancellation = runtime.cancelTurn().catch(async () => {await runtime.close();});};
       signal.addEventListener("abort", abort, {once: true});
       try {
+      let usage: HarnessUsageSnapshot | undefined;
       const finalText = await runtime.sendTurn({
         turnId: input.payload.turn_id,
         input: input.payload.input,
         model: input.payload.model_selection?.model ?? input.startPayload.model_selection.model,
         emitEvent: emit, signal, interactions,
+        onUsage: value => {usage = value; emit({event_type: "usage.updated", turn_id: input.payload.turn_id, data: {...value}});},
         ...(input.publishContent ? {publishContent: input.publishContent} : {}),
         ...(input.payload.mode ? {mode: input.payload.mode} : {}),
         ...(input.payload.action ? {action: input.payload.action} : {}),
@@ -243,7 +249,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
         ...((input.payload.model_selection ?? input.startPayload.model_selection).options?.[0] ?
           {variant: String((input.payload.model_selection ?? input.startPayload.model_selection).options![0]!.value)} : {}),
       });
-      return retainedFinalText(finalText, input.publishContent);
+      return {...retainedFinalText(finalText, input.publishContent), ...(usage ? {usage} : {})};
       } finally {
         interactions.close(); input.registerNativeInteractions?.(undefined);
         signal.removeEventListener("abort", abort);
@@ -376,6 +382,8 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     input.signal?.addEventListener("abort", abort, {once: true});
     if (input.signal?.aborted) abort();
     this.#activeRequest = abortController;
+    const messageId = openCodeMessageId();
+    const usage = new OpenCodeUsage(this.sessionId, messageId);
     const streamReady = createEventStream(
       new URL(`/event?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl),
       this.sessionId,
@@ -383,6 +391,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       abortController.signal,
       this.#baseUrl,
       this.#cwd,
+      usage,
     );
     try {
       await streamReady.ready;
@@ -401,6 +410,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
+              messageID: messageId,
               parts: [{ type: "text", text: input.input }, ...(input.images ?? []).map(image => ({type: "file", mime: image.mime_type,
                 url: `data:${image.mime_type};base64,${image.data_base64}`}))],
               agent: input.mode === "plan" ? "plan" : "build",
@@ -412,6 +422,10 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
         ), streamReady.settled.then(() => new Promise<never>(() => {}))]),
       );
       await waitWithTimeout(streamReady.settled, DEFAULT_EVENT_SETTLE_TIMEOUT_MS, "OpenCode did not emit session.idle.");
+      usage.message(response.info);
+      for (const part of response.parts) usage.part(part);
+      const measured = usage.snapshot();
+      if (measured) input.onUsage?.(measured);
       return response.parts
         .filter((part): boolean => part.type === "text" && part.text !== undefined)
         .map((part): string => part.text ?? "")
@@ -475,6 +489,7 @@ function createEventStream(
   signal: AbortSignal,
   baseUrl: string,
   cwd: string,
+  usage: OpenCodeUsage,
 ): OpenCodeEventStream {
   let markReady: () => void = () => {};
   let rejectReady: (error: Error) => void = () => {};
@@ -501,6 +516,7 @@ function createEventStream(
       markReady();
       await consumeSse(response.body, (value: unknown): void => {
         const event = eventSchema.parse(value);
+        usage.observe(event);
         if ((event.type === "permission.asked" || event.type === "question.asked") && event.properties.sessionID === sessionId) {
           const id = z.string().min(1).parse(event.properties.id);
           if (requests.has(id)) return;

@@ -113,6 +113,8 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         model: selection.model,
         sandbox,
         approvalPolicy,
+        ...(input.startPayload.instructions?.system ? {baseInstructions: input.startPayload.instructions.system} : {}),
+        ...(input.startPayload.instructions?.developer ? {developerInstructions: input.startPayload.instructions.developer} : {}),
 
         config: {
           mcp_servers: servers,
@@ -341,6 +343,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         )
           return;
         usage = {
+          scope: "conversation", status: "complete", source: "codex.thread.tokenUsage.total",
           input_tokens: event.tokenUsage.total.inputTokens,
           output_tokens: event.tokenUsage.total.outputTokens,
           total_tokens: event.tokenUsage.total.totalTokens,

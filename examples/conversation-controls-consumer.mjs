@@ -44,10 +44,12 @@ try {
   const start = {session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example.controls",
     model_selection: {model: "fixture"}, approval_policy: "full_access", sandbox_mode: "read_only", continue_session: false,
     continuation_group_key: "conversation", mcp_servers: [],
+    instructions: {system: "Application instructions"},
     configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}};
   await peer.startSession(start);
   await peer.sendTurn({session_id: "session", turn_id: "turn", input: "wait-for-steering"});
   await until(() => events.some(event => event.event_type === "content.delta"));
+  assert.deepEqual(adapter.instructionsSeen, start.instructions);
   assert.deepEqual(events.find(event => event.event_type === "session.configured").data.configuration_inheritance, start.configuration_inheritance);
   const steered = await peer.steerTurn("session", "turn", "steered"); assert.equal(steered.payload.turn_id, "turn");
   await until(() => events.some(event => event.turn_id === "turn" && event.event_type === "turn.completed"));

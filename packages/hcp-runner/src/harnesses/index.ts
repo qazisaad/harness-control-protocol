@@ -9,7 +9,7 @@ import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import {isDeepStrictEqual} from "node:util";
 import { isAbsolute, relative, resolve } from "node:path";
-import {validateConfigurationInheritance} from "./adapters/providers/shared.js";
+import {validateConfigurationInheritance, validateInstructionRoles} from "./adapters/providers/shared.js";
 
 import type {
   HcpHarnessEventPayload,
@@ -569,6 +569,7 @@ export class HarnessSessionManager {
     );
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
     validateConfigurationInheritance(payload, adapter.configurationInheritance);
+    validateInstructionRoles(payload, adapter.instructionRoles);
     await adapter.validateStart({ payload, provider });
     if (payload.continuation_group_key && [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === payload.continuation_group_key))
       throw new HarnessAdapterError("native_conversation_busy", "This native conversation already has an active session.");
@@ -584,7 +585,7 @@ export class HarnessSessionManager {
       if (payload.continue_session) {
         const conversation = this.#stateStore.getNativeConversation(payload.continuation_group_key!);
         if (!conversation || conversation.binding_hash !== nativeBindingHash(payload, provider, mcpAttachments.toolsets))
-          throw new HarnessAdapterError("native_continuation_binding", "Native conversation is missing or its workspace, provider, tools, or policy changed.");
+          throw new HarnessAdapterError("native_continuation_binding", "Native conversation is missing or its workspace, provider, tools, instructions, or policy changed.");
         if (conversation.rollback?.phase === "pending") throw new HarnessAdapterError("native_rollback_unknown", "The previous rollback needs reconciliation; starting another turn is unsafe.");
         if (conversation.fork?.phase === "pending") throw new HarnessAdapterError("native_fork_unknown", "A previous fork has an unknown outcome; reconcile it before resuming.");
         retainedConversation = conversation;
@@ -1380,6 +1381,7 @@ function nativeBindingHash(payload: HcpSessionStartPayload, provider: ProviderIn
     ...(provider.launch_args.length ? {launch_args: provider.launch_args} : {}),
     home: provider.home, env: provider.env}, workspace: {id: payload.workspace_id, cwd: payload.cwd},
     sandbox: payload.sandbox_mode, approval: payload.approval_policy,
+    ...(payload.instructions && Object.keys(payload.instructions).length ? {instructions: payload.instructions} : {}),
     attachments: payload.mcp_servers.map(attachment => ({name: attachment.name, transport: attachment.transport,
       ...(attachment.transport === "runner_stdio_profile" ? {profile: attachment.profile_id} : {}),
       allowed: attachment.allowed_tools?.slice().sort(), denied: attachment.denied_tools?.slice().sort()})).sort((a, b) => a.name.localeCompare(b.name)),

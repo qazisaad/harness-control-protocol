@@ -1,0 +1,5 @@
+{
+  "id": "message-usage-observation", "type": "harness.event", "version": "hcp.v0", "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {"session_id": "session-1", "turn_id": "turn-1", "sequence": 2, "event_type": "usage.updated", "created_at": "2026-01-01T00:00:00.000Z",
+    "data": {"scope": "account", "status": "complete", "input_tokens": 34}}
+}

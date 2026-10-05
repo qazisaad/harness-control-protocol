@@ -1,0 +1,6 @@
+{
+  "id": "message-instructions", "type": "harness.session.start", "version": "hcp.v0", "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {"session_id": "session-1", "workspace_id": "workspace-1", "provider_instance_id": "provider-1", "driver_kind": "example",
+    "cwd": "/tmp/workspace", "sandbox_mode": "read_only", "approval_policy": "ask", "continue_session": false,
+    "model_selection": {"model": "example"}, "mcp_servers": [], "instructions": {"administrator": "Unknown native role"}}
+}

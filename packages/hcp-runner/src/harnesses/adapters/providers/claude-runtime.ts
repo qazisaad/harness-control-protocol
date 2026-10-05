@@ -90,7 +90,7 @@ export function createClaudeTurn(
               ? { CLAUDE_CONFIG_DIR: input.provider.home }
               : {}),
           },
-          systemPrompt: { type: "preset", preset: "claude_code" },
+          systemPrompt: input.startPayload.instructions?.system ?? { type: "preset", preset: "claude_code" },
           settingSources: [],
           settings: {disableAllHooks: true},
           persistSession: true,
@@ -252,21 +252,28 @@ export function createClaudeTurn(
         });
       let inputTokens = 0;
       let outputTokens = 0;
+      let cachedInputTokens = 0;
+      let cacheCreationInputTokens = 0;
       for (const usage of Object.values(result.modelUsage ?? {})) {
         inputTokens +=
           usage.inputTokens +
           usage.cacheReadInputTokens +
           usage.cacheCreationInputTokens;
         outputTokens += usage.outputTokens;
+        cachedInputTokens += usage.cacheReadInputTokens;
+        cacheCreationInputTokens += usage.cacheCreationInputTokens;
       }
       return {
         ...retainedFinalText(result.result, input.publishContent),
         usage: {
+          scope: "turn", status: result.modelUsage ? "complete" : "partial", source: "claude.sdk.result.modelUsage",
           ...(result.modelUsage
             ? {
                 input_tokens: inputTokens,
                 output_tokens: outputTokens,
                 total_tokens: inputTokens + outputTokens,
+                cached_input_tokens: cachedInputTokens,
+                cache_creation_input_tokens: cacheCreationInputTokens,
               }
             : {}),
           ...(result.total_cost_usd !== undefined

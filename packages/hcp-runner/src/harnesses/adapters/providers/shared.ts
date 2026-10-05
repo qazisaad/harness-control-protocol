@@ -15,6 +15,13 @@ export function validateConfigurationInheritance(payload: HcpSessionStartPayload
   }
 }
 
+export function validateInstructionRoles(payload: HcpSessionStartPayload, roles?: readonly ("system" | "developer")[]): void {
+  for (const role of Object.keys(payload.instructions ?? {})) {
+    if (!roles?.includes(role as "system" | "developer"))
+      throw new HarnessAdapterError("instruction_role_unsupported", `This adapter cannot deliver the requested '${role}' native instruction role.`);
+  }
+}
+
 export function normalizeProviderModels(models: ProviderInstanceConfig["models"]): HarnessModel[] {
   return models.map((model): HarnessModel => {
     const normalized: HarnessModel = {

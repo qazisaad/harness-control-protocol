@@ -57,7 +57,8 @@ for (const kind of ["approval", "file-read", "other", "question", "steer"] as co
   let runner = manager();
   const start = (id: string, resume: boolean): HcpSessionStartPayload => ({session_id: id, workspace_id: "workspace", cwd,
     provider_instance_id: "claude", driver_kind: "claude", model_selection: {model: "sonnet"}, sandbox_mode: "danger_full_access",
-    approval_policy: "ask", continue_session: resume, continuation_group_key: "conversation", mcp_servers: []});
+    approval_policy: "ask", continue_session: resume, continuation_group_key: "conversation", mcp_servers: [],
+    instructions: {system: "Fixture system instructions"}});
   const events: HcpHarnessEventPayload[] = [];
   try {
     events.push(...await runner.startSession(start("first-session", false)));
@@ -84,6 +85,8 @@ for (const kind of ["approval", "file-read", "other", "question", "steer"] as co
     assert.equal(optionsSeen[1]?.resume, optionsSeen[0]?.sessionId);
     assert.deepEqual(turns, ["first", "followup"]);
     assert.equal(optionsSeen[0]?.permissionMode, "default");
+    assert.equal(optionsSeen[0]?.systemPrompt, "Fixture system instructions");
+    assert.equal(optionsSeen[1]?.systemPrompt, optionsSeen[0]?.systemPrompt);
     assert.equal(optionsSeen[0]?.persistSession, true);
     assert.deepEqual(optionsSeen[0]?.settingSources, []);
     assert.deepEqual(optionsSeen[0]?.settings, {disableAllHooks: true});

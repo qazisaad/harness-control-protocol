@@ -44,6 +44,7 @@ export type ClaudeHarnessAdapterOptions = {
   sessionHelper?: ClaudeSessionHelper;
 };
 export class ClaudeHarnessAdapter implements HarnessAdapter {
+  readonly instructionRoles = ["system"] as const;
   readonly configurationInheritance = nativeExecutionCapabilities("claude").configuration_inheritance!;
   readonly driverKind = "claude";
   readonly conversationOperations = ["read", "rollback", "fork"] as const;

@@ -121,6 +121,7 @@ describe("OpenCodeHarnessAdapter", () => {
     const adapter = new OpenCodeHarnessAdapter({runtimeFactory: async () => {launches++; throw new Error("must not launch");}});
     const base = openCodeStartPayload(process.cwd());
     for (const [change, code] of [
+      [{instructions: {system: "App instructions"}}, "instruction_role_unsupported"],
       [{sandbox_mode: "read_only"}, "sandbox_unsupported"],
       [{sandbox_mode: "workspace_write"}, "sandbox_unsupported"],
       [{continue_session: true}, "continuation_key_required"],
@@ -203,10 +204,10 @@ describe("OpenCodeHarnessAdapter", () => {
       });
       assert.deepEqual(
         streamed.map((event: HarnessAdapterEvent): string => event.event_type),
-        ["reasoning.delta", "content.delta", "turn.completed"],
+        ["reasoning.delta", "content.delta", "usage.updated", "turn.completed"],
       );
       assert.deepEqual(terminal, []);
-      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello" });
+      assert.deepEqual(streamed.at(-1)?.data.final_output, {final_text: "hello", usage: streamed.find(event => event.event_type === "usage.updated")?.data});
     } finally {
       if (started) await adapter.stopSession({ sessionId: "session-1" });
       await workspace.cleanup();

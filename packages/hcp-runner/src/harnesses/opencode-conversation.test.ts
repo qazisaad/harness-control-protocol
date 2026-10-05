@@ -41,6 +41,10 @@ for (const kind of ["approval", "question"] as const) test(`OpenCode ${kind} rep
     const followup = await runner.sendTurn({session_id: "second-session", turn_id: "second-turn", input: "followup", mode: "plan",
       model_selection: {model: "anthropic/claude", options: [{id: "variant", value: "high"}]}, images: [{mime_type: "image/png", data_base64: "aGVsbG8="}]});
     assert.equal(followup.at(-1)?.event_type, "turn.completed");
+    const usage = followup.find(event => event.event_type === "usage.updated")?.data;
+    assert.deepEqual(usage, {scope: "turn", status: "complete", source: "opencode.message.step-finish", input_tokens: 34,
+      output_tokens: 5, total_tokens: 39, cached_input_tokens: 20, cache_creation_input_tokens: 4, reasoning_output_tokens: 2, cost_usd: 0.5});
+    assert.deepEqual((followup.at(-1)?.data as {final_output: {usage: unknown}}).final_output.usage, usage);
     const compact = await runner.sendTurn({session_id: "second-session", turn_id: "compact", input: "", action: "compact"});
     assert.equal(compact.at(-1)?.event_type, "turn.completed");
     const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));

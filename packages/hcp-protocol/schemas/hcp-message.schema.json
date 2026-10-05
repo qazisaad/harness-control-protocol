@@ -1686,6 +1686,16 @@
                   "execution_capabilities": {
                     "type": "object",
                     "properties": {
+                      "instruction_roles": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "system",
+                            "developer"
+                          ]
+                        }
+                      },
                       "configuration_inheritance": {
                         "type": "object",
                         "properties": {
@@ -2342,6 +2352,22 @@
         "payload": {
           "type": "object",
           "properties": {
+            "instructions": {
+              "type": "object",
+              "properties": {
+                "system": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536
+                },
+                "developer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536
+                }
+              },
+              "additionalProperties": false
+            },
             "configuration_inheritance": {
               "type": "object",
               "properties": {
@@ -9496,6 +9522,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -9669,6 +9729,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -9842,6 +9936,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -10015,6 +10143,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -10188,6 +10350,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -10361,6 +10557,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -10534,6 +10764,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -10707,6 +10971,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -10880,6 +11178,40 @@
                 "usage": {
                   "type": "object",
                   "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "turn",
+                        "conversation"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "cached_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cache_creation_input_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "input_tokens": {
                       "type": "integer",
                       "minimum": 0,
@@ -11848,6 +12180,40 @@
                     "usage": {
                       "type": "object",
                       "properties": {
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "turn",
+                            "conversation"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "complete",
+                            "partial"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "cached_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "cache_creation_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reasoning_output_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
                         "input_tokens": {
                           "type": "integer",
                           "minimum": 0,
@@ -12126,6 +12492,40 @@
                     "usage": {
                       "type": "object",
                       "properties": {
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "turn",
+                            "conversation"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "complete",
+                            "partial"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "cached_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "cache_creation_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reasoning_output_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
                         "input_tokens": {
                           "type": "integer",
                           "minimum": 0,
@@ -12404,6 +12804,40 @@
                     "usage": {
                       "type": "object",
                       "properties": {
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "turn",
+                            "conversation"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "complete",
+                            "partial"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "cached_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "cache_creation_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reasoning_output_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
                         "input_tokens": {
                           "type": "integer",
                           "minimum": 0,
@@ -12682,6 +13116,40 @@
                     "usage": {
                       "type": "object",
                       "properties": {
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "turn",
+                            "conversation"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "complete",
+                            "partial"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "cached_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "cache_creation_input_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reasoning_output_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
                         "input_tokens": {
                           "type": "integer",
                           "minimum": 0,
@@ -19564,6 +20032,40 @@
             "data": {
               "type": "object",
               "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "turn",
+                    "conversation"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "complete",
+                    "partial"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "cached_input_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "cache_creation_input_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reasoning_output_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
                 "input_tokens": {
                   "type": "integer",
                   "minimum": 0,

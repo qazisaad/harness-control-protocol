@@ -2,13 +2,15 @@ import {randomUUID, createHash} from "node:crypto";
 import type {HarnessAdapter, HarnessAdapterConversationInput, HarnessAdapterTurnInput, HarnessAdapterStartInput,
   HarnessAdapterEvent} from "@harness-control/runner/harnesses";
 import {HarnessAdapterError} from "@harness-control/runner/harnesses";
-import type {HcpConversationResultPayload} from "@harness-control/protocol";
+import type {HcpConversationResultPayload, HarnessInstructions} from "@harness-control/protocol";
 
 type Turn = {id: string; status: string; items: Array<Record<string, string>>};
 const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(turns)).digest("hex");
 /** A deterministic provider for public-package conformance; no native CLI or consumer-specific IDs. */
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "example.controls";
+  readonly instructionRoles = ["system"] as const;
+  instructionsSeen: HarnessInstructions | undefined;
   readonly configurationInheritance = {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false};
   readonly conversationOperations = ["read", "rollback", "fork"] as const;
   readonly histories = new Map<string, Turn[]>();
@@ -17,6 +19,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     return {provider_instance_id: provider.id, driver_kind: this.driverKind, installed: true, available: true,
       status: "ready" as const, models: [{id: "fixture", label: "Fixture", capabilities: {option_descriptors: []}}],
       execution_capabilities: {streaming: true, multi_turn: true, session_continuation: true, native_history: true,
+        instruction_roles: [...this.instructionRoles],
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
         manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
         approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
@@ -26,6 +29,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       throw new HarnessAdapterError("unsupported_configuration", "Use the advertised fixture profile.");
   }
   async startSession(input: HarnessAdapterStartInput) {
+    this.instructionsSeen = input.payload.instructions;
     const nativeId = input.nativeConversation?.native_thread_id ?? randomUUID();
     if (!input.nativeConversation) this.histories.set(nativeId, []);
     if (!this.histories.has(nativeId)) throw new HarnessAdapterError("history_unavailable", "Fixture history is unavailable.");

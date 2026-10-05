@@ -4,6 +4,8 @@
   "version": "hcp.v0",
   "sent_at": "2026-01-01T00:00:00.000Z",
   "payload": {
+    "instructions": {"system": "Application system instructions", "developer": "Application developer instructions"},
+    "configuration_inheritance": {"mcp_servers": false, "plugins": false},
     "session_id": "session-stdio-1",
     "workspace_id": "workspace-1",
     "provider_instance_id": "provider-1",

@@ -72,6 +72,26 @@ async function fixture() {
   return {cwd,manager,payload,requests,cleanup:() => rm(cwd,{recursive:true,force:true})};
 }
 
+test("native instruction roles reach Codex start/resume and changed instructions cannot reuse a binding", {timeout: 10_000}, async () => {
+  const f = await fixture();
+  let manager = f.manager();
+  const instructions = {system: "Application system instructions", developer: "Application developer instructions"};
+  try {
+    const start = {...f.payload("first", "followup", false), instructions};
+    await manager.startSession(start); await manager.sendFirstTurn(start, () => {}); await manager.stopSession("first", "idle");
+    manager = f.manager();
+    const resume = {...f.payload("second", "followup", true), instructions};
+    await assert.rejects(manager.startSession({...resume, session_id: "changed", instructions: {...instructions, developer: "Changed"}}), /instructions.*policy changed/);
+    await manager.startSession(resume); await manager.sendFirstTurn(resume, () => {}); await manager.stopSession("second", "done");
+    const requests = (await f.requests()).filter(request => ["thread/start", "thread/resume"].includes(request.method));
+    assert.equal(requests.length, 2);
+    for (const request of requests) {
+      assert.equal(request.params.baseInstructions, instructions.system);
+      assert.equal(request.params.developerInstructions, instructions.developer);
+    }
+  } finally {for (const id of ["first", "second"]) if (manager.activeSessionCount()) await manager.stopSession(id, "cleanup"); await f.cleanup();}
+});
+
 for (const unrestricted of [false, true]) test(`native permission grants use turn scope and ${unrestricted ? "allow unrestricted approval" : "preserve restricted containment"}`, async () => {
   const f = await fixture(), manager = f.manager();
   try {

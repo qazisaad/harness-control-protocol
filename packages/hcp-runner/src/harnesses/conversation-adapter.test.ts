@@ -67,6 +67,24 @@ test("configuration inheritance requirements fail before native launch when supp
   } finally {await f.cleanup();}
 });
 
+test("instruction roles require explicit adapter support before native launch", async () => {
+  const f = await fixture();
+  let launches = 0;
+  const launch = f.adapter.startSession;
+  f.adapter.startSession = async input => {launches++; assert.deepEqual(input.payload.instructions, {system: "App instructions"}); return launch(input);};
+  try {
+    await f.first.stopSession("session", "idle");
+    const payload = {...f.start, session_id: "instructed", continuation_group_key: "new", instructions: {system: "App instructions"}};
+    await assert.rejects(f.first.startSession(payload), /requested 'system'.*role/);
+    Object.assign(f.adapter, {instructionRoles: ["developer"]});
+    await assert.rejects(f.first.startSession(payload), /requested 'system'.*role/);
+    assert.equal(launches, 0);
+    Object.assign(f.adapter, {instructionRoles: ["system"]});
+    await f.first.startSession(payload); assert.equal(launches, 1);
+    await f.first.stopSession("instructed", "done");
+  } finally {await f.cleanup();}
+});
+
 test("a custom public adapter reads and rolls back its retained conversation after manager recreation", async () => {
   const f = await fixture();
   try {
