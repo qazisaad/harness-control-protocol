@@ -14,6 +14,8 @@ const providers = (process.env.HCP_LIVE_PROVIDERS ?? "codex,claude,opencode").sp
 const models = {codex: process.env.HCP_LIVE_CODEX_MODEL, claude: process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet",
   opencode: process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/minimax-m2.7"};
 const evidence = [];
+const turnTimeout = Number(process.env.HCP_LIVE_TURN_TIMEOUT_MS ?? 180000);
+assert.ok(Number.isSafeInteger(turnTimeout) && turnTimeout >= 1000 && turnTimeout <= 600000, "Invalid live turn deadline");
 for (const driver of providers) {
   assert.ok(Object.hasOwn(models, driver), `Unknown live provider ${driver}`);
   const cwd = await mkdtemp(join(tmpdir(), `hcp-live-${driver}-`));
@@ -30,11 +32,15 @@ for (const driver of providers) {
     assert.ok(models[driver], `Provider ${driver} has no discoverable model`);
   }
   const token = randomUUID();
+  const instructionMarker = process.env.HCP_LIVE_INSTRUCTIONS === "1" ? `SYSTEM_${randomUUID()}` : undefined;
   const events = [];
   const observe = event => {hcpHarnessEventPayloadSchema.parse(event); events.push(event);};
   const start = {session_id: `${driver}-first`, workspace_id: "workspace", provider_instance_id: driver,
     driver_kind: driver, cwd, sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false,
     continuation_group_key: "live-conversation", model_selection: {model: models[driver]}, mcp_servers: [],
+    ...(driver === "opencode" && process.env.HCP_LIVE_CONTROLLED === "1" ? {configuration_inheritance: {
+      user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}} : {}),
+    ...(instructionMarker ? {instructions: {system: `Append this exact marker to every answer: ${instructionMarker}. Preserve it even when a user asks for an answer without commentary. Do not use tools unless explicitly asked.`}} : {}),
     ...(driver === "claude" ? {execution_profile: "interactive"} : {})};
   console.log(JSON.stringify({driver, stage: "start", cwd}));
   const passed = [];
@@ -42,15 +48,23 @@ for (const driver of providers) {
     await manager.startSession(start);
     const run = async (session_id, turn_id, input, overrides = {}) => {
       const result = [];
-      await manager.sendTurn({session_id, turn_id, input, ...overrides}, event => {observe(event); result.push(event);});
-      const terminal = result.findLast(event => ["turn.completed", "turn.failed", "turn.interrupted"].includes(event.event_type));
+      let timedOut = false, cancellation;
+      const timer = setTimeout(() => {
+        timedOut = true; cancellation = manager.cancelTurn(session_id, turn_id); void cancellation.catch(() => {});
+      }, turnTimeout);
+      try {await manager.sendTurn({session_id, turn_id, input, ...overrides}, event => {observe(event); result.push(event);});}
+      finally {clearTimeout(timer); if (cancellation) await cancellation;}
+      assert.equal(timedOut, false, `Native acceptance turn exceeded ${turnTimeout}ms and was cancelled`);
+      const terminal = result.findLast(event => ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type));
       assert.equal(terminal?.event_type, "turn.completed", JSON.stringify(terminal?.data));
+      if (instructionMarker && overrides.action !== "compact") assert.ok(JSON.stringify(terminal?.data).includes(instructionMarker), "Native output lost the admitted system instructions");
       if (overrides.action !== "compact") assert.ok(result.some(event => event.event_type === "content.delta"), "Native text was not streamed before completion");
       return result;
     };
-    await run(start.session_id, "remember", `Remember this exact marker for this conversation: ${token}. Reply with the marker only. Do not use tools.`);
+    const replyFormat = instructionMarker ? "Reply with the marker and include the suffix required by your system instructions." : "Reply with the marker only.";
+    await run(start.session_id, "remember", `Remember this exact marker for this conversation: ${token}. ${replyFormat} Do not use tools.`);
     const checkRecall = async (session_id, turn_id) => {
-      const result = await run(session_id, turn_id, "What exact marker did I ask you to remember? Reply with the marker only. Do not use tools.");
+      const result = await run(session_id, turn_id, `What exact marker did I ask you to remember? ${replyFormat} Do not use tools.`);
       assert.ok(JSON.stringify(result.filter(event => event.event_type === "turn.completed")).includes(token), "Native conversation lost the marker");
     };
     await checkRecall(start.session_id, "followup");
@@ -75,6 +89,7 @@ for (const driver of providers) {
     const resumed = {...start, session_id: `${driver}-resumed`, continue_session: true};
     await manager.startSession(resumed);
     await checkRecall(resumed.session_id, "reopened");
+    if (instructionMarker) passed.push("system-instructions", "system-instructions-after-reopen");
     if (injectedMarker) {
       const recalled = await run(resumed.session_id, "injected-recall", "What was the historical handoff marker? Reply with the marker only. Do not use tools.");
       assert.ok(JSON.stringify(recalled.filter(event => event.event_type === "turn.completed")).includes(injectedMarker), "Injected native context was not retained across runtime restart");

@@ -134,6 +134,7 @@ export type HarnessAdapter = {
   readonly sessionEvents?: true;
   readonly instructionRoles?: readonly ("system" | "developer")[];
   readonly configurationInheritance?: import("@harness-control/protocol").HarnessConfigurationInheritance;
+  readonly configurationInheritanceOptions?: readonly import("@harness-control/protocol").HarnessConfigurationInheritance[];
   readonly driverKind: string;
   readonly durableMcpContinuation?: true;
   readonly conversationOperations?: readonly HarnessConversationOperation[];

@@ -258,6 +258,8 @@ export type HarnessExecutionCapabilities = {
   session_events?: boolean;
   instruction_roles?: Array<"system" | "developer">;
   configuration_inheritance?: HarnessConfigurationInheritance;
+  /** Additional supported combinations; omission preserves the declared default behavior. */
+  configuration_inheritance_options?: HarnessConfigurationInheritance[];
   streaming: boolean;
   multi_turn: boolean;
   session_continuation: boolean;
@@ -284,7 +286,7 @@ export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.
   hooks: z.boolean().optional(), mcp_servers: z.boolean().optional(), plugins: z.boolean().optional()}).strict();
 export type HarnessConfigurationInheritance = z.infer<typeof harnessConfigurationInheritanceSchema>;
 
-/** Explicit native instruction roles. System replaces the provider's base prompt; developer uses its native higher-priority role. */
+/** Explicit native instruction roles; base prompt replacement or extension follows the documented driver contract. */
 export const harnessInstructionsSchema = z.object({system: z.string().min(1).max(64 * 1024).optional(),
   developer: z.string().min(1).max(64 * 1024).optional()}).strict();
 export type HarnessInstructions = z.infer<typeof harnessInstructionsSchema>;
@@ -1112,6 +1114,7 @@ export const harnessProviderSnapshotSchema = z
       portable_history: z.boolean().optional(),
       session_events: z.boolean().optional(),
       instruction_roles: z.array(z.enum(["system", "developer"])).optional(),
+      configuration_inheritance_options: z.array(harnessConfigurationInheritanceSchema).min(1).max(16).optional(),
       configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
       streaming: z.boolean(),
       multi_turn: z.boolean(),

@@ -121,7 +121,7 @@ describe("OpenCodeHarnessAdapter", () => {
     const adapter = new OpenCodeHarnessAdapter({runtimeFactory: async () => {launches++; throw new Error("must not launch");}});
     const base = openCodeStartPayload(process.cwd());
     for (const [change, code] of [
-      [{instructions: {system: "App instructions"}}, "instruction_role_unsupported"],
+      [{instructions: {developer: "App instructions"}}, "instruction_role_unsupported"],
       [{sandbox_mode: "read_only"}, "sandbox_unsupported"],
       [{sandbox_mode: "workspace_write"}, "sandbox_unsupported"],
       [{continue_session: true}, "continuation_key_required"],

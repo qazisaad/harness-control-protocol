@@ -5,7 +5,9 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {harnessContextUsageSchema, hcpHarnessEventPayloadSchema, HcpSessionEventReducer, type HcpHarnessEventPayload, type HcpSessionStartPayload} from "@harness-control/protocol";
-import {HarnessSessionManager} from "./index.js";
+import {HarnessSessionManager, HarnessAdapterRegistry} from "./index.js";
+import {OpenCodeHarnessAdapter} from "./adapters/providers/opencode.js";
+import {readControlledOpenCodeReference, controlledOpenCodeInheritance} from "./adapters/providers/opencode-controlled.js";
 import {RunnerConfigSchema} from "../config/index.js";
 import {JsonRunnerStateStore} from "../state/index.js";
 
@@ -19,7 +21,7 @@ for (const kind of ["approval", "question"] as const) test(`OpenCode ${kind} rep
   let runner = manager();
   const start = (id: string, resume: boolean): HcpSessionStartPayload => ({session_id: id, workspace_id: "workspace", cwd,
     provider_instance_id: "opencode", driver_kind: "opencode", model_selection: {model: "anthropic/claude"}, sandbox_mode: "danger_full_access",
-    approval_policy: "ask", continue_session: resume, continuation_group_key: "conversation", mcp_servers: []});
+    approval_policy: "ask", continue_session: resume, continuation_group_key: "conversation", mcp_servers: [], instructions: {system: "Application system instructions"}});
   try {
     const events: HcpHarnessEventPayload[] = [...await runner.startSession(start("first-session", false))];
     await runner.sendTurn({session_id: "first-session", turn_id: "first-turn", input: kind}, event => {
@@ -60,11 +62,30 @@ for (const kind of ["approval", "question"] as const) test(`OpenCode ${kind} rep
     const prompt = requests.filter(request => request.path.endsWith("/message")).at(-1).payload;
     assert.equal(prompt.agent, "plan"); assert.equal(prompt.variant, "high");
     assert.equal(prompt.parts[1].url, "data:image/png;base64,aGVsbG8=");
+    assert.equal(prompt.system, "Application system instructions");
     assert.equal(requests.filter(request => request.path.endsWith("/summarize")).length, 1);
   } finally {for (const id of ["first-session", "second-session"]) if (runner.activeSessionCount()) await runner.stopSession(id, "cleanup"); await rm(cwd, {recursive: true, force: true});}
 });
 
-test("OpenCode HTTP history forks and logical rollback retain permissions and never restore files", async () => {
+for (const drift of ["system", "session"] as const) test(`OpenCode rejects ${drift} drift in admitted instruction readback`, async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-opencode-instructions-"));
+  const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
+    provider_instances: [{id: "opencode", driver_kind: "opencode", executable_path: process.execPath,
+      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))], env: {HCP_TEST_OPENCODE_INSTRUCTION_DRIFT: drift}}]});
+  const runner = new HarnessSessionManager(config);
+  try {
+    await runner.startSession({session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "opencode", driver_kind: "opencode",
+      model_selection: {model: "anthropic/claude"}, sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false,
+      instructions: {system: "Application instructions"}, mcp_servers: []});
+    const events = await runner.sendTurn({session_id: "session", turn_id: "turn", input: "hello"});
+    assert.equal(events.filter(event => event.event_type === "turn.completed").length, 0);
+    const terminal = events.filter(event => event.event_type === "turn.failed");
+    assert.equal(terminal.length, 1);
+    assert.equal((terminal[0]!.data as {error: {code: string}}).error.code, "native_instruction_mismatch");
+  } finally {await runner.stopSession("session", "done"); await rm(cwd, {recursive: true, force: true});}
+});
+
+for (const controlled of [false, true]) test(`OpenCode ${controlled ? "controlled" : "inherited"} HTTP history forks and logical rollback retain permissions and never restore files`, async () => {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-opencode-history-"));
   const historyFile = join(cwd, "history.json");
   const sourceId = "fake-opencode-session";
@@ -73,12 +94,16 @@ test("OpenCode HTTP history forks and logical rollback retain permissions and ne
   await writeFile(historyFile, JSON.stringify({[sourceId]: {messages}}));
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
     provider_instances: [{id: "opencode", driver_kind: "opencode", executable_path: process.execPath,
-      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))], env: {HCP_TEST_OPENCODE_HISTORY: historyFile}}]});
+      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))], env: {HCP_TEST_OPENCODE_HISTORY: historyFile,
+        ...(controlled ? {HCP_TEST_OPENCODE_VERSION: "opencode 1.18.34", OPENCODE_AUTH_CONTENT: JSON.stringify({anthropic: {type: "api", key: "fixture-only-key"}})} : {})}}]});
   const stateFile = join(cwd, "state.json");
   const state = new JsonRunnerStateStore(stateFile);
-  let runner = new HarnessSessionManager(config, {stateStore: state});
+  const manager = (stateStore: JsonRunnerStateStore) => new HarnessSessionManager(config, {stateStore,
+    adapterRegistry: new HarnessAdapterRegistry([new OpenCodeHarnessAdapter({controlledStorageRoot: join(cwd, "owned-native")})])});
+  let runner = manager(state);
   const start: HcpSessionStartPayload = {session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "opencode", driver_kind: "opencode",
-    model_selection: {model: "anthropic/claude"}, sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false, continuation_group_key: "conversation", mcp_servers: []};
+    model_selection: {model: "anthropic/claude"}, sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false, continuation_group_key: "conversation", mcp_servers: [],
+    ...(controlled ? {configuration_inheritance: controlledOpenCodeInheritance} : {})};
   try {
     await runner.startSession(start);
     await runner.sendTurn({session_id: "session", turn_id: "turn", input: "initial"});
@@ -106,9 +131,24 @@ test("OpenCode HTTP history forks and logical rollback retain permissions and ne
     assert.equal((await runner.conversationOperation("rollback", rollbackRequest)).native_reference, rollback.native_reference);
     const retained = JSON.parse(await readFile(historyFile, "utf8"));
     assert.equal(retained[sourceId].messages.length, 4);
-    assert.equal(retained[fork.fork!.native_reference].messages.length, 2);
-    assert.deepEqual(retained[fork.fork!.native_reference].permission, retained[sourceId].permission);
-    runner = new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(stateFile)});
+    const childRef = controlled ? readControlledOpenCodeReference(fork.fork!.native_reference)!.session_id : fork.fork!.native_reference;
+    assert.equal(retained[childRef].messages.length, 2);
+    assert.deepEqual(retained[childRef].permission, retained[sourceId].permission);
+    if (controlled) {
+      assert.ok(readControlledOpenCodeReference(rollback.native_reference!)?.account_binding);
+      assert.equal((await readFile(stateFile, "utf8")).includes("fixture-only-key"), false);
+      await assert.rejects(runner.startSession({...start, session_id: "different-owner", continue_session: true, configuration_inheritance: {hooks: true}}), /preserve.*controlled/);
+      const env = config.provider_instances[0]!.env;
+      const originalAuth = env.OPENCODE_AUTH_CONTENT!;
+      env.OPENCODE_AUTH_CONTENT = JSON.stringify({anthropic: {type: "api", key: "another-fixture-account"}});
+      await assert.rejects(runner.conversationOperation("account-drift", {session_id: "session", operation: {kind: "read"}}), /provider identity changed/);
+      env.OPENCODE_AUTH_CONTENT = originalAuth;
+      env.HCP_TEST_OPENCODE_VERSION = "opencode 1.18.35";
+      await assert.rejects(runner.conversationOperation("version-drift", {session_id: "session", operation: {kind: "read"}}), /provider identity changed/);
+      await assert.rejects(runner.startSession({...start, session_id: "unsupported-version", continuation_group_key: "unsupported-version"}), /verified OpenCode 1.18.34/);
+      env.HCP_TEST_OPENCODE_VERSION = "opencode 1.18.34";
+    }
+    runner = manager(new JsonRunnerStateStore(stateFile));
     await runner.startSession({...start, session_id: "reopened", continue_session: true});
     const events = await runner.sendTurn({session_id: "reopened", turn_id: "followup", input: "continue"});
     assert.equal(events.at(-1)?.event_type, "turn.completed");

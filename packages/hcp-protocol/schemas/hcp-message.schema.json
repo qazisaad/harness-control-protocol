@@ -3663,6 +3663,32 @@
                           ]
                         }
                       },
+                      "configuration_inheritance_options": {
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "user_settings": {
+                              "type": "boolean"
+                            },
+                            "project_settings": {
+                              "type": "boolean"
+                            },
+                            "hooks": {
+                              "type": "boolean"
+                            },
+                            "mcp_servers": {
+                              "type": "boolean"
+                            },
+                            "plugins": {
+                              "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
                       "configuration_inheritance": {
                         "type": "object",
                         "properties": {

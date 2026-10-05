@@ -125,11 +125,18 @@ test("configuration inheritance requirements fail before native launch when supp
     Object.assign(f.adapter, {configurationInheritance: {hooks: true}});
     await assert.rejects(f.first.startSession(payload), /cannot enforce.*hooks/);
     assert.equal(launches, 0);
-    Object.assign(f.adapter, {configurationInheritance: {hooks: false}});
-    const configured = await f.first.startSession(payload);
-    assert.equal(launches, 1);
-    assert.deepEqual((configured.find(event => event.event_type === "session.configured")!.data as Record<string, unknown>).configuration_inheritance, {hooks: false});
+    Object.assign(f.adapter, {configurationInheritanceOptions: [{hooks: false, plugins: false}]});
+    await assert.rejects(f.first.startSession({...payload, configuration_inheritance: {hooks: false, plugins: true}}), /cannot enforce/);
+    assert.equal(launches, 0);
+    const selected = await f.first.startSession(payload);
+    assert.deepEqual((selected.find(event => event.event_type === "session.configured")!.data as Record<string, unknown>).configuration_inheritance,
+      {hooks: false, plugins: false});
     await f.first.stopSession("isolated", "done");
+    Object.assign(f.adapter, {configurationInheritance: {hooks: false}});
+    const configured = await f.first.startSession({...payload, session_id: "isolated-default"});
+    assert.equal(launches, 2);
+    assert.deepEqual((configured.find(event => event.event_type === "session.configured")!.data as Record<string, unknown>).configuration_inheritance, {hooks: false});
+    await f.first.stopSession("isolated-default", "done");
   } finally {await f.cleanup();}
 });
 

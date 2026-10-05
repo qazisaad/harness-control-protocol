@@ -8,11 +8,17 @@ import {
 } from "../types.js";
 
 export function validateConfigurationInheritance(payload: HcpSessionStartPayload,
-  actual?: import("@harness-control/protocol").HarnessConfigurationInheritance): void {
-  for (const [source, requested] of Object.entries(payload.configuration_inheritance ?? {})) {
-    if (requested !== actual?.[source as keyof NonNullable<HcpSessionStartPayload["configuration_inheritance"]>])
-      throw new HarnessAdapterError("configuration_inheritance_unsupported", `This adapter cannot enforce the requested '${source}' inheritance policy.`);
-  }
+  actual?: import("@harness-control/protocol").HarnessConfigurationInheritance,
+  options: readonly import("@harness-control/protocol").HarnessConfigurationInheritance[] = []): typeof actual {
+  const requested = Object.entries(payload.configuration_inheritance ?? {});
+  if (!requested.length) return actual;
+  const matches = (choice: typeof actual) => requested.every(([source, value]) =>
+    value === choice?.[source as keyof NonNullable<typeof actual>]);
+  if (matches(actual)) return actual;
+  const selected = options.find(matches);
+  if (selected) return selected;
+  const source = requested.find(([source, value]) => value !== actual?.[source as keyof NonNullable<typeof actual>])?.[0] ?? "configuration";
+  throw new HarnessAdapterError("configuration_inheritance_unsupported", `This adapter cannot enforce the requested '${source}' inheritance policy in one supported configuration.`);
 }
 
 export function validateInstructionRoles(payload: HcpSessionStartPayload, roles?: readonly ("system" | "developer")[]): void {

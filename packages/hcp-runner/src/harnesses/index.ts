@@ -625,6 +625,8 @@ export class HarnessSessionManager {
     const {session, discoveredTools} = prepared;
     const localCapabilityLease = session.localCapabilityLease;
     const provider = this.#requireProvider(session.providerInstanceId, session.driverKind);
+    const configuredAdapter = this.#adapterRegistry.require(provider.driver_kind);
+    const configuredInheritance = validateConfigurationInheritance(payload, configuredAdapter.configurationInheritance, configuredAdapter.configurationInheritanceOptions);
     this.#sessions.set(payload.session_id, session);
     this.#turnIdsBySession.set(payload.session_id, new Set<string>());
     const events: HcpHarnessEventPayload[] = [
@@ -642,8 +644,7 @@ export class HarnessSessionManager {
       }),
       this.#event(payload.session_id, undefined, "session.configured", {
         execution_profile: payload.execution_profile ?? "isolated",
-        ...(this.#adapterRegistry.require(provider.driver_kind).configurationInheritance ?
-          {configuration_inheritance: this.#adapterRegistry.require(provider.driver_kind).configurationInheritance} : {}),
+        ...(configuredInheritance ? {configuration_inheritance: configuredInheritance} : {}),
         model_selection: payload.model_selection,
         mcp_server_count: payload.mcp_servers.length,
         local_capabilities: localCapabilityLease?.capabilities.map((capability) => capability.id) ?? [],
@@ -708,7 +709,7 @@ export class HarnessSessionManager {
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
     if (payload.execution_profile === "interactive" && !adapter.executionProfiles?.some(profile => profile.id === "interactive"))
       throw new HarnessAdapterError("execution_profile_unsupported", "This adapter has not declared an interactive execution profile.");
-    validateConfigurationInheritance(payload, adapter.configurationInheritance);
+    validateConfigurationInheritance(payload, adapter.configurationInheritance, adapter.configurationInheritanceOptions);
     validateInstructionRoles(payload, adapter.instructionRoles);
     await adapter.validateStart({ payload, provider });
     if (payload.continuation_group_key && [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === payload.continuation_group_key))

@@ -9,6 +9,7 @@ if (process.argv.includes("--version")) {
 
 const streams = new Set();
 const pending = new Map();
+const admittedMessages = new Map();
 const emit = value => {for (const stream of streams) sendEvent(stream, value);};
 const finish = response => {
   const messageID = `assistant-tools-${response.hcpMessageId}`;
@@ -23,7 +24,19 @@ const server = createServer(async (request, response) => {
   let body = "";
   for await (const chunk of request) body += chunk;
   const payload = body ? JSON.parse(body) : {};
+  if (request.method === "GET" && url.pathname === "/config") {
+    writeJson(response, JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}")); return;
+  }
   if (process.env.HCP_TEST_OPENCODE_RECORD) appendFileSync(process.env.HCP_TEST_OPENCODE_RECORD, JSON.stringify({method: request.method, path: url.pathname, payload}) + "\n");
+  const admitted = /^\/session\/([^/]+)\/message\/([^/]+)$/.exec(url.pathname);
+  if (request.method === "GET" && admitted) {
+    const user = admittedMessages.get(admitted[2]);
+    const info = {id: admitted[2], sessionID: user?.hcpSessionId, role: "user", system: user?.system};
+    const drift = process.env.HCP_TEST_OPENCODE_INSTRUCTION_DRIFT;
+    if (drift === "system") info.system = "Native rewritten instructions";
+    if (drift === "session") info.sessionID = "unrelated-session";
+    writeJson(response, {info}); return;
+  }
   if (process.env.HCP_TEST_OPENCODE_HISTORY) {
     const file = process.env.HCP_TEST_OPENCODE_HISTORY;
     const histories = JSON.parse(readFileSync(file, "utf8"));
@@ -90,6 +103,7 @@ const server = createServer(async (request, response) => {
     const executionId = url.pathname.split("/")[2];
     const text = payload.parts[0].text;
     response.hcpMessageId = payload.messageID;
+    admittedMessages.set(payload.messageID, {...payload, hcpSessionId: executionId});
     if (text === "approval" || text === "question") {
       pending.set(text, response);
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "another-session", permission: "bash", questions: []}});
