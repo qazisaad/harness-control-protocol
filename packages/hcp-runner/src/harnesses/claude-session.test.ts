@@ -319,6 +319,7 @@ test("root interruption preserves independently running tasks and permits anothe
   const f = await fixture();
   try {
     await f.send("first", "spawn");
+    assert.equal(f.options[0]!.perTaskStopAffordance, true);
     const running = f.send("waiting", "wait");
     await until(() => f.prompts.length === 2);
     await f.manager.cancelTurn("session", "waiting");

@@ -14,7 +14,14 @@ const config = RunnerConfigSchema.parse({runner_id: "work-acceptance", control_p
   workspaces: [{id: "workspace", path: cwd}], provider_instances: [{id: "claude", driver_kind: "claude"}]});
 const manager = new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(join(cwd, "state.json"))});
 const events = [], seen = new Set();
-const observe = event => {hcpHarnessEventPayloadSchema.parse(event); if (seen.has(event.sequence)) return; seen.add(event.sequence); events.push(event);};
+let interrupt;
+const observe = event => {
+  hcpHarnessEventPayloadSchema.parse(event); if (seen.has(event.sequence)) return; seen.add(event.sequence); events.push(event);
+  if (event.turn_id === "interrupted-root" && event.event_type === "content.delta" && !interrupt) {
+    interrupt = manager.cancelTurn("work", "interrupted-root");
+    void interrupt.catch(() => {});
+  }
+};
 const unsubscribe = manager.subscribeEvents(observe);
 const work = async () => {
   const result = await manager.conversationOperation(randomUUID(), {session_id: "work", operation: {kind: "work", action: "read"}});
@@ -43,9 +50,18 @@ const spawn = async (turn, seconds) => {
 const passed = [];
 try {
   await manager.startSession({session_id: "work", workspace_id: "workspace", provider_instance_id: "claude", driver_kind: "claude", cwd,
-    execution_profile: "interactive", sandbox_mode: "danger_full_access", approval_policy: "full_access", continue_session: false,
+    execution_profile: "interactive", sandbox_mode: "danger_full_access", approval_policy: "full_access", continue_session: false, continuation_group_key: "live-work-history",
     model_selection: {model: process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet"}, mcp_servers: []});
-  const first = await spawn("background-completion", 15);
+  const first = await spawn("background-completion", 30);
+  const history = await manager.conversationOperation("background-live-read", {session_id: "work", operation: {kind: "read"}});
+  assert.ok(history.history?.turn_count >= 1, "A live background owner lost its readable root history");
+  passed.push("live-history-with-background");
+  await manager.sendTurn({session_id: "work", turn_id: "interrupted-root", input: "Without tools, print the integers from 1 through 10000, one per line. Start immediately and continue without commentary."}, observe);
+  assert.ok(interrupt, "No streaming root was available to interrupt");
+  await interrupt;
+  assert.equal(events.findLast(event => event.turn_id === "interrupted-root" && ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type))?.event_type, "turn.cancelled");
+  assert.ok((await work()).items.some(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Root interruption stopped its independent background child");
+  passed.push("root-interruption-preserves-background");
   await send("followup", "Reply FOLLOWUP only. Do not use tools or wait for the child.");
   await until(async () => (await work()).items.find(item => item.work.work_id === first.work_id && item.work.status === "completed"));
   passed.push("background-after-root", "followup-with-background", "observed-child-completion");

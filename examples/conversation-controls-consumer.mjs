@@ -99,10 +99,19 @@ try {
   assert.equal(Buffer.concat(chunks).toString("utf8"), "steered".repeat(30_000));
   await peer.compactConversation("session", "compact");
   await until(() => events.some(event => event.turn_id === "compact" && event.event_type === "turn.completed"));
+  const loadedRead = await peer.readConversation("session");
+  assert.equal(loadedRead.payload.history.turn_count, 2);
+  assert.equal(sessions.activeSessionCount(), 1);
   await peer.stopSession({session_id: "session"});
   const read = await peer.readConversation("session");
   assert.equal(read.payload.history.turns[0].portable_items[0].type, "message");
   assert.equal(read.payload.history.turns[0].portable_items[0].body.value, "steered");
+  const injection = {expected_history_hash: read.payload.history.history_hash, messages: [{role: "user", content: "Independent context"}, {role: "assistant", content: "Previous answer"}]};
+  const injectionResult = await peer.injectContext("session", injection, {id: "durable-injection"});
+  assert.equal(injectionResult.payload.injection.outcome, "applied");
+  assert.deepEqual((await peer.injectContext("session", injection, {id: "durable-injection"})).payload, injectionResult.payload);
+  assert.equal(adapter.injectionDispatches, 1);
+  assert.deepEqual(adapter.injectionsSeen, injection.messages);
   const fork = {target_session_id: "child", continuation_group_key: "child-key", expected_history_hash: read.payload.history.history_hash,
     last_turn_id: "turn"};
   const first = await peer.forkConversation("session", fork, {id: "durable-fork"});

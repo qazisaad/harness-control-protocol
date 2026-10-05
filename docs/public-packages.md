@@ -22,6 +22,8 @@ Native asynchronous input without a provider-confirmed root uses `request_scope:
 
 ## Commands and completion
 
+The SDK's `conversation` method and typed helpers expose capability-gated history reads, fork, rollback, content retrieval, work controls and explicit context injection through `injectContext`. `live_history_read` permits reading a retained thread without unloading its native owner; mutations require an idle owner. Injection carries user/assistant text and an expected history hash. Its matching result distinguishes applied context from confirmed native method absence. An unknown dispatch outcome must never be converted into a second prompt delivery. Durable injection fences and receipts remain owned by the runner, without product IDs or handoff formatting rules.
+
 Every current app-to-runner operation has a typed SDK method: session start, turn send/cancel, session stop/snapshot, approval/input response, MCP detach, local actions, and workspace list/add/rename/remove through `manageWorkspaces`. MCP attachments are part of session start. Provider capabilities and local policy remain authoritative; the SDK never widens requested permissions.
 
 Prepare and persist the complete command before sending if crash recovery is required. Its id and payload survive retries. The SDK never retries automatically. Session/turn command promises resolve to an ACK, which means accepted, not completed. Consume `harness.event` through the terminal event. Snapshot, workspace, and local-action requests resolve only to their matching result; an ACK cannot finish these requests. Workspace/local errors remain typed result messages so their snapshots and audit evidence are not lost. NACKs reject with the runner's structured error.

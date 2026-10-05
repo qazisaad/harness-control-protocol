@@ -10,6 +10,7 @@ const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(t
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "example.controls";
   readonly portableHistory = true;
+  readonly liveHistoryRead = true;
   readonly sessionEvents = true;
   readonly nativeWork = true;
   readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true}];
@@ -20,13 +21,16 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly instructionRoles = ["system"] as const;
   instructionsSeen: HarnessInstructions | undefined;
   readonly configurationInheritance = {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false};
-  readonly conversationOperations = ["read", "rollback", "fork"] as const;
+  readonly conversationOperations = ["read", "rollback", "fork", "inject"] as const;
+  injectionsSeen: Array<{role: "user" | "assistant"; content: string}> = [];
+  injectionDispatches = 0;
   readonly histories = new Map<string, Turn[]>();
   mutations = 0;
   async probe(provider: Parameters<HarnessAdapter["probe"]>[0]) {
     return {provider_instance_id: provider.id, driver_kind: this.driverKind, installed: true, available: true,
       status: "ready" as const, models: [{id: "fixture", label: "Fixture", capabilities: {option_descriptors: []}}],
       execution_capabilities: {streaming: true, multi_turn: true, session_continuation: true, native_history: true,
+        live_history_read: true, native_history_injection: true,
         instruction_roles: [...this.instructionRoles],
         session_events: true,
         execution_profiles: this.executionProfiles,
@@ -113,10 +117,16 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     const {request, commandId, conversation} = input;
     const turns = this.histories.get(conversation.native_thread_id)!;
     const operation = request.operation;
-    if (!["read", "fork", "rollback"].includes(operation.kind))
-      throw new HarnessAdapterError("unsupported_operation", "Fixture supports read, fork and rollback.");
-    if ((operation.kind === "fork" || operation.kind === "rollback") && operation.expected_history_hash !== revision(turns))
+    if (!["read", "fork", "rollback", "inject"].includes(operation.kind))
+      throw new HarnessAdapterError("unsupported_operation", "Fixture supports read, fork, rollback and injection.");
+    if ((operation.kind === "fork" || operation.kind === "rollback" || operation.kind === "inject") && operation.expected_history_hash !== revision(turns))
       throw new HarnessAdapterError("history_changed", "Read current history before mutation.");
+    if (operation.kind === "inject") {
+      input.beginMutation!(); this.injectionDispatches++;
+      this.injectionsSeen.push(...structuredClone(operation.messages));
+      return {command_id: commandId, session_id: request.session_id, operation: "inject", filesystem_undo: false,
+        injection: {outcome: "applied", message_count: operation.messages.length}};
+    }
     if (operation.kind === "fork") {
       const end = operation.last_turn_id ? turns.findIndex(turn => turn.id === operation.last_turn_id) + 1 : turns.length;
       if (!end && operation.last_turn_id) throw new HarnessAdapterError("history_boundary", "Unknown fork boundary.");

@@ -172,6 +172,9 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       env: {...process.env, ...this.start.provider.env, ...(this.start.provider.home ? {CLAUDE_CONFIG_DIR: this.start.provider.home} : {})},
       systemPrompt: this.start.payload.instructions?.system ?? {type: "preset", preset: "claude_code"}, settingSources: [], settings: {disableAllHooks: true},
       persistSession: true, ...(this.start.nativeConversation && !this.start.nativeConversation.fresh ? {resume: this.nativeId} : {sessionId: this.nativeId}),
+      // This owner exposes stopTask through HCP work cancellation. Without this declaration,
+      // native interrupt also kills independent background tasks on an open input stream.
+      perTaskStopAffordance: true,
       includePartialMessages: true, strictMcpConfig: true, mcpServers, permissionMode: this.#permissionMode(this.#mode!),
       allowDangerouslySkipPermissions: this.start.payload.approval_policy === "full_access",
       onElicitation: claudeElicitation(() => {

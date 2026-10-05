@@ -12,6 +12,10 @@ const messageSchema = z.object({
   error: z.unknown().optional(),
 });
 export type RpcMessage = z.infer<typeof messageSchema>;
+/** Native method absence is confirmed non-dispatch; transport and payload errors are not. */
+export class CodexRpcRequestError extends HarnessAdapterError {
+  constructor(message: string, readonly nativeCode?: number) {super("codex_request_failed", message);}
+}
 export type RpcRequestHandler = (
   params: unknown,
   signal: AbortSignal,
@@ -170,7 +174,7 @@ export class CodexRpc {
       this.#pending.delete(message.id);
       if (message.error !== undefined) {
         const error = z
-          .object({ message: z.string() })
+          .object({ message: z.string(), code: z.number().int().optional() })
           .safeParse(message.error);
         const detail = processFailureMessage(
           {
@@ -184,7 +188,7 @@ export class CodexRpc {
           "Codex rejected a native request.",
           [],
         );
-        pending.reject(new HarnessAdapterError("codex_request_failed", detail));
+        pending.reject(new CodexRpcRequestError(detail, error.success ? error.data.code : undefined));
       } else pending.resolve(message.result);
     }
   }

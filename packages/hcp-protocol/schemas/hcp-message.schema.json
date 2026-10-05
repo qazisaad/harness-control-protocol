@@ -59,6 +59,52 @@
                   "properties": {
                     "kind": {
                       "type": "string",
+                      "const": "inject"
+                    },
+                    "expected_history_hash": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "messages": {
+                      "minItems": 1,
+                      "maxItems": 100,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant"
+                            ]
+                          },
+                          "content": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 131072
+                          }
+                        },
+                        "required": [
+                          "role",
+                          "content"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "expected_history_hash",
+                    "messages"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
                       "const": "rollback"
                     },
                     "num_turns": {
@@ -341,12 +387,54 @@
                 "steer",
                 "fork",
                 "content",
-                "work"
+                "work",
+                "inject"
               ]
             },
             "filesystem_undo": {
               "type": "boolean",
               "const": false
+            },
+            "injection": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "const": "applied"
+                    },
+                    "message_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "message_count"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "const": "unsupported"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "const": "native_method_unavailable"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
             },
             "work": {
               "oneOf": [
@@ -2293,6 +2381,23 @@
             },
             {
               "if": {
+                "properties": {
+                  "operation": {
+                    "const": "inject"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "injection"
+                ]
+              }
+            },
+            {
+              "if": {
                 "required": [
                   "native_fresh"
                 ]
@@ -2304,6 +2409,20 @@
                       "fork",
                       "rollback"
                     ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "injection"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "operation": {
+                    "const": "inject"
                   }
                 }
               }
@@ -3578,6 +3697,12 @@
                         "type": "boolean"
                       },
                       "native_history": {
+                        "type": "boolean"
+                      },
+                      "live_history_read": {
+                        "type": "boolean"
+                      },
+                      "native_history_injection": {
                         "type": "boolean"
                       },
                       "history_pagination": {

@@ -151,6 +151,8 @@ export class HcpHostConnection {
         || pending.command.payload.session_id !== message.payload.session_id
         || pending.command.payload.operation.kind !== message.payload.operation) return;
       const operation = pending.command.payload.operation;
+      if (operation.kind === "inject" && message.payload.injection?.outcome === "applied" &&
+          message.payload.injection.message_count !== operation.messages.length) return;
       if (operation.kind === "steer" && operation.turn_id !== message.payload.turn_id) return;
       if (operation.kind === "content" && (operation.content_id !== message.payload.content?.reference.content_id
         || operation.offset !== message.payload.content?.offset)) return;
@@ -207,6 +209,10 @@ export class HcpHostConnection {
   }
   retireConversation(sessionId: string, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "retire"}}, command, wait);
+  }
+  injectContext(sessionId: string, injection: Omit<Extract<Payload<"harness.conversation.request">["operation"], {kind: "inject"}>, "kind">,
+    command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "inject", ...injection}}, command, wait);
   }
   steerTurn(sessionId: string, turnId: string, input: string, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "steer", turn_id: turnId, input}}, command, wait);

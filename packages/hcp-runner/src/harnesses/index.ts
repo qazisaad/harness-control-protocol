@@ -384,13 +384,30 @@ export class HarnessSessionManager {
         return {command_id: commandId, session_id: request.session_id, operation: "steer", turn_id: request.operation.turn_id, filesystem_undo: false};
       }
       const binding = this.#stateStore.nativeConversationForSession(request.session_id);
-      if (!binding || [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === binding.key))
-        throw new HarnessAdapterError("native_conversation_unavailable", "Read or change only an idle, retained native conversation.");
+      const liveOwner = binding ? [...this.#sessions.values()].find(session => session.startPayload.continuation_group_key === binding.key) : undefined;
+      if (!binding) throw new HarnessAdapterError("native_conversation_unavailable", "No durable native conversation binding exists for this session.");
       const {key, conversation} = binding;
       await this.#assertWorkspaceAllowed(conversation.workspace_id, conversation.cwd);
       const provider = this.#requireProvider(conversation.provider_instance_id);
       if (nativeProviderHash(provider) !== conversation.provider_binding_hash)
         throw new HarnessAdapterError("native_continuation_binding", "The native provider identity changed; retained history belongs to the original provider.");
+      const injectionHash = request.operation.kind === "inject" ? createHash("sha256").update(JSON.stringify({session_id: request.session_id, kind: "inject",
+        expected_history_hash: request.operation.expected_history_hash,
+        messages: request.operation.messages.map(({role, content}) => ({role, content}))})).digest("hex") : undefined;
+      const injectionReceipt = conversation.injections?.find(receipt => receipt.command_id === commandId);
+      if (request.operation.kind === "inject" && injectionReceipt) {
+        if (injectionReceipt.request_hash !== injectionHash) throw new HarnessAdapterError("command_conflict", "The original injection has different parameters.");
+        if (injectionReceipt.phase === "completed" && injectionReceipt.result) return injectionReceipt.result;
+      }
+      if (liveOwner && (request.operation.kind !== "read" || !liveOwner.adapter.liveHistoryRead))
+        throw new HarnessAdapterError("native_conversation_unavailable", "Live history requires explicit read support; conversation changes require an idle retained owner.");
+      if (request.operation.kind !== "read" && Object.values(conversation.injections ?? {}).some(receipt => receipt.phase === "pending"))
+        throw new HarnessAdapterError("native_injection_unknown", "An earlier context injection may have dispatched; automatic repetition or another mutation is forbidden.");
+      if (request.operation.kind !== "read" && conversation.fork?.phase === "pending")
+        throw new HarnessAdapterError("native_fork_unknown", "A prior native fork may have dispatched; automatic repetition, mutation and retirement require reconciliation.");
+      if (request.operation.kind !== "read" && conversation.rollback?.phase === "pending" &&
+          !(request.operation.kind === "rollback" && conversation.rollback.command_id === commandId))
+        throw new HarnessAdapterError("native_rollback_unknown", "A prior rollback needs reconciliation before another mutation or retirement.");
       const retainedWork = this.#stateStore.nativeWorkState(conversation.last_session_id);
       if (request.operation.kind !== "read" && (retainedWork?.closure_unconfirmed || Object.values(retainedWork?.items ?? {}).some(work => !isNativeWorkTerminal(work.status))))
         throw new HarnessAdapterError("native_work_shutdown_unknown", "Native work closure is unconfirmed; retained conversation mutations require authoritative reconciliation.");
@@ -401,6 +418,8 @@ export class HarnessSessionManager {
       const adapter = this.#adapterRegistry.require(provider.driver_kind);
       if (!adapter.conversationOperation || !adapter.conversationOperations?.includes(request.operation.kind))
         throw new HarnessAdapterError("conversation_operation_unsupported", `Provider '${provider.driver_kind}' does not support '${request.operation.kind}'.`);
+      if (request.operation.kind === "inject" && (conversation.injections?.length ?? 0) >= 1024)
+        throw new HarnessAdapterError("native_injection_receipt_limit", "Context injection receipts reached their bounded retention limit; begin an independent conversation.");
       if (request.operation.kind === "fork") {
         const prior = conversation.fork;
         if (prior?.command_id === commandId && prior.phase === "completed" && prior.result) {
@@ -416,6 +435,7 @@ export class HarnessSessionManager {
           throw new HarnessAdapterError("fork_destination_exists", "Fork requires a fresh session identity and conversation key.");
       }
       let forkStarted = false;
+      let injectionStarted = false;
       const result = hcpConversationResultPayloadSchema.parse(await adapter.conversationOperation({
         commandId, request, conversation: structuredClone(conversation), provider,
         publishContent: value => this.#contentStore.publish({session_id: request.session_id, provider_instance_id: provider.id,
@@ -427,9 +447,17 @@ export class HarnessSessionManager {
           this.#stateStore.saveNativeConversation(key, {...conversation, fork: {command_id: commandId,
             request_hash: createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(request.operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex"),
             target_key: request.operation.continuation_group_key, target_session_id: request.operation.target_session_id, phase: "pending"}});
+        }} : request.operation.kind === "inject" ? {beginMutation: () => {
+          if (injectionStarted) throw new HarnessAdapterError("native_injection_unknown", "Context injection dispatch can be fenced only once.");
+          injectionStarted = true;
+          this.#stateStore.saveNativeConversation(key, {...conversation, injections: [...(conversation.injections ?? []),
+            {command_id: commandId, request_hash: injectionHash!, phase: "pending"}]});
+          const persisted = this.#stateStore.getNativeConversation(key)?.injections?.find(receipt => receipt.command_id === commandId);
+          if (persisted?.phase !== "pending" || persisted.request_hash !== injectionHash)
+            throw new HarnessAdapterError("native_mutation_fence_missing", "The context injection dispatch fence was not retained; native dispatch is forbidden.");
         }} : {}),
         save: updated => {
-          if (request.operation.kind === "fork") throw new HarnessAdapterError("native_history_binding", "Fork state is owned by the runner's mutation fence.");
+          if (request.operation.kind === "fork" || request.operation.kind === "inject") throw new HarnessAdapterError("native_history_binding", "Mutation dispatch state is owned by the runner's fence.");
           // Native mutation evidence cannot change the authorized conversation's identity or scope.
           const {rollback: _priorRollback, updated_at: _priorTime, ...original} = conversation;
           const {rollback: _nextRollback, updated_at: _nextTime, ...next} = updated;
@@ -440,6 +468,12 @@ export class HarnessSessionManager {
       }));
       if (result.command_id !== commandId || result.session_id !== request.session_id || result.operation !== request.operation.kind)
         throw new HarnessAdapterError("native_history_binding", "Conversation result targets another command, session, or operation.");
+      if (request.operation.kind === "inject") {
+        if (!injectionStarted || !result.injection || result.injection.outcome === "applied" && result.injection.message_count !== request.operation.messages.length)
+          throw new HarnessAdapterError("native_injection_unknown", "Context injection did not confirm its fenced request.");
+        this.#stateStore.saveNativeConversation(key, {...conversation, injections: [...(conversation.injections ?? []),
+          {command_id: commandId, request_hash: injectionHash!, phase: "completed", result}]});
+      }
       if (adapter.portableHistory && result.history?.turns.some(turn => turn.portable_fidelity === undefined || turn.portable_items === undefined && turn.portable_items_ref === undefined))
         throw new HarnessAdapterError("portable_history_missing", "This adapter did not supply its declared portable history contract.");
       if (request.operation.kind === "rollback" && result.native_reference) {
@@ -457,7 +491,7 @@ export class HarnessSessionManager {
         if (!forkStarted || !target || target.session_id !== request.operation.target_session_id || target.continuation_group_key !== request.operation.continuation_group_key ||
             target.native_reference === conversation.native_thread_id)
           throw new HarnessAdapterError("native_history_binding", "Native fork did not confirm an independent destination.");
-        const {rollback: _rollback, fork: _fork, ...bindingFields} = conversation;
+        const {rollback: _rollback, fork: _fork, injections: _injections, ...bindingFields} = conversation;
         this.#stateStore.saveNativeConversation(target.continuation_group_key, {...bindingFields, ...(result.native_fresh ? {fresh: true} : {}), native_thread_id: target.native_reference,
           last_session_id: target.session_id, updated_at: new Date().toISOString()});
         this.#stateStore.saveNativeConversation(key, {...conversation, fork: {command_id: commandId, target_key: target.continuation_group_key,
@@ -742,6 +776,8 @@ export class HarnessSessionManager {
           throw new HarnessAdapterError("native_continuation_binding", "Native conversation is missing or its workspace, provider, tools, instructions, or policy changed.");
         if (conversation.rollback?.phase === "pending") throw new HarnessAdapterError("native_rollback_unknown", "The previous rollback needs reconciliation; starting another turn is unsafe.");
         if (conversation.fork?.phase === "pending") throw new HarnessAdapterError("native_fork_unknown", "A previous fork has an unknown outcome; reconcile it before resuming.");
+        if (Object.values(conversation.injections ?? {}).some(receipt => receipt.phase === "pending"))
+          throw new HarnessAdapterError("native_injection_unknown", "An earlier context injection has an unknown outcome; resuming cannot redeliver it.");
         const priorWork = this.#stateStore.nativeWorkState(conversation.last_session_id);
         if (priorWork?.closure_unconfirmed || Object.values(priorWork?.items ?? {}).some(work => !isNativeWorkTerminal(work.status)))
           throw new HarnessAdapterError("native_work_shutdown_unknown", "Earlier native work has unconfirmed closure; resuming cannot reclaim its execution owner.");
@@ -1062,6 +1098,7 @@ export class HarnessSessionManager {
         this.#stateStore.saveNativeConversation(session.startPayload.continuation_group_key!, {
           ...(previous?.rollback ? {rollback: previous.rollback} : {}),
           ...(previous?.fork ? {fork: previous.fork} : {}),
+          ...(previous?.injections ? {injections: previous.injections} : {}),
           native_thread_id: threadId, binding_hash: session.nativeBindingHash!, updated_at: new Date().toISOString(),
           approval_policy: session.startPayload.approval_policy,
           last_session_id: session.sessionId, provider_instance_id: session.providerInstanceId, workspace_id: session.workspaceId, cwd: session.cwd,

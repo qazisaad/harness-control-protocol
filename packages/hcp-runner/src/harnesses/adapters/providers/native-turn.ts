@@ -27,6 +27,8 @@ export function nativeExecutionCapabilities(
     session_continuation: true,
     plan_mode: true,
     native_history: true,
+    live_history_read: true,
+    native_history_injection: driver === "codex",
     history_pagination: true,
     conversation_rollback: true,
     conversation_fork: true,

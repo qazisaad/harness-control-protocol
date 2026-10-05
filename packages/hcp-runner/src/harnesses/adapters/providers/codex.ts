@@ -43,11 +43,12 @@ export type CodexHarnessAdapterOptions = {
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly portableHistory = true;
+  readonly liveHistoryRead = true;
   readonly instructionRoles = ["system", "developer"] as const;
   readonly configurationInheritance = nativeExecutionCapabilities("codex").configuration_inheritance!;
   readonly driverKind = "codex";
   readonly durableMcpContinuation = true;
-  readonly conversationOperations = ["read", "rollback", "fork"] as const;
+  readonly conversationOperations = ["read", "rollback", "fork", "inject"] as const;
 
   conversationOperation(input: HarnessAdapterConversationInput) {
     return nativeConversationOperation(input.commandId, input.request, input.conversation, input.provider, input.save, input.beginMutation, input.publishContent);

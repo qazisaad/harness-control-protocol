@@ -93,6 +93,18 @@ const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), 
   updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
   fresh: z.literal(true).optional(),
   approval_policy: z.enum(["ask", "auto_edits", "full_access"]).optional(),
+  injections: z.array(z.discriminatedUnion("phase", [
+    z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/), phase: z.literal("pending")}).strict(),
+    z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/), phase: z.literal("completed"), result: hcpConversationResultPayloadSchema}).strict(),
+  ])).max(1024).superRefine((value, context) => {
+    const commands = new Set<string>();
+    for (const [index, receipt] of value.entries()) {
+      if (commands.has(receipt.command_id)) context.addIssue({code: "custom", path: [index], message: "Injection commands must be unique."});
+      commands.add(receipt.command_id);
+      if (receipt.phase === "completed" && (receipt.result.command_id !== receipt.command_id || receipt.result.operation !== "inject"))
+        context.addIssue({code: "custom", path: [index], message: "Completed injection evidence must match its dispatch command."});
+    }
+  }).optional(),
   rollback: z.object({command_id: z.string(), source_hash: z.string(), target_hash: z.string(), phase: z.enum(["pending", "completed"]),
     replacement_native_thread_id: z.string().optional(), native_fresh: z.literal(true).optional()}).strict().optional(),
   fork: z.object({command_id: z.string(), target_key: z.string(), target_session_id: z.string(), phase: z.enum(["pending", "completed"]),

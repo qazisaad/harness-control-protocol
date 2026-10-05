@@ -19,6 +19,20 @@ function ack(id: string): HcpMessage {
 }
 const stop = () => createCommand({ type: "harness.session.stop", payload: { session_id: "session-1", reason: "done" } });
 
+test("context injection waits for its matching confirmed outcome and cannot resolve from an ACK or partial application", async () => {
+  const {peer, sent} = connected();
+  const waiting = peer.injectContext("session", {expected_history_hash: "a".repeat(64), messages: [{role: "user", content: "Context"}, {role: "assistant", content: "Answer"}]});
+  const command = sent.at(-1)!;
+  let settled = false;
+  void waiting.then(() => {settled = true;});
+  peer.receive(ack(command.id));
+  const receipt = {command_id: command.id, session_id: "session", operation: "inject" as const, filesystem_undo: false as const};
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, injection: {outcome: "applied", message_count: 1}}));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, injection: {outcome: "applied", message_count: 2}}));
+  assert.equal((await waiting).payload.injection?.outcome, "applied");
+});
+
 test("steering results must name the requested active turn", async () => {
   const {peer, sent} = connected();
   const waiting = peer.steerTurn("session", "turn", "new input");

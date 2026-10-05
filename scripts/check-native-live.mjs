@@ -54,12 +54,32 @@ for (const driver of providers) {
       assert.ok(JSON.stringify(result.filter(event => event.event_type === "turn.completed")).includes(token), "Native conversation lost the marker");
     };
     await checkRecall(start.session_id, "followup");
+    const liveHistory = await manager.conversationOperation("live-active-read", {session_id: start.session_id, operation: {kind: "read", limit: 100}});
+    assert.ok(liveHistory.history?.turn_count >= 2, "Live history omitted retained root turns");
+    assert.equal(manager.activeSessionCount(), 1, "A live read unloaded its owner");
+    passed.push("live-history");
     await manager.stopSession(start.session_id, "live-reopen");
+    let injectedMarker;
+    if (driver === "codex" && process.env.HCP_LIVE_INJECT === "1") {
+      const snapshot = await manager.conversationOperation("before-inject", {session_id: start.session_id, operation: {kind: "read"}});
+      injectedMarker = randomUUID();
+      const request = {session_id: start.session_id, operation: {kind: "inject", expected_history_hash: snapshot.history.history_hash,
+        messages: [{role: "user", content: `Historical handoff marker: ${injectedMarker}.`}, {role: "assistant", content: `I retained the handoff marker ${injectedMarker}.`}]}};
+      const receipt = await manager.conversationOperation("inject-context", request);
+      assert.equal(receipt.injection?.outcome, "applied", "The installed Codex app server does not support native history injection");
+      assert.deepEqual(await manager.conversationOperation("inject-context", request), receipt);
+      passed.push("context-injection", "duplicate-injection-receipt");
+    }
     console.log(JSON.stringify({driver, stage: "resume"}));
     manager = new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(join(cwd, "runner-state.json"))});
     const resumed = {...start, session_id: `${driver}-resumed`, continue_session: true};
     await manager.startSession(resumed);
     await checkRecall(resumed.session_id, "reopened");
+    if (injectedMarker) {
+      const recalled = await run(resumed.session_id, "injected-recall", "What was the historical handoff marker? Reply with the marker only. Do not use tools.");
+      assert.ok(JSON.stringify(recalled.filter(event => event.event_type === "turn.completed")).includes(injectedMarker), "Injected native context was not retained across runtime restart");
+      passed.push("injected-context-recall");
+    }
     if (process.env.HCP_LIVE_CONTROLS === "1") {
       console.log(JSON.stringify({driver, stage: "compaction"}));
       await run(resumed.session_id, "compact", "", {action: "compact"});

@@ -21,7 +21,7 @@ export type HarnessAdapterConversationInput = {
   request: HcpConversationRequestPayload;
   conversation: NativeConversation;
   provider: ProviderInstanceConfig;
-  /** Persist the runner's mutation fence immediately before dispatching a native fork. */
+  /** Persist the runner's mutation fence immediately before dispatching a native fork or context injection. */
   beginMutation?: () => void;
   publishContent?: (value: unknown) => HarnessContentReference;
   save: (conversation: NativeConversation) => void;
@@ -126,6 +126,8 @@ export type HarnessAdapterStopInput = {
 export type HarnessAdapter = {
   readonly executionProfiles?: readonly import("@harness-control/protocol").HarnessExecutionProfileCapabilities[];
   readonly portableHistory?: true;
+  /** Read-only, revision-checked native history can coexist with this adapter's live session owner. */
+  readonly liveHistoryRead?: true;
   readonly nativeWork?: true;
   cancelNativeWork?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
     provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload; signal: AbortSignal}): Promise<void>;

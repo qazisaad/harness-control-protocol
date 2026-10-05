@@ -16,11 +16,17 @@ for (const historyMode of ["legacy", "paginated"] as const) test(`${historyMode}
 import {readFileSync, writeFileSync, appendFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 const historyFile = process.env.HCP_TEST_HISTORY, callsFile = process.env.HCP_TEST_CALLS;
+let reads = 0;
 createInterface({input: process.stdin}).on('line', line => {
   const request = JSON.parse(line); if (request.id === undefined) return;
   appendFileSync(callsFile, JSON.stringify(request)+'\\n');
   const thread = JSON.parse(readFileSync(request.params?.threadId === 'forked-thread' ? historyFile+'.fork' : historyFile)); let result = {};
+  if (process.env.HCP_TEST_UNSTABLE === '1' && ['thread/read', 'thread/turns/list'].includes(request.method))
+    thread.turns[0].items[0].text = 'Changing ' + (++reads);
   if (request.method === 'config/read') result = {config: {mcp_servers: {private: {}}, plugins: {private: {}}}};
+  if (request.method === 'thread/inject_items' && process.env.HCP_TEST_INJECT_UNSUPPORTED === '1') {
+    process.stdout.write(JSON.stringify({id: request.id, error: {code: -32601, message: 'Method not found'}})+'\\n'); return;
+  }
   if (request.method === 'thread/read' || request.method === 'thread/resume') result = {thread};
   if (request.method === 'thread/turns/list') {
     const offset = Number(request.params.cursor ?? 0), ordered = [...thread.turns].reverse();
@@ -53,6 +59,18 @@ createInterface({input: process.stdin}).on('line', line => {
     assert.equal(portable.type === "message" && portable.body.storage === "inline" && portable.body.value, "Answer 3");
     const older = await nativeConversationOperation("older", {session_id: "session", operation: {kind: "read", limit: 1, cursor: page.history!.next_cursor!}}, state, provider, save);
     assert.equal(older.history!.turns[0]?.id, "turn-2");
+    const injection = {session_id: "session", operation: {kind: "inject" as const, expected_history_hash: read.history!.history_hash,
+      messages: [{role: "user" as const, content: "Prior context"}, {role: "assistant" as const, content: "Earlier answer"}]}};
+    let injectionFences = 0;
+    const applied = await nativeConversationOperation("inject", injection, state, provider, save, () => {injectionFences++;});
+    assert.deepEqual(applied.injection, {outcome: "applied", message_count: 2});
+    provider.env.HCP_TEST_INJECT_UNSUPPORTED = "1";
+    const unsupported = await nativeConversationOperation("unsupported", injection, state, provider, save, () => {injectionFences++;});
+    assert.deepEqual(unsupported.injection, {outcome: "unsupported", reason: "native_method_unavailable"});
+    delete provider.env.HCP_TEST_INJECT_UNSUPPORTED;
+    await assert.rejects(nativeConversationOperation("stale-inject", {...injection, operation: {...injection.operation, expected_history_hash: "0".repeat(64)}}, state, provider, save,
+      () => {throw new Error("Stale injection cannot dispatch");}), /Read current history/);
+    assert.equal(injectionFences, 2);
     const request = {session_id: "session", operation: {kind: "rollback" as const, num_turns: 1, expected_history_hash: read.history!.history_hash}};
     await assert.rejects(nativeConversationOperation("stale", {...request, operation: {...request.operation, expected_history_hash: "0".repeat(64)}}, state, provider, save), /changed/);
     assert.equal(state.rollback, undefined);
@@ -69,6 +87,10 @@ createInterface({input: process.stdin}).on('line', line => {
     assert.deepEqual(duplicate, result);
     const calls = (await readFile(callsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const mutations = calls.filter(call => ["thread/revert", "thread/rollback"].includes(call.method));
+    const inject = calls.find(call => call.method === "thread/inject_items");
+    assert.deepEqual(inject.params.items, [{type: "message", role: "user", content: [{type: "input_text", text: "Prior context"}]},
+      {type: "message", role: "assistant", content: [{type: "output_text", text: "Earlier answer"}]}]);
+    assert.equal(calls.some(call => call.method === "turn/start"), false);
     assert.equal(mutations.length, 1);
     assert.equal(mutations[0].method, historyMode === "paginated" ? "thread/revert" : "thread/rollback");
     const resume = calls.find(call => call.method === "thread/resume");
@@ -77,5 +99,8 @@ createInterface({input: process.stdin}).on('line', line => {
     state = {...state, rollback: {...state.rollback!, phase: "pending", command_id: "lost", target_hash: "e".repeat(64)}};
     await assert.rejects(nativeConversationOperation("lost", request, state, provider, save), /will not be repeated/);
     await assert.rejects(nativeConversationOperation("different", request, state, provider, save), /must be reconciled/);
+    provider.env.HCP_TEST_UNSTABLE = "1";
+    await assert.rejects(nativeConversationOperation("moving-read", {session_id: "session", operation: {kind: "read"}}, state, provider,
+      () => {throw new Error("Read must not modify retained state");}), /changed during the snapshot/);
   } finally {await rm(cwd, {recursive: true, force: true});}
 });

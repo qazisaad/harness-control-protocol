@@ -46,6 +46,72 @@ async function fixture() {
     cleanup: () => rm(cwd, {recursive: true, force: true})};
 }
 
+test("context injection confirms its exact payload once and retains multiple receipts across manager restart", async () => {
+  const f = await fixture();
+  try {
+    await f.first.stopSession("session", "idle");
+    Object.assign(f.adapter, {conversationOperations: ["read", "inject"]});
+    let dispatches = 0;
+    f.setOperation(async input => {
+      if (input.request.operation.kind !== "inject") throw new Error("expected injection");
+      input.beginMutation!(); dispatches++;
+      return {command_id: input.commandId, session_id: input.request.session_id, operation: "inject", filesystem_undo: false,
+        injection: {outcome: "applied", message_count: input.request.operation.messages.length}};
+    });
+    const request = {session_id: "session", operation: {kind: "inject" as const, expected_history_hash: "a".repeat(64),
+      messages: [{role: "user" as const, content: "Context supplied by the app"}, {role: "assistant" as const, content: "Earlier answer"}]}};
+    const first = await f.first.conversationOperation("inject-1", request);
+    await f.first.conversationOperation("__proto__", request);
+    assert.deepEqual(await f.manager().conversationOperation("inject-1", request), first);
+    assert.deepEqual(await f.manager().conversationOperation("inject-1", {session_id: "session", operation: {
+      messages: request.operation.messages.map(message => ({content: message.content, role: message.role})),
+      expected_history_hash: request.operation.expected_history_hash, kind: "inject"}}), first);
+    assert.equal(dispatches, 2);
+    await assert.rejects(f.manager().conversationOperation("inject-1", {...request, operation: {...request.operation, messages: [{role: "user", content: "Changed"}]}}), /different parameters/);
+    await f.first.startSession({...f.start, session_id: "resumed", continue_session: true});
+    await f.first.sendTurn({session_id: "resumed", turn_id: "followup", input: "hello"});
+    await assert.rejects(f.first.conversationOperation("inject-1", {...request, session_id: "resumed"}), /different parameters/);
+    assert.equal(f.state.getNativeConversation("conversation")!.injections!.length, 2);
+    await f.first.stopSession("resumed", "done");
+  } finally {await f.cleanup();}
+});
+
+test("unknown context injection dispatch fences retries, other mutations, retirement and resume", async () => {
+  const f = await fixture();
+  try {
+    await f.first.stopSession("session", "idle");
+    Object.assign(f.adapter, {conversationOperations: ["read", "inject"]});
+    const request = {session_id: "session", operation: {kind: "inject" as const, expected_history_hash: "a".repeat(64), messages: [{role: "user" as const, content: "Context"}]}};
+    let dispatches = 0;
+    f.setOperation(async input => {input.beginMutation!(); dispatches++; throw new Error("lost native acknowledgement");});
+    await assert.rejects(f.first.conversationOperation("lost", request), /lost native/);
+    await assert.rejects(f.manager().conversationOperation("lost", request), /automatic repetition/);
+    await assert.rejects(f.manager().conversationOperation("another", request), /automatic repetition/);
+    await assert.rejects(f.manager().conversationOperation("retire", {session_id: "session", operation: {kind: "retire"}}), /automatic repetition/);
+    await assert.rejects(f.manager().startSession({...f.start, session_id: "resumed", continue_session: true}), /cannot redeliver/);
+    assert.equal(dispatches, 1);
+  } finally {await f.cleanup();}
+});
+
+test("a context injection cannot dispatch when its durable store fails to retain the fence", async () => {
+  const f = await fixture();
+  try {
+    await f.first.stopSession("session", "idle");
+    Object.assign(f.adapter, {conversationOperations: ["inject"]});
+    const save = f.state.saveNativeConversation.bind(f.state);
+    f.state.saveNativeConversation = (key, value) => {if (!value.injections) save(key, value);};
+    let effects = 0;
+    f.setOperation(async input => {
+      input.beginMutation!(); effects++;
+      return {command_id: input.commandId, session_id: input.request.session_id, operation: "inject", filesystem_undo: false,
+        injection: {outcome: "applied", message_count: 1}};
+    });
+    await assert.rejects(f.first.conversationOperation("inject", {session_id: "session", operation: {kind: "inject",
+      expected_history_hash: "a".repeat(64), messages: [{role: "user", content: "Context"}]}}), /dispatch fence was not retained/);
+    assert.equal(effects, 0);
+  } finally {await f.cleanup();}
+});
+
 test("configuration inheritance requirements fail before native launch when support is unknown or differs", async () => {
   const f = await fixture();
   let launches = 0;
@@ -116,6 +182,20 @@ test("active conversations are rejected before invoking native history", async (
       (error: unknown) => error instanceof HarnessAdapterError && error.code === "native_conversation_unavailable");
     assert.equal(f.calls.length, 0);
   } finally {await f.cleanup();}
+});
+
+test("explicit live-history support permits only reads without unloading its session owner", async () => {
+  const f = await fixture();
+  try {
+    Object.assign(f.adapter, {liveHistoryRead: true});
+    const read = await f.first.conversationOperation("read", {session_id: "session", operation: {kind: "read"}});
+    assert.equal(read.history?.turn_count, 1);
+    assert.equal(f.first.activeSessionCount(), 1);
+    for (const operation of [{kind: "rollback", num_turns: 1, expected_history_hash: read.history!.history_hash}, {kind: "retire"}] as const)
+      await assert.rejects(f.first.conversationOperation("mutation", {session_id: "session", operation}),
+        (error: unknown) => error instanceof HarnessAdapterError && error.code === "native_conversation_unavailable");
+    assert.deepEqual(f.calls.map(call => call.request.operation.kind), ["read"]);
+  } finally {await f.first.stopSession("session", "cleanup"); await f.cleanup();}
 });
 
 test("missing adapter operations fail explicitly while retirement stays runner owned", async () => {

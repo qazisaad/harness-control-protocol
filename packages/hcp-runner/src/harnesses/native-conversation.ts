@@ -4,7 +4,7 @@ import type { HcpConversationRequestPayload, HcpConversationResultPayload } from
 import { hcpConversationResultPayloadSchema } from "@harness-control/protocol";
 import type { ProviderInstanceConfig } from "../config/index.js";
 import type { NativeConversation } from "../state/index.js";
-import { CodexRpc } from "./adapters/providers/codex-rpc.js";
+import { CodexRpc, CodexRpcRequestError } from "./adapters/providers/codex-rpc.js";
 import { HarnessAdapterError } from "./adapters/types.js";
 import {type ContentPublisher} from "./adapters/providers/content-projection.js";
 
@@ -46,6 +46,33 @@ export async function nativeConversationOperation(commandId: string, request: Hc
     rpc.notify("initialized");
     let thread = await readThread(rpc, conversation.native_thread_id);
     if (thread.id !== conversation.native_thread_id) throw new HarnessAdapterError("native_history_binding", "Native history belongs to another conversation.");
+    if (request.operation.kind === "read" && hash((await readThread(rpc, thread.id)).turns) !== hash(thread.turns))
+      throw new HarnessAdapterError("native_history_changed", "Native history changed during the snapshot; read it again.");
+    if (request.operation.kind === "inject") {
+      const operation = request.operation;
+      if (hash(thread.turns) !== operation.expected_history_hash)
+        throw new HarnessAdapterError("native_history_changed", "Read current history before injecting context.");
+      const inherited = z.object({config: z.record(z.string(), z.unknown())}).parse(await rpc.request("config/read", {cwd: conversation.cwd, includeLayers: false})).config;
+      const disabled = (value: unknown) => Object.fromEntries(Object.keys(z.record(z.string(), z.unknown()).parse(value ?? {})).map(name => [name, {enabled: false}]));
+      const loaded = threadSchema.parse(await rpc.request("thread/resume", {threadId: thread.id, cwd: conversation.cwd,
+        approvalPolicy: "never", sandbox: "read-only", config: {mcp_servers: disabled(inherited.mcp_servers), plugins: disabled(inherited.plugins),
+          "features.apps": false, "features.multi_agent": false}})).thread;
+      if (loaded.id !== thread.id || hash((loaded.historyMode === "paginated" ? await readThread(rpc, loaded.id) : loaded).turns) !== operation.expected_history_hash)
+        throw new HarnessAdapterError("native_history_changed", "Native history changed while loading injection context.");
+      if (!beginMutation) throw new HarnessAdapterError("native_mutation_fence_missing", "Context injection requires the runner's durable dispatch fence.");
+      beginMutation();
+      try {
+        z.object({}).strict().parse(await rpc.request("thread/inject_items", {threadId: thread.id, items: operation.messages.map(message => ({type: "message",
+          role: message.role, content: [{type: message.role === "user" ? "input_text" : "output_text", text: message.content}]}))}));
+      } catch (failure) {
+        if (failure instanceof CodexRpcRequestError && failure.nativeCode === -32601)
+          return {command_id: commandId, session_id: request.session_id, operation: "inject", filesystem_undo: false,
+            injection: {outcome: "unsupported", reason: "native_method_unavailable"}};
+        throw failure;
+      }
+      return {command_id: commandId, session_id: request.session_id, operation: "inject", filesystem_undo: false,
+        injection: {outcome: "applied", message_count: operation.messages.length}};
+    }
     if (request.operation.kind === "fork") {
       const operation = request.operation;
       if (hash(thread.turns) !== operation.expected_history_hash ||

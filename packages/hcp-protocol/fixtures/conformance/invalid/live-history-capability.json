@@ -1,0 +1,13 @@
+{
+  "id": "live-history-capability",
+  "type": "host.capabilities.updated",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "providers": [{"provider_instance_id": "example", "driver_kind": "example", "enabled": true, "installed": true,
+      "status": "ready", "availability": "available", "models": [],
+      "execution_capabilities": {"streaming": true, "multi_turn": true, "session_continuation": true,
+        "native_history": true, "live_history_read": "true", "sandbox_modes": ["read_only"], "approval_policies": ["ask"]}}],
+    "local_capabilities": [], "workspaces": []
+  }
+}

@@ -54,6 +54,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly #persistent = new Map<string, PersistentClaudeSession>();
   readonly #queryFactory: ClaudeQueryFactory | undefined;
   readonly portableHistory = true;
+  readonly liveHistoryRead = true;
   readonly instructionRoles = ["system"] as const;
   readonly configurationInheritance = nativeExecutionCapabilities("claude").configuration_inheritance!;
   readonly driverKind = "claude";

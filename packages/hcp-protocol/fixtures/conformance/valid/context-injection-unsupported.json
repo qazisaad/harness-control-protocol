@@ -1,0 +1,1 @@
+{"id":"context-injection-unsupported","type":"harness.conversation.result","version":"hcp.v0","sent_at":"2026-01-01T00:00:00.000Z","payload":{"command_id":"inject","session_id":"session","operation":"inject","filesystem_undo":false,"injection":{"outcome":"unsupported","reason":"native_method_unavailable"}}}
