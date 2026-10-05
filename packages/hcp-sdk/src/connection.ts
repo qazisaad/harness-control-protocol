@@ -156,6 +156,8 @@ export class HcpHostConnection {
         || operation.offset !== message.payload.content?.offset)) return;
       if (operation.kind === "fork" && (operation.target_session_id !== message.payload.fork?.session_id
         || operation.continuation_group_key !== message.payload.fork?.continuation_group_key)) return;
+      if (operation.kind === "work" && (operation.action !== message.payload.work?.action
+        || (operation.action !== "read" && (message.payload.work?.action === "read" || operation.work_id !== message.payload.work?.work_id)))) return;
     } else if (message.type === "host.accounts.snapshot") {
       pending = this.#pending.get(message.payload.request_id);
       if (pending?.command.type !== "host.accounts.read") return;
@@ -214,6 +216,15 @@ export class HcpHostConnection {
   }
   readContent(sessionId: string, contentId: string, offset = 0, limit = 64 * 1024, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "content", content_id: contentId, offset, limit}}, command, wait);
+  }
+  readNativeWork(sessionId: string, options: {cursor?: string; limit?: number} = {}, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "work", action: "read", ...options}}, command, wait);
+  }
+  cancelNativeWork(sessionId: string, workId: string, expectedRevision: number, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "work", action: "cancel", work_id: workId, expected_revision: expectedRevision}}, command, wait);
+  }
+  retireNativeWork(sessionId: string, workId: string, expectedRevision: number, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "work", action: "retire", work_id: workId, expected_revision: expectedRevision}}, command, wait);
   }
   respondToApproval(payload: Payload<"harness.approval.respond">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "harness.approval.respond", payload }, command), wait);

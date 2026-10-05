@@ -1,5 +1,9 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
 import { hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
+import {harnessNativeWorkObservationSchema, harnessNativeWorkRecordSchema, isNativeWorkTerminal,
+  type HarnessNativeWorkRecord} from "@harness-control/protocol";
+import type {NativeWorkState} from "../state/index.js";
+import {nativeWorkPage} from "./native-work-page.js";
 import { HarnessMcpReview } from "./mcp-review.js";
 import {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
 export {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
@@ -67,6 +71,7 @@ export type HarnessDriver = {
 export type HarnessSession = {
   sessionId: string;
   cancelRequested: boolean;
+  nativeWorkOwnerAvailable?: boolean;
   workspaceId: string;
   providerInstanceId: string;
   driverKind: string;
@@ -150,6 +155,7 @@ const terminalTurnEvents = new Set(["turn.completed", "turn.failed", "turn.cance
 export class HarnessSessionManager {
   readonly #nativeInteractions = new Map<string, HarnessNativeInteractions>();
   readonly #activeTurnControls = new Map<string, {turnId: string; controls: HarnessActiveTurnControls}>();
+  readonly #liveNativeWork = new Map<string, Set<string>>();
   readonly #config: RunnerConfig;
   readonly #hostId: string;
   readonly #localCapabilities: LocalCapabilityLeaseManager;
@@ -203,6 +209,69 @@ export class HarnessSessionManager {
       if (this.activeSessionCount() > 0) throw new HarnessSessionError("workspace_busy", "Stop active sessions before changing workspaces.");
       return operation();
     });
+  }
+
+  async #nativeWorkOperation(commandId: string, request: HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "work"}>}): Promise<HcpConversationResultPayload> {
+    let state = this.#stateStore.nativeWorkState(request.session_id);
+    if (!state) throw new HarnessAdapterError("native_work_unavailable", "This session has no retained native-work contract.");
+    await this.#assertWorkspaceAllowed(state.scope.workspace_id, state.scope.cwd);
+    state = this.#stateStore.nativeWorkState(request.session_id);
+    if (!state) throw new HarnessAdapterError("native_work_unavailable", "Native work was retired during authorization.");
+    const provider = this.#requireProvider(state.scope.provider_instance_id);
+    if (nativeProviderHash(provider) !== state.scope.provider_binding_hash)
+      throw new HarnessAdapterError("native_work_binding", "Native work belongs to the original provider configuration.");
+    const session = this.#sessions.get(request.session_id);
+    const operation = request.operation;
+    const result = (work: NonNullable<HcpConversationResultPayload["work"]>): HcpConversationResultPayload =>
+      ({command_id: commandId, session_id: request.session_id, operation: "work", filesystem_undo: false, work});
+    if (operation.action === "read") return result(nativeWorkPage(request.session_id, state, session?.nativeWorkOwnerAvailable === true, this.#liveNativeWork.get(request.session_id) ?? new Set(), operation));
+    const work = state.items[operation.work_id];
+    if (!work) throw new HarnessAdapterError("native_work_not_found", "Native work is not owned by this session.");
+    const requestHash = createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex");
+    const priorCommand = [...Object.values(state.items), ...Object.values(state.retired)].find(item => item.control?.command_id === commandId);
+    if (priorCommand && (priorCommand.work_id !== work.work_id || priorCommand.control?.request_hash !== requestHash))
+      throw new HarnessAdapterError("native_work_control_conflict", "This native-work command has different parameters.");
+    if (operation.action === "cancel" && work.control?.command_id === commandId) {
+      if (work.control.phase === "accepted") return result({action: "cancel", work_id: work.work_id, accepted: true});
+      if (isNativeWorkTerminal(work.status)) return result({action: "cancel", work_id: work.work_id, accepted: true, already_terminal: true});
+      throw new HarnessAdapterError("native_work_cancel_unknown", "The earlier native cancellation has no confirmed outcome and will not be repeated.");
+    }
+    if (work.revision !== operation.expected_revision)
+      throw new HarnessAdapterError("native_work_changed", "Read the current native-work revision before controlling it.");
+    if (operation.action === "retire") {
+      if (!isNativeWorkTerminal(work.status)) throw new HarnessAdapterError("native_work_pending", "Only completed native work may be retired.");
+      const next = this.#stateStore.nativeWorkState(request.session_id)!; delete next.items[work.work_id]; next.retired[work.work_id] = work;
+      this.#event(request.session_id, undefined, "native.work.retired", {work_id: work.work_id, revision: work.revision + 1}, next);
+      this.#liveNativeWork.get(request.session_id)?.delete(work.work_id);
+      return result({action: "retire", work_id: work.work_id, retired: true});
+    }
+    if (isNativeWorkTerminal(work.status)) return result({action: "cancel", work_id: work.work_id, accepted: true, already_terminal: true});
+    if (work.control?.phase === "pending") throw new HarnessAdapterError("native_work_cancel_unknown", "An earlier native cancellation requires reconciliation.");
+    if (!session?.nativeWorkOwnerAvailable || !session.adapter.cancelNativeWork || !work.supports_cancel || !this.#liveNativeWork.get(request.session_id)?.has(work.work_id))
+      throw new HarnessAdapterError("native_work_cancel_unsupported", "This work has no live native cancellation owner.");
+    if (nativeBindingHash(session.startPayload, provider, session.mcpToolsets) !== state.scope.execution_binding_hash)
+      throw new HarnessAdapterError("native_work_binding", "The execution binding no longer owns this native work.");
+    const fenced = this.#stateStore.nativeWorkState(request.session_id)!;
+    fenced.items[work.work_id] = {...work, revision: work.revision + 1,
+      control: {command_id: commandId, request_hash: requestHash, action: "cancel", phase: "pending"}};
+    this.#event(request.session_id, undefined, "native.work.updated", {work: fenced.items[work.work_id]}, fenced);
+    // Publication can synchronously deliver terminal proof before native dispatch.
+    if (isNativeWorkTerminal(this.#stateStore.nativeWorkState(request.session_id)!.items[work.work_id]!.status))
+      return result({action: "cancel", work_id: work.work_id, accepted: true, already_terminal: true});
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        session.adapter.cancelNativeWork({commandId, sessionId: request.session_id, work: structuredClone(work), provider, startPayload: session.startPayload, signal: abort.signal}),
+        new Promise<never>((_, reject) => {timer = setTimeout(() => {abort.abort(); reject(new Error("Native cancellation timed out."));}, 30_000);}),
+      ]);
+    } catch {throw new HarnessAdapterError("native_work_cancel_unknown", "Native cancellation has an unknown outcome; reconcile observations before trying again.");}
+    finally {if (timer) clearTimeout(timer);}
+    const accepted = this.#stateStore.nativeWorkState(request.session_id)!;
+    const current = accepted.items[work.work_id]!;
+    accepted.items[work.work_id] = {...current, revision: current.revision + 1, control: {...current.control!, phase: "accepted"}};
+    this.#event(request.session_id, undefined, "native.work.updated", {work: accepted.items[work.work_id]}, accepted);
+    return result({action: "cancel", work_id: work.work_id, accepted: true});
   }
 
   activeSessionCount(): number {
@@ -277,6 +346,7 @@ export class HarnessSessionManager {
 
   conversationOperation(commandId: string, request: HcpConversationRequestPayload): Promise<HcpConversationResultPayload> {
     return this.#serializeWorkspace(async () => {
+      if (request.operation.kind === "work") return this.#nativeWorkOperation(commandId, request as HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "work"}>});
       if (request.operation.kind === "content") {
         const scope = this.#contentStore.scope(request.session_id, request.operation.content_id);
         await this.#assertWorkspaceAllowed(scope.workspace_id, scope.cwd);
@@ -462,7 +532,7 @@ export class HarnessSessionManager {
     if (!first) throw new HarnessSessionError("first_turn_missing", "Combined startup needs an admitted first turn.");
     const session = this.#sessions.get(payload.session_id);
     if (!session) {
-      if (this.#lastSavedEvent(payload.session_id)?.event_type === "session.exited") return Promise.resolve([]);
+      if (this.#stateStore.hasSessionExit(payload.session_id)) return Promise.resolve([]);
       throw new HarnessSessionError("session_not_found", "Session startup did not finish.");
     }
     if (session.cancelRequested || Date.parse(first.not_after) <= Date.now()) {
@@ -595,11 +665,24 @@ export class HarnessSessionManager {
         throw new HarnessAdapterError("native_session_event_closed", "The native event owner is no longer active.");
       if (nativeProviderHash(this.#requireProvider(provider.id)) !== eventProviderHash)
         throw new HarnessAdapterError("native_session_event_binding", "Native observations belong to the original provider configuration.");
-      if (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice"].includes(event.event_type)
+      if (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated"].includes(event.event_type)
           && !event.event_type.startsWith("provider.") && !event.event_type.startsWith("extension."))
         throw new HarnessAdapterError("native_session_event_unsupported", "Session observations cannot publish root turns or interaction requests.");
+      let validationData = event.data;
+      if (event.event_type === "native.work.updated") {
+        if (!adapter.nativeWork || Object.keys(event.data).some(key => key !== "work"))
+          throw new HarnessAdapterError("native_work_unsupported", "Native work requires its declared adapter contract.");
+        const work = harnessNativeWorkObservationSchema.parse(event.data.work);
+        const workState = this.#stateStore.nativeWorkState(payload.session_id);
+        const current = workState?.items[work.work_id];
+        if (current && JSON.stringify(harnessNativeWorkObservationSchema.parse(Object.fromEntries(Object.entries(current).filter(([key]) => key !== "revision" && key !== "control")))) === JSON.stringify(work)) return;
+        const retired = workState?.retired[work.work_id];
+        if (retired && isNativeWorkTerminal(work.status) && retired.native_reference === work.native_reference
+            && retired.origin_turn_id === work.origin_turn_id && retired.parent_work_id === work.parent_work_id && retired.kind === work.kind) return;
+        validationData = {work: {...work, revision: 1}};
+      }
       const validated = hcpHarnessEventPayloadSchema.parse({session_id: payload.session_id, sequence: 1,
-        event_type: event.event_type, created_at: new Date().toISOString(), data: event.data});
+        event_type: event.event_type, created_at: new Date().toISOString(), data: validationData});
       if (Buffer.byteLength(JSON.stringify(validated.data)) > 64 * 1024)
         throw new HarnessAdapterError("native_session_event_limit", "Session observations require bounded data or a retained-content reference.");
       event = {event_type: validated.event_type, data: structuredClone(event.data)};
@@ -610,6 +693,7 @@ export class HarnessSessionManager {
     };
 
     let adapterSession: HarnessAdapterSession;
+    let createdWorkState = false;
     try {
       if (!adapter.durableMcpContinuation && mcpAttachments.toolsets.some(set => set.tools.some(tool => tool.review_policy))) {
         throw new HarnessAdapterError("mcp_review_unavailable", "This adapter does not support durable MCP review.");
@@ -624,6 +708,13 @@ export class HarnessSessionManager {
         retainedConversation = conversation;
       } else if (payload.continuation_group_key && this.#stateStore.getNativeConversation(payload.continuation_group_key)) {
         throw new HarnessAdapterError("native_continuation_exists", "An existing native conversation requires explicit continuation.");
+      }
+      if (adapter.nativeWork) {
+        createdWorkState = !this.#stateStore.nativeWorkState(payload.session_id);
+        const existing = this.#stateStore.nativeWorkState(payload.session_id);
+        this.#stateStore.saveNativeWorkState(payload.session_id, {scope: {provider_instance_id: provider.id, provider_binding_hash: eventProviderHash,
+          workspace_id: payload.workspace_id, cwd: payload.cwd, execution_binding_hash: nativeBindingHash(payload, provider, mcpAttachments.toolsets)},
+          items: existing?.items ?? {}, retired: existing?.retired ?? {}});
       }
       adapterSession = await adapter.startSession({
         payload: adapterStartPayload,
@@ -643,12 +734,14 @@ export class HarnessSessionManager {
     } catch (error: unknown) {
       eventsClosed = true;
       await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpAttachments.clients, "adapter_start_failed", error);
+      if (createdWorkState) this.#stateStore.removeEmptyNativeWorkState(payload.session_id);
       throw new SessionStartCleanedError(error, "adapter_start_failed");
     }
 
     const session: HarnessSession = {
       sessionId: payload.session_id,
       cancelRequested: false,
+      ...(adapter.nativeWork ? {nativeWorkOwnerAvailable: true} : {}),
       workspaceId: payload.workspace_id,
       providerInstanceId: provider.id,
       driverKind: provider.driver_kind,
@@ -662,6 +755,7 @@ export class HarnessSessionManager {
       mcpToolsets: mcpAttachments.toolsets,
       ...(payload.continuation_group_key ? {nativeBindingHash: nativeBindingHash(payload, provider, mcpAttachments.toolsets)} : {}),
     };
+    if (adapter.nativeWork) this.#liveNativeWork.set(payload.session_id, new Set());
     return {session, discoveredTools: mcpAttachments.discoveredTools, activateEvents: () => {
       eventOwner = session;
       eventsActive = true;
@@ -758,7 +852,7 @@ export class HarnessSessionManager {
 
     for (const review of this.#stateStore.pendingMcpReviews()) {
       const last = this.#lastSavedEvent(review.start.session_id);
-      if (last?.event_type === "session.exited") {
+      if (this.#stateStore.hasSessionExit(review.start.session_id)) {
         this.#stateStore.clearMcpReview(review.start.session_id, review.request_id);
         continue;
       }
@@ -966,7 +1060,7 @@ export class HarnessSessionManager {
     if (!session) {
       const review = this.#stateStore.getMcpReview(sessionId);
       if (review?.turn.turn_id === turnId) return this.#retireSavedReview(review, {kind: "cancelled"});
-      if (this.#lastSavedEvent(sessionId)?.event_type === "session.exited") return [];
+      if (this.#stateStore.hasSessionExit(sessionId)) return [];
       throw new HarnessSessionError("session_not_found", `Session '${sessionId}' is not active.`);
     }
 
@@ -994,7 +1088,7 @@ export class HarnessSessionManager {
     if (!session) {
       const review = this.#stateStore.getMcpReview(sessionId);
       if (review) return this.#retireSavedReview(review, {kind: "cancelled"});
-      if (this.#lastSavedEvent(sessionId)?.event_type === "session.exited") return [];
+      if (this.#stateStore.hasSessionExit(sessionId)) return [];
       throw new HarnessSessionError("session_not_found", `Session '${sessionId}' is not active.`);
     }
 
@@ -1008,12 +1102,15 @@ export class HarnessSessionManager {
         status: "cancelled", final_output: {exit_reason: "cancel_requested"},
       }));
     }
+    session.nativeWorkOwnerAvailable = false;
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.stopSession({ sessionId, ...(reason ? { reason } : {}) });
     events.push(
       ...adapterEvents.map((event: HarnessAdapterEvent): HcpHarnessEventPayload =>
         this.#event(sessionId, event.turn_id, event.event_type, event.data),
       ),
     );
+    const pendingWork = Object.values(this.#stateStore.nativeWorkState(sessionId)?.items ?? {}).filter(work => !isNativeWorkTerminal(work.status));
+    if (pendingWork.length) throw new HarnessAdapterError("native_work_shutdown_unknown", "Native work closure is unconfirmed; the execution lease remains retained.");
     await this.#closeMcpClients(session);
     if (session.localCapabilityLease) {
       this.#localCapabilities.revokeLease(session.localCapabilityLease.lease_id);
@@ -1034,6 +1131,7 @@ export class HarnessSessionManager {
       }),
     );
     this.#sessions.delete(sessionId);
+    this.#liveNativeWork.delete(sessionId);
     this.#mcpReviews.delete(sessionId);
     const review = this.#stateStore.getMcpReview(sessionId);
     if (review) this.#stateStore.clearMcpReview(sessionId, review.request_id);
@@ -1218,9 +1316,37 @@ export class HarnessSessionManager {
     turnId: string | undefined,
     eventType: HcpHarnessEventPayload["event_type"],
     data: Record<string, unknown>,
+    nativeWorkState?: NativeWorkState,
   ): HcpHarnessEventPayload {
     if (this.#publishing && this.#publicationQueue.length >= 128)
       throw new HarnessSessionError("event_publication_backpressure", "Reentrant event observations exceeded their bounded publication queue.");
+    if (eventType === "native.work.updated" && !nativeWorkState) {
+      const session = this.#sessions.get(sessionId);
+      const state = this.#stateStore.nativeWorkState(sessionId);
+      if (!session?.adapter.nativeWork || !state || Object.keys(data).some(key => key !== "work"))
+        throw new HarnessAdapterError("native_work_unsupported", "Native work requires the owning adapter's declared contract.");
+      const observation = harnessNativeWorkObservationSchema.parse(data.work);
+      const previous = state.items[observation.work_id];
+      const parent = observation.parent_work_id ? state.items[observation.parent_work_id] ?? state.retired[observation.parent_work_id] : undefined;
+      if (state.retired[observation.work_id]) throw new HarnessAdapterError("native_work_retired", "A retired native execution cannot be reopened.");
+      if ((!previous && !this.#turnIdsBySession.get(sessionId)?.has(observation.origin_turn_id) && parent?.origin_turn_id !== observation.origin_turn_id)
+          || (turnId && turnId !== observation.origin_turn_id) || (observation.parent_work_id && (!parent || observation.parent_work_id === observation.work_id)))
+        throw new HarnessAdapterError("native_work_binding", "Native work requires an admitted origin and an owned parent.");
+      if (previous && (previous.native_reference !== observation.native_reference || previous.origin_turn_id !== observation.origin_turn_id
+          || previous.parent_work_id !== observation.parent_work_id || previous.kind !== observation.kind))
+        throw new HarnessAdapterError("native_work_binding", "A native execution's identity and origin cannot change.");
+      if (previous && isNativeWorkTerminal(previous.status) && previous.status !== observation.status)
+        throw new HarnessAdapterError("native_work_terminal", "Completed native work cannot return to an active state.");
+      if (observation.background && !session.adapter.sessionEvents || observation.supports_cancel && !session.adapter.cancelNativeWork)
+        throw new HarnessAdapterError("native_work_unsupported", "Native work cannot advertise unimplemented observation or cancellation ownership.");
+      const work = harnessNativeWorkRecordSchema.parse({...observation, revision: (previous?.revision ?? 0) + 1,
+        ...(previous?.control ? {control: previous.control} : {})});
+      state.items[work.work_id] = work;
+      nativeWorkState = state;
+      data = {work};
+    }
+    if (eventType === "native.work.retired" && !nativeWorkState)
+      throw new HarnessAdapterError("native_work_retirement_owned", "Native work retirement is owned by the runner.");
     const sequence: number = this.#stateStore.nextEventSequence(sessionId);
     const payload: HcpHarnessEventPayload = {
       session_id: sessionId,
@@ -1234,7 +1360,10 @@ export class HarnessSessionManager {
     }
 
     const retained = this.#stateStore.getMcpReview(sessionId);
-    if (terminalTurnEvents.has(eventType) && (!retained || retained.turn.turn_id === turnId)) {
+    if (nativeWorkState) {
+      this.#stateStore.saveNativeWorkState(sessionId, nativeWorkState, payload);
+      if (eventType === "native.work.updated") this.#liveNativeWork.get(sessionId)?.add((data.work as HarnessNativeWorkRecord).work_id);
+    } else if (terminalTurnEvents.has(eventType) && (!retained || retained.turn.turn_id === turnId)) {
       if (retained) this.#stateStore.clearMcpReview(sessionId, retained.request_id, [payload]);
       else this.#stateStore.appendEvent(payload);
       this.#mcpReviews.delete(sessionId);

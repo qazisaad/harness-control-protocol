@@ -4,6 +4,8 @@ import { hcpConversationRequestPayloadSchema, hcpConversationResultPayloadSchema
 import {harnessContentReferenceSchema, type HarnessContentReference} from "./content.js";
 export * from "./conversation.js";
 export * from "./content.js";
+import {harnessNativeWorkRecordSchema} from "./native-work.js";
+export * from "./native-work.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -116,6 +118,8 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "files.persisted",
   "workspace.preflight.completed",
   "usage.updated",
+  "native.work.updated",
+  "native.work.retired",
   "runtime.warning",
   "runtime.error",
 ] as const;
@@ -243,6 +247,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  native_work?: boolean;
   session_events?: boolean;
   instruction_roles?: Array<"system" | "developer">;
   configuration_inheritance?: HarnessConfigurationInheritance;
@@ -1085,6 +1090,7 @@ export const harnessModelSchema = z
 export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
+      native_work: z.boolean().optional(),
       session_events: z.boolean().optional(),
       instruction_roles: z.array(z.enum(["system", "developer"])).optional(),
       configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
@@ -2649,6 +2655,8 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType === "usage.updated") {
     return harnessUsageSnapshotSchema;
   }
+  if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
+  if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
   if (eventType === "config.warning" || eventType === "deprecation.notice") {
     return runtimeDiagnosticEventDataSchema;
   }

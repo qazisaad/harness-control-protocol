@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {harnessContentChunkSchema} from "./content.js";
+import {harnessNativeWorkOperationSchema, harnessNativeWorkResultSchema} from "./native-work.js";
 
 export const hcpConversationRequestPayloadSchema = z.object({session_id: z.string().min(1).max(512),
   operation: z.discriminatedUnion("kind", [z.object({kind: z.literal("read"), cursor: z.string().min(1).max(1024).optional(), limit: z.number().int().min(1).max(100).optional()}).strict(),
@@ -9,13 +10,14 @@ export const hcpConversationRequestPayloadSchema = z.object({session_id: z.strin
       expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/), last_turn_id: z.string().min(1).max(512).optional()}).strict(),
     z.object({kind: z.literal("content"), content_id: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().nonnegative().default(0),
       limit: z.number().int().min(1).max(64 * 1024).default(64 * 1024)}).strict(),
-    z.object({kind: z.literal("retire")}).strict()])}).strict();
+    z.object({kind: z.literal("retire")}).strict(), harnessNativeWorkOperationSchema])}).strict();
 export const nativeConversationHistorySchema = z.object({history_hash: z.string().regex(/^[a-f0-9]{64}$/),
   turn_count: z.number().int().nonnegative(), truncated: z.boolean(),
   next_cursor: z.string().min(1).max(1024).optional(),
   turns: z.array(z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json()))}).strict()).max(100)}).strict();
 export const hcpConversationResultPayloadSchema = z.object({command_id: z.string().min(1), session_id: z.string().min(1),
-  operation: z.enum(["read", "rollback", "retire", "steer", "fork", "content"]), filesystem_undo: z.literal(false),
+  operation: z.enum(["read", "rollback", "retire", "steer", "fork", "content", "work"]), filesystem_undo: z.literal(false),
+  work: harnessNativeWorkResultSchema.optional(),
   content: harnessContentChunkSchema.optional(),
   native_reference: z.string().min(1).optional(),
   native_fresh: z.literal(true).optional(),
@@ -27,6 +29,7 @@ export const hcpConversationResultPayloadSchema = z.object({command_id: z.string
     if (result.operation === "fork" && !result.fork) missing("fork");
     if (result.operation === "steer" && !result.turn_id) missing("turn_id");
     if (result.operation === "content" && !result.content) missing("content");
+    if (result.operation === "work" && !result.work) missing("work");
     if (result.native_fresh && !["fork", "rollback"].includes(result.operation))
       context.addIssue({code: "custom", path: ["native_fresh"], message: "Only fork or rollback may allocate a fresh native conversation."});
   });

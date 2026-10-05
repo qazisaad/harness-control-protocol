@@ -1,0 +1,24 @@
+{
+  "id": "fixture-native-work-invalid-status",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 4,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "event_type": "native.work.updated",
+    "data": {
+      "work": {
+        "work_id": "child-1",
+        "native_reference": "native-child",
+        "origin_turn_id": "turn-1",
+        "kind": "task",
+        "background": true,
+        "status": "detached",
+        "supports_cancel": true,
+        "revision": 1
+      }
+    }
+  }
+}

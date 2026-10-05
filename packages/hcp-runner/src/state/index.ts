@@ -15,6 +15,7 @@ import {
   type HcpNackPayload,
   type HcpSessionSnapshotPayload,
   hcpConversationResultPayloadSchema, type HcpConversationResultPayload,
+  harnessNativeWorkRecordSchema,
   type HostRetainedEventRanges,
   type LocalActionErrorPayload,
   type LocalActionRequestPayload,
@@ -64,7 +65,29 @@ type RunnerStateData = {
   localActionReceipts: Record<string, PersistedLocalActionReceipt>;
   mcpReviews: Record<string, PersistedMcpReview>;
   nativeConversations: Record<string, NativeConversation>;
+  nativeWork: Record<string, NativeWorkState>;
+  exitedSessions: Record<string, true>;
 };
+
+// Validate every own key without dropping special JavaScript property names.
+const nativeWorkDictionarySchema = z.unknown().transform((input, context): Record<string, z.infer<typeof harnessNativeWorkRecordSchema>> => {
+  const result = Object.create(null) as Record<string, z.infer<typeof harnessNativeWorkRecordSchema>>;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    context.addIssue({code: "custom", message: "Expected a native-work dictionary."}); return result;
+  }
+  for (const [key, value] of Object.entries(input)) {
+    const parsed = harnessNativeWorkRecordSchema.safeParse(value);
+    if (!parsed.success || parsed.data.work_id !== key) {
+      context.addIssue({code: "custom", path: [key], message: "Invalid native-work dictionary entry."}); continue;
+    }
+    result[key] = parsed.data;
+  }
+  return result;
+});
+const nativeWorkStateSchema = z.object({scope: z.object({provider_instance_id: z.string(), provider_binding_hash: z.string(),
+  workspace_id: z.string(), cwd: z.string(), execution_binding_hash: z.string()}).strict(),
+  items: nativeWorkDictionarySchema, retired: nativeWorkDictionarySchema.default({})}).strict();
+export type NativeWorkState = z.infer<typeof nativeWorkStateSchema>;
 
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
   updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
@@ -126,6 +149,8 @@ const runnerStateDataSchema = z
     localActionReceipts: z.record(z.string(), persistedLocalActionReceiptSchema),
     mcpReviews: z.record(z.string(), persistedMcpReviewSchema).default({}),
     nativeConversations: z.record(z.string(), nativeConversationSchema).default({}),
+    nativeWork: z.record(z.string(), nativeWorkStateSchema).default({}),
+    exitedSessions: z.record(z.string(), z.literal(true)).default({}),
   })
   .strict();
 
@@ -136,6 +161,10 @@ export type RunnerStateStoreOptions = {
 };
 
 export interface RunnerStateStore {
+  hasSessionExit(sessionId: string): boolean;
+  nativeWorkState(sessionId: string): NativeWorkState | undefined;
+  saveNativeWorkState(sessionId: string, state: NativeWorkState, event?: HcpHarnessEventPayload): void;
+  removeEmptyNativeWorkState(sessionId: string): void;
   readonly contentDirectory?: string;
   getNativeConversation(key: string): NativeConversation | undefined;
   saveNativeConversation(key: string, conversation: NativeConversation): void;
@@ -165,6 +194,11 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
 
   constructor(data: RunnerStateData, options: RunnerStateStoreOptions) {
     this.data = data;
+    // External IDs are dictionary keys, including Object.prototype names.
+    for (const key of ["events", "commandReceipts", "localActionReceipts", "mcpReviews", "nativeConversations", "nativeWork", "exitedSessions"] as const)
+      this.data[key] = Object.assign(Object.create(null), this.data[key]);
+    for (const [id, events] of Object.entries(data.events))
+      if (events.some(event => event.event_type === "session.exited")) this.data.exitedSessions[id] = true;
     this.#eventRetentionPerSession = options.eventRetentionPerSession ?? DEFAULT_EVENT_RETENTION_PER_SESSION;
     this.#receiptRetentionMs = options.receiptRetentionMs ?? DEFAULT_RECEIPT_RETENTION_MS;
     this.#now = options.now ?? (() => new Date());
@@ -182,6 +216,49 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
   getNativeConversation(key: string): NativeConversation | undefined {
     const conversation = this.data.nativeConversations[key];
     return conversation ? structuredClone(conversation) : undefined;
+  }
+
+  hasSessionExit(sessionId: string): boolean {return this.data.exitedSessions[sessionId] === true;}
+
+  nativeWorkState(sessionId: string): NativeWorkState | undefined {
+    const state = this.data.nativeWork[sessionId];
+    if (!state) return undefined;
+    const copy = structuredClone(state);
+    copy.items = Object.assign(Object.create(null), copy.items);
+    copy.retired = Object.assign(Object.create(null), copy.retired);
+    return copy;
+  }
+
+  saveNativeWorkState(sessionId: string, input: NativeWorkState, event?: HcpHarnessEventPayload): void {
+    const state = nativeWorkStateSchema.parse(input);
+    if (Object.keys(state.items).length !== Object.keys(input.items).length || Object.keys(state.retired).length !== Object.keys(input.retired).length)
+      throw new Error("Native work dictionary keys were not preserved by validation.");
+    state.items = Object.assign(Object.create(null), state.items);
+    state.retired = Object.assign(Object.create(null), state.retired);
+    const previous = this.data.nativeWork[sessionId];
+    if (!previous && Object.keys(this.data.nativeWork).length >= 1024) throw new Error("Native work session capacity exceeded.");
+    if (Object.keys(state.items).length > 128) throw new Error("Native work capacity exceeded; retire completed work before admitting another child.");
+    if (Object.keys(state.retired).length > 1024) throw new Error("Native work tombstone capacity exceeded; close the execution lease before retiring further work.");
+    if (Object.entries(state.items).some(([key, work]) => key !== work.work_id)) throw new Error("Native work identity mismatch.");
+    if (previous && JSON.stringify(previous.scope) !== JSON.stringify(state.scope)) throw new Error("Native work execution scope changed.");
+    if (event && event.session_id !== sessionId) throw new Error("Native work event targets another session.");
+    const previousEvents = this.data.events[sessionId];
+    this.data.nativeWork[sessionId] = state;
+    try {
+      if (event) this.#appendEvent(hcpHarnessEventPayloadSchema.parse(event) as HcpHarnessEventPayload);
+      this.persist();
+    } catch (error) {
+      if (previous) this.data.nativeWork[sessionId] = previous; else delete this.data.nativeWork[sessionId];
+      if (previousEvents) this.data.events[sessionId] = previousEvents; else delete this.data.events[sessionId];
+      throw error;
+    }
+  }
+
+  removeEmptyNativeWorkState(sessionId: string): void {
+    const previous = this.data.nativeWork[sessionId];
+    if (!previous || Object.keys(previous.items).length) return;
+    delete this.data.nativeWork[sessionId];
+    try {this.persist();} catch (error) {this.data.nativeWork[sessionId] = previous; throw error;}
   }
 
   saveNativeConversation(key: string, input: NativeConversation): void {
@@ -222,8 +299,13 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
   }
 
   appendEvent(event: HcpHarnessEventPayload): void {
-    this.#appendEvent(event);
-    this.persist();
+    const previous = this.data.events[event.session_id];
+    const exited = this.data.exitedSessions[event.session_id];
+    try {this.#appendEvent(event); this.persist();} catch (error) {
+      if (previous) this.data.events[event.session_id] = previous; else delete this.data.events[event.session_id];
+      if (exited) this.data.exitedSessions[event.session_id] = true; else delete this.data.exitedSessions[event.session_id];
+      throw error;
+    }
   }
 
   #appendEvent(event: HcpHarnessEventPayload): void {
@@ -239,6 +321,7 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
       events.shift();
     }
     this.data.events[event.session_id] = events;
+    if (event.event_type === "session.exited") this.data.exitedSessions[event.session_id] = true;
   }
 
   getMcpReview(sessionId: string): PersistedMcpReview | undefined {
@@ -283,9 +366,11 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
   #persistMcpChange(sessionId: string, change: () => void): void {
     const review = this.data.mcpReviews[sessionId];
     const events = this.data.events[sessionId];
+    const exited = this.data.exitedSessions[sessionId];
     try {change(); this.persist();} catch (error: unknown) {
       if (review) this.data.mcpReviews[sessionId] = review; else delete this.data.mcpReviews[sessionId];
       if (events) this.data.events[sessionId] = events; else delete this.data.events[sessionId];
+      if (exited) this.data.exitedSessions[sessionId] = true; else delete this.data.exitedSessions[sessionId];
       throw error;
     }
   }
@@ -449,6 +534,8 @@ function emptyRunnerState(): RunnerStateData {
     localActionReceipts: {},
     mcpReviews: {},
     nativeConversations: {},
+    nativeWork: {},
+    exitedSessions: {},
   };
 }
 

@@ -32,6 +32,20 @@ test("steering results must name the requested active turn", async () => {
   assert.equal((await waiting).payload.turn_id, "turn");
 });
 
+test("native work results must name the requested action and owned work ID", async () => {
+  const {peer, sent} = connected();
+  const waiting = peer.cancelNativeWork("session", "child", 4);
+  const command = sent.at(-1)!;
+  let settled = false;
+  void waiting.then(() => {settled = true;});
+  const receipt = {command_id: command.id, session_id: "session", operation: "work" as const, filesystem_undo: false as const};
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, work: {action: "retire", work_id: "child", retired: true}}));
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, work: {action: "cancel", work_id: "another-child", accepted: true}}));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, work: {action: "cancel", work_id: "child", accepted: true}}));
+  assert.equal((await waiting).payload.work?.action, "cancel");
+});
+
 test("content results must name the requested object and byte offset", async () => {
   const {peer, sent} = connected();
   const contentId = "a".repeat(64);

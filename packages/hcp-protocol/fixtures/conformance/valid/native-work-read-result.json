@@ -1,0 +1,33 @@
+{
+  "id": "fixture-native-work-read-result",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "read-1",
+    "session_id": "session-1",
+    "operation": "work",
+    "filesystem_undo": false,
+    "work": {
+      "action": "read",
+      "owner_status": "unavailable",
+      "observation_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "total_count": 1,
+      "items": [
+        {
+          "work": {
+            "work_id": "child-1",
+            "native_reference": "native-child",
+            "origin_turn_id": "turn-1",
+            "kind": "task",
+            "background": true,
+            "status": "running",
+            "supports_cancel": true,
+            "revision": 1
+          },
+          "owner_status": "unavailable"
+        }
+      ]
+    }
+  }
+}

@@ -8,7 +8,7 @@ import type { NativeConversation } from "../../state/index.js";
 import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
 import type {HarnessContentReference} from "@harness-control/protocol";
 
-export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content">;
+export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content" | "work">;
 
 /** A live control belongs to exactly one running HCP turn, and expires with its runtime. */
 export type HarnessActiveTurnControls = {
@@ -122,6 +122,9 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  readonly nativeWork?: true;
+  cancelNativeWork?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
+    provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload; signal: AbortSignal}): Promise<void>;
   readonly sessionEvents?: true;
   readonly instructionRoles?: readonly ("system" | "developer")[];
   readonly configurationInheritance?: import("@harness-control/protocol").HarnessConfigurationInheritance;

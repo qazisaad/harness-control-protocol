@@ -56,6 +56,18 @@ try {
   adapter.emitObservation("session", "between-turns");
   await until(() => events.some(event => event.event_type === "extension.example.observation" && event.data.fields.phase === "between-turns"));
   assert.equal(events.filter(event => event.turn_id === "turn" && event.event_type === "turn.completed").length, 1);
+  adapter.emitWork("session", "turn", "running");
+  await until(() => events.some(event => event.event_type === "native.work.updated"));
+  const children = await peer.readNativeWork("session");
+  assert.equal(children.payload.work.items[0].owner_status, "active");
+  const child = children.payload.work.items[0].work;
+  const cancelled = await peer.cancelNativeWork("session", child.work_id, child.revision, {id: "cancel-child"});
+  const cancelledAgain = await peer.cancelNativeWork("session", child.work_id, child.revision, {id: "cancel-child"});
+  assert.deepEqual(cancelled.payload, cancelledAgain.payload);
+  assert.equal(adapter.nativeCancellations, 1);
+  const settledChild = (await peer.readNativeWork("session")).payload.work.items[0].work;
+  assert.equal(settledChild.status, "cancelled");
+  await peer.retireNativeWork("session", child.work_id, settledChild.revision);
   const reference = events.find(event => event.event_type === "turn.completed").data.final_output.content_ref;
   const chunks = []; let offset = 0;
   while (true) {

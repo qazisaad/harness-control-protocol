@@ -10,6 +10,8 @@ const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(t
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "example.controls";
   readonly sessionEvents = true;
+  readonly nativeWork = true;
+  nativeCancellations = 0;
   readonly observations = new Map<string, NonNullable<HarnessAdapterStartInput["emitSessionEvent"]>>();
   readonly instructionRoles = ["system"] as const;
   instructionsSeen: HarnessInstructions | undefined;
@@ -23,6 +25,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       execution_capabilities: {streaming: true, multi_turn: true, session_continuation: true, native_history: true,
         instruction_roles: [...this.instructionRoles],
         session_events: true,
+        native_work: true,
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
         manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
         approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
@@ -42,6 +45,16 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   }
   emitObservation(sessionId: string, phase: string) {
     this.observations.get(sessionId)!({event_type: "extension.example.observation", data: {summary: "Native observation", fields: {phase}}});
+  }
+  emitWork(sessionId: string, originTurnId: string, status: "running" | "cancelled") {
+    this.observations.get(sessionId)!({event_type: "native.work.updated", data: {work: {
+      work_id: "background-task", native_reference: "fixture-task", origin_turn_id: originTurnId,
+      kind: "task", background: true, status, supports_cancel: true,
+    }}});
+  }
+  async cancelNativeWork(input: Parameters<NonNullable<HarnessAdapter["cancelNativeWork"]>>[0]) {
+    this.nativeCancellations++;
+    this.emitWork(input.sessionId, input.work.origin_turn_id, "cancelled");
   }
   async sendTurn(input: HarnessAdapterTurnInput): Promise<HarnessAdapterEvent[]> {
     const nativeId = input.session.native_thread_id!;

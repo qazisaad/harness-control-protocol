@@ -85,3 +85,7 @@ Omit provider ids to read all configured instances. The default wait is 150 seco
 `HcpAccountUsageReducer` can be restored from validated source snapshots and supplied as the connection's `accounts` option after reconnect. Persist it in the consuming app. Omitted providers are untouched; successful observations replace their source's whole limit list. Failures retain last-good history but suppress fresh decisions. Accounts observed on several sources are deduplicated by key, never summed. Remove retired sources explicitly with `removeSource(hostId, providerInstanceId)`.
 
 Employee mapping, billing scope verification, retention, polling, policy and authorization belong to the host. Keep one canonical policy in the host's server code rather than copying rules into a UI. See the [account contract](../../docs/account-capacity.md).
+
+## Native background work
+
+For providers advertising `native_work`, call `readNativeWork(sessionId, {limit, cursor})` to reconcile session-owned tasks after root completion or a replay gap. Each entry includes a revision and live `owner_status`. Use `cancelNativeWork(sessionId, workId, revision, {id: durableCommandId})` and `retireNativeWork(sessionId, workId, revision)`. Cancellation acceptance is distinct from a terminal task observation; uncertain cancellation is fenced against repetition. Retirement requires terminal status and removes only HCP metadata. Retained work whose owner is unavailable remains readable after restart. See the [native work contract](../../docs/architecture.md#native-work-ownership).
