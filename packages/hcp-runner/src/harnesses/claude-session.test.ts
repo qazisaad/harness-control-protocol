@@ -38,11 +38,13 @@ async function fixture() {
   let echo = true;
   let completeOnStop = false;
   let failOpen = false, factoryCalls = 0;
+  let confirmCompact = true;
+  let effectiveEffort = "medium";
   const emit = (message: Record<string, unknown>) => output.offer({session_id: nativeId, ...message});
   const assistant = (uuid: string, blocks: unknown[] = []) => emit({type: "assistant", user_message_uuid: uuid, parent_tool_use_id: null,
     message: {content: blocks, usage: {input_tokens: 10, output_tokens: 2}}});
   const result = (message: SDKUserMessage, text = "done") => emit({type: "result", subtype: "success", is_error: false,
-    ...(echo ? {user_message_uuid: message.uuid} : {}), result: text, modelUsage: {sonnet: {inputTokens: prompts.length * 10, outputTokens: prompts.length * 2,
+    ...(echo ? {user_message_uuid: message.uuid} : {}), ...(message.message.content === "/compact" && confirmCompact ? {local_command: "compact"} : {}), result: text, modelUsage: {sonnet: {inputTokens: prompts.length * 10, outputTokens: prompts.length * 2,
       cacheReadInputTokens: 0, cacheCreationInputTokens: 0}}});
   const factory: ClaudeQueryFactory = ({prompt, options: value}) => {
     factoryCalls++;
@@ -52,6 +54,9 @@ async function fixture() {
       let initialized = false;
       for await (const message of prompt as AsyncIterable<SDKUserMessage>) {
         prompts.push(message); current = message;
+        emit({type: "command_lifecycle", command_uuid: message.uuid, state: "queued"});
+        emit({type: "command_lifecycle", command_uuid: message.uuid, state: "started"});
+        if (!initialized) emit({type: "system", subtype: "session_title_changed", title: "Restored conversation"});
         if (!initialized) {initialized = true; emit({type: "system", subtype: "init", cwd: value!.cwd, permissionMode: value!.permissionMode,
           mcp_servers: [], plugins: []});}
         const text = message.message.content as string;
@@ -60,7 +65,7 @@ async function fixture() {
           emit({type: "system", subtype: "task_started", task_id: "agent", task_type: "local_agent", tool_use_id: "launch", description: "Background agent", is_backgrounded: true});
           if (text !== "spawn-wait") result(message);
         } else if (text === "wait") {assistant(message.uuid!);}
-        else if (text === "/compact") {assistant(message.uuid!); emit({type: "system", subtype: "compact_boundary", compact_metadata: {post_tokens: 5}}); result(message);}
+        else if (text === "/compact") {emit({type: "system", subtype: "compact_boundary", compact_metadata: {trigger: "manual", post_tokens: 5}}); result(message);}
         else {assistant(message.uuid!); result(message, text);}
       }
     })().catch(() => output.close());
@@ -69,9 +74,11 @@ async function fixture() {
       close() {closes++; output.close();},
       async setModel(model: string) {controls.push(`model:${model}`);},
       async setPermissionMode(mode: string) {controls.push(`mode:${mode}`);},
+      async applyFlagSettings(settings: {effortLevel: string}) {controls.push(`effort:${settings.effortLevel}`); effectiveEffort = settings.effortLevel;},
+      async getSettings() {controls.push("settings:read"); return {applied: {effort: effectiveEffort}};},
       async stopTask(id: string) {controls.push(`stop:${id}`); if (completeOnStop) emit({type: "system", subtype: "task_notification", task_id: id, status: "stopped", summary: "Stopped"});},
       async interrupt() {controls.push("interrupt"); emit({type: "result", subtype: "error_during_execution", is_error: true, user_message_uuid: current?.uuid});},
-    }) as Query;
+    }) as unknown as Query;
   };
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
     provider_instances: [{id: "provider", driver_kind: "claude"}]});
@@ -93,6 +100,7 @@ async function fixture() {
   const cleanup = async () => {completeOnStop = true; try {await manager.stopSession("session", "cleanup");} catch {} await rm(cwd, {recursive: true, force: true});};
   return {cwd, config, adapter, manager, options, prompts, controls, events, start, state, emit, send, read, assistant, result,
     noEcho: () => {echo = false;}, failFactory: () => {failOpen = true;}, get factoryCalls() {return factoryCalls;},
+    omitCompactConfirmation: () => {confirmCompact = false;},
     closeNative: () => output.close(), get closes() {return closes;}, cleanup};
 }
 
@@ -112,6 +120,29 @@ test("interactive Claude retains one query, roots and background ownership acros
     assert.equal((finals[1]!.data as {final_output: {usage: {scope: string; total_tokens: number}}}).final_output.usage.scope, "conversation");
     assert.equal((finals[1]!.data as {final_output: {usage: {total_tokens: number}}}).final_output.usage.total_tokens, 24);
     assert.equal(f.options[0]!.disallowedTools?.includes("Agent") ?? false, false);
+  } finally {await f.cleanup();}
+});
+
+test("manual Claude compaction waits for its UUID-bound local-command result before accepting an unstamped boundary", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "hello");
+    const result = await f.manager.sendTurn({session_id: "session", turn_id: "compact", input: "", action: "compact"});
+    assert.equal(result.at(-1)?.event_type, "turn.completed");
+    const contexts = f.events.filter(event => event.turn_id === "compact" && event.event_type === "context.updated");
+    assert.equal((contexts.at(-1)?.data as {used_tokens: number}).used_tokens, 5);
+    await f.send("followup", "still here");
+    assert.equal(f.factoryCalls, 1);
+  } finally {await f.cleanup();}
+});
+
+test("an unstamped compact boundary without local-command confirmation cannot complete manual compaction", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "hello"); f.omitCompactConfirmation();
+    const result = await f.manager.sendTurn({session_id: "session", turn_id: "compact", input: "", action: "compact"});
+    assert.equal(result.at(-1)?.event_type, "turn.failed");
+    assert.equal(f.events.some(event => event.turn_id === "compact" && event.event_type === "context.updated" && (event.data as {status: string}).status === "measured"), false);
   } finally {await f.cleanup();}
 });
 
@@ -163,6 +194,20 @@ test("persistent settings changes preserve the query, but never destroy outstand
     assert.equal(f.options.length, 1);
     const configured = f.events.filter(event => event.event_type === "session.configured").at(-1)!;
     assert.equal((configured.data as {mode: string}).mode, "plan");
+  } finally {await f.cleanup();}
+});
+
+test("persistent effort changes preserve the runtime and confirm effective settings", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "hello");
+    const result = await f.manager.sendTurn({session_id: "session", turn_id: "changed", input: "change",
+      model_selection: {model: "sonnet", options: [{id: "effort", value: "low"}]}});
+    assert.equal(result.at(-1)?.event_type, "turn.completed");
+    assert.deepEqual(f.controls, ["effort:low", "settings:read"]);
+    assert.equal(f.factoryCalls, 1); assert.equal(f.closes, 0);
+    const configured = f.events.filter(event => event.event_type === "session.configured").at(-1)!;
+    assert.deepEqual((configured.data as {model_selection: unknown}).model_selection, {model: "sonnet", options: [{id: "effort", value: "low"}]});
   } finally {await f.cleanup();}
 });
 

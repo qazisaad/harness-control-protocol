@@ -30,6 +30,7 @@ const startedSchema = z.object({
 const deltaSchema = z.object({
   threadId: z.string(),
   turnId: z.string(),
+  itemId: z.string().min(1).max(512).optional(),
   delta: z.string(),
 });
 const itemSchema = z.object({
@@ -271,7 +272,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
               ? "content.delta"
               : "reasoning.delta",
           turn_id: input.payload.turn_id,
-          data: { delta },
+          data: { delta, ...(event.itemId ? {item_id: event.itemId} : {}) },
         });
       } else if (
         message.method === "item/started" ||
@@ -377,7 +378,9 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
           reject(
             new HarnessAdapterError(
               "codex_turn_failed",
-              "Codex ended without a successful final answer.",
+              `Codex ended without a successful final answer (status: ${event.turn.status}).${
+                event.turn.error && typeof event.turn.error === "object" && "message" in event.turn.error && typeof event.turn.error.message === "string"
+                  ? ` ${boundedText(event.turn.error.message)}` : ""}`,
             ),
           );
         } else resolve({ ...retainedFinalText(finalText ?? "", input.publishContent), context, ...(usage ? { usage } : {}) });

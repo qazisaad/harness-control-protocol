@@ -2385,12 +2385,15 @@ const itemEventDataSchema = z
   })
   .strict();
 
-const textDeltaEventDataSchema = z
+export const harnessTextDeltaEventDataSchema = z
   .object({
     stream_kind: nonEmptyStringSchema.optional(),
+    item_id: nonEmptyStringSchema.max(512).optional(),
+    message_id: nonEmptyStringSchema.max(512).optional(),
     delta: z.string(),
   })
   .strict();
+export type HarnessTextDeltaEventData = z.infer<typeof harnessTextDeltaEventDataSchema>;
 
 const commandEventDataSchema = z
   .object({
@@ -2658,7 +2661,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
     return itemEventDataSchema;
   }
   if (eventType === "content.delta" || eventType === "reasoning.delta") {
-    return textDeltaEventDataSchema;
+    return harnessTextDeltaEventDataSchema;
   }
   if (eventType.startsWith("command.") || eventType.startsWith("file_change.")) {
     return commandEventDataSchema;

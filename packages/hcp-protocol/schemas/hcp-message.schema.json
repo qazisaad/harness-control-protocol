@@ -17258,6 +17258,16 @@
                   "type": "string",
                   "minLength": 1
                 },
+                "item_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "message_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
                 "delta": {
                   "type": "string"
                 }
@@ -17367,6 +17377,16 @@
                 "stream_kind": {
                   "type": "string",
                   "minLength": 1
+                },
+                "item_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "message_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
                 },
                 "delta": {
                   "type": "string"

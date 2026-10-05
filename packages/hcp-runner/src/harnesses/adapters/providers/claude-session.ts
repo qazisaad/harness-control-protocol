@@ -8,6 +8,9 @@ import {NativeInteractions} from "../../native-interactions.js";
 import {ClaudeInput} from "./claude-input.js";
 import {claudePermissions} from "./claude-permissions.js";
 import {claudeElicitation} from "./claude-elicitation.js";
+import {hasInheritedClaudePlugins} from "./claude-inventory.js";
+import {claudeContextCapacity} from "./claude-context.js";
+import {claudeEffortControl} from "./claude-effort.js";
 import {claudeResultSchema, type ClaudeQueryFactory} from "./claude-runtime.js";
 import {NativeProcess} from "./native-process.js";
 import {adapterMcpServers, assertCliMcpAttachmentProxied} from "./shared.js";
@@ -16,7 +19,8 @@ import {measuredContext, unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 
 type Root = {input: HarnessAdapterTurnInput; emit: (event: HarnessAdapterEvent) => void; ids: Set<string>;
-  interactions: NativeInteractions; lifetime: AbortController; context: HarnessContextUsage; streamed: boolean; compacted: boolean;
+  interactions: NativeInteractions; lifetime: AbortController; context: HarnessContextUsage; nativeModel?: string; streamed: boolean; compacted: boolean;
+  commandStarted?: boolean; pendingCompactContext?: HarnessContextUsage;
   completion: Promise<HarnessTurnFinalOutput>; resolve: (result: HarnessTurnFinalOutput) => void; reject: (error: unknown) => void};
 type Task = {work: HarnessNativeWorkObservation; root: Root; lifetime: AbortController; launch?: string};
 const error = (code: string, message: string) => new HarnessAdapterError(code, message);
@@ -92,6 +96,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   async run(input: HarnessAdapterTurnInput, signal: AbortSignal, emit: (event: HarnessAdapterEvent) => void): Promise<HarnessTurnFinalOutput> {
     if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The persistent Claude owner cannot execute another turn.");
     if (this.#active) throw error("native_turn_busy", "A native root turn is already running.");
+    if (input.payload.action === "compact" && (this.#pending().length || this.#background.size || this.#unconfirmedWork || this.#sessionInputs.outstanding))
+      throw error("native_work_compaction_busy", "Manual compaction cannot establish exclusive command ownership while native work or session input is outstanding.");
     if (this.#roots.size >= 128) for (const root of this.#roots) {
       if (root.interactions.outstanding || this.#pending().some(task => task.root === root)) continue;
       root.lifetime.abort(); root.interactions.close(); this.#roots.delete(root);
@@ -104,10 +110,11 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     selectedEffort(selection, "claude");
     if (this.#selection && (JSON.stringify(selection) !== JSON.stringify(this.#selection) || mode !== this.#mode)) {
       if (this.#pending().length || this.#background.size || this.#sessionInputs.outstanding) throw error("native_work_settings_busy", "Settings cannot change while native work or session input is outstanding or its owner is unresolved.");
-      if (JSON.stringify(selection.options ?? []) !== JSON.stringify(this.#selection.options ?? []))
-        throw error("native_option_transition_unsupported", "This SDK runtime cannot acknowledge an effort transition without unloading.");
+      const changeEffort = JSON.stringify(selection.options ?? []) !== JSON.stringify(this.#selection.options ?? [])
+        ? claudeEffortControl(this.#stream!, selectedEffort(selection, "claude")) : undefined;
       try {
         if (selection.model !== this.#selection.model) await bounded(this.#stream!.setModel(selection.model));
+        if (changeEffort) await bounded(changeEffort());
         if (mode !== this.#mode) await bounded(this.#stream!.setPermissionMode(this.#permissionMode(mode)));
       } catch (failure) {this.#lose("transport_lost", failure); throw failure;}
     }
@@ -196,17 +203,26 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   async #handle(message: SDKMessage): Promise<void> {
     if ("session_id" in message && message.session_id !== this.nativeId) throw error("native_continuation_binding", "Claude emitted another native session identity.");
+    const lifecycle = z.object({type: z.literal("command_lifecycle"), command_uuid: z.string(), state: z.enum(["queued", "started"])}).safeParse(message);
+    if (lifecycle.success) {
+      // CLI admission frames precede system/init. They prove neither policy nor execution results.
+      if (!this.#active?.ids.has(lifecycle.data.command_uuid)) throw error("native_continuation_binding", "Claude admitted an unowned native command.");
+      if (lifecycle.data.state === "started") this.#active.commandStarted = true;
+      return;
+    }
+    // Fork restoration can announce display metadata before proving the runtime policy.
+    if (z.object({type: z.literal("system"), subtype: z.literal("session_title_changed")}).safeParse(message).success) return;
     if (message.type === "system" && message.subtype === "init") {
       const init = z.object({cwd: z.string(), permissionMode: z.string(), mcp_servers: z.array(z.object({name: z.string(), status: z.string()})), plugins: z.array(z.unknown())}).parse(message);
       const expected = adapterMcpServers(this.start.mcpServers, this.start.payload).map(server => server.name).sort();
       if (await realpath(init.cwd) !== await realpath(this.start.payload.cwd) || init.permissionMode !== this.#permissionMode(this.#mode!)) throw error("policy_mismatch", "Claude did not confirm the requested workspace and permissions.");
-      if (init.plugins.length || init.mcp_servers.some(server => server.status !== "connected") || JSON.stringify(init.mcp_servers.map(server => server.name).sort()) !== JSON.stringify(expected)) throw error("mcp_scope_mismatch", "Claude did not confirm the exact native MCP and plugin inventory.");
+      if (hasInheritedClaudePlugins(init.plugins) || init.mcp_servers.some(server => server.status !== "connected") || JSON.stringify(init.mcp_servers.map(server => server.name).sort()) !== JSON.stringify(expected)) throw error("mcp_scope_mismatch", "Claude did not confirm the exact native MCP and plugin inventory.");
       this.#initialized = true;
       if (this.#active) {this.#active.input.session.native_thread_id = this.nativeId; this.#active.input.persistNativeThread?.(this.nativeId);
         this.#controls(this.#active, this.#active.lifetime.signal);}
       return;
     }
-    if (!this.#initialized) throw error("native_continuation_binding", "Claude emitted execution before its initialization proof.");
+    if (!this.#initialized) throw error("native_continuation_binding", `Claude emitted ${message.type}${"subtype" in message ? `/${message.subtype}` : ""} before its initialization proof.`);
     if (message.type === "system" && message.subtype === "background_tasks_changed") {
       // The SDK explicitly permits this level signal to precede its origin-bearing bookends.
       // It fences destructive controls; neither absence nor membership proves a terminal outcome or origin.
@@ -232,6 +248,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
           data: {item_id: block.id, item_type: "tool_call", summary: block.name, content: retainedContent({arguments: block.input}, root.input.publishContent)}});
       }
       if (!parent && root && root === this.#active) {
+        root.nativeModel = message.message.model;
         const counters = z.object({input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
           cache_read_input_tokens: z.number().int().nonnegative().nullish(), cache_creation_input_tokens: z.number().int().nonnegative().nullish()}).safeParse(message.message.usage);
         root.context = counters.success ? measuredContext(this.#selection!, "claude.sdk.assistant.usage", counters.data.input_tokens + counters.data.output_tokens + (counters.data.cache_read_input_tokens ?? 0) + (counters.data.cache_creation_input_tokens ?? 0)) : unavailableContext(this.#selection!, "native_measurement_unavailable");
@@ -247,9 +264,16 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     }
     if (!parent && root === this.#active && root && message.type === "user" && Array.isArray(message.message.content)) for (const block of message.message.content)
       if (block.type === "tool_result") root.emit({event_type: "item.completed", turn_id: root.input.payload.turn_id, data: {item_id: block.tool_use_id, item_type: "tool_call", status: block.is_error ? "failed" : "completed", content: retainedContent(block.content ?? [], root.input.publishContent)}});
-    if (root && root === this.#active && message.type === "system" && message.subtype === "compact_boundary") {
-      root.compacted = true; root.context = message.compact_metadata.post_tokens !== undefined ? measuredContext(this.#selection!, "claude.sdk.compact_boundary.post_tokens", message.compact_metadata.post_tokens, undefined, "retained_conversation") : unavailableContext(this.#selection!, "native_compaction_has_no_measurement");
-      root.emit({event_type: "context.updated", turn_id: root.input.payload.turn_id, data: {...root.context}});
+    if (message.type === "system" && message.subtype === "compact_boundary") {
+      const context = message.compact_metadata.post_tokens !== undefined ? measuredContext(this.#selection!, "claude.sdk.compact_boundary.post_tokens", message.compact_metadata.post_tokens, undefined, "retained_conversation") : unavailableContext(this.#selection!, "native_compaction_has_no_measurement");
+      if (root && root === this.#active) {
+        root.compacted = true; root.context = context;
+        root.emit({event_type: "context.updated", turn_id: root.input.payload.turn_id, data: {...root.context}});
+      } else if (this.#active?.input.payload.action === "compact" && this.#active.commandStarted
+          && message.compact_metadata.trigger === "manual" && !this.#pending().length && !this.#background.size && !this.#unconfirmedWork) {
+        // The local command emits an unstamped boundary. Keep it provisional until its UUID-bound result confirms ownership.
+        this.#active.pendingCompactContext = context;
+      }
     }
     if (message.type === "result") {
       // An unstamped result may be an autonomous background wake. It cannot complete an app's root.
@@ -259,8 +283,14 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       if (!parsed.success || parsed.data.api_error_status != null && parsed.data.api_error_status >= 400
           || parsed.success && (parsed.data.terminal_reason !== undefined && parsed.data.terminal_reason !== "completed" || parsed.data.stop_reason != null && !["end_turn", "stop_sequence"].includes(parsed.data.stop_reason)))
         {root.reject(error("claude_result_error", "Claude returned an unsuccessful or malformed native root result.")); this.#active = undefined; this.#boundRoot = undefined; return;}
+      if (root.input.payload.action === "compact" && root.pendingCompactContext
+          && z.object({local_command: z.literal("compact")}).safeParse(message).success) {
+        root.compacted = true; root.context = root.pendingCompactContext;
+      }
       if (root.input.payload.action === "compact" && !root.compacted) throw error("native_compaction_unknown", "Claude did not confirm native compaction.");
       const result = parsed.data;
+      root.context = claudeContextCapacity(root.context, root.nativeModel, result.modelUsage);
+      root.emit({event_type: "context.updated", turn_id: root.input.payload.turn_id, data: {...root.context}});
       if (!root.streamed) for (const delta of textChunks(result.result)) root.emit({event_type: "content.delta", turn_id: root.input.payload.turn_id, data: {delta}});
       const usages = Object.values(result.modelUsage ?? {});
       const inputTokens = usages.reduce((sum, usage) => sum + usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens, 0);

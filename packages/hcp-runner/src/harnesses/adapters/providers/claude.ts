@@ -36,6 +36,8 @@ import {
 import { createClaudeTurn, type ClaudeQueryFactory } from "./claude-runtime.js";
 import {claudeConversation, type ClaudeSessionHelper} from "./claude-conversation.js";
 import {PersistentClaudeSession} from "./claude-session.js";
+import {claudeModelCatalog} from "./claude-models.js";
+import type {HarnessModel} from "@harness-control/protocol";
 export type ClaudeHarnessAdapterOptions = {
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
@@ -43,6 +45,7 @@ export type ClaudeHarnessAdapterOptions = {
   processKillGraceMs?: number;
   queryFactory?: ClaudeQueryFactory;
   sessionHelper?: ClaudeSessionHelper;
+  modelCatalog?: typeof claudeModelCatalog;
 };
 export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly executionProfiles = nativeExecutionCapabilities("claude").execution_profiles!;
@@ -56,6 +59,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "claude";
   readonly conversationOperations = ["read", "rollback", "fork"] as const;
   readonly #sessionHelper: ClaudeSessionHelper | undefined;
+  readonly #modelCatalog: typeof claudeModelCatalog;
   readonly #processSpawner: CliProcessSpawner;
   readonly #probeTimeoutMs: number;
   readonly #processKillGraceMs: number;
@@ -64,6 +68,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   constructor(options: ClaudeHarnessAdapterOptions = {}) {
     this.#queryFactory = options.queryFactory;
     this.#sessionHelper = options.sessionHelper;
+    this.#modelCatalog = options.modelCatalog ?? claudeModelCatalog;
     this.#processSpawner = options.processSpawner ?? spawnProviderCliProcess;
     this.#probeTimeoutMs = options.probeTimeoutMs ?? 5_000;
     this.#processKillGraceMs = options.processKillGraceMs ?? 1_000;
@@ -164,6 +169,12 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     }
 
     const modelCapabilities = {image_input: true};
+    let models: HarnessModel[] = normalizeProviderModels(provider.models).map(model => ({...model, capabilities: {...model.capabilities, ...modelCapabilities}}));
+    let catalogUnavailable = false;
+    if (!models.length) {
+      try {models = await this.#modelCatalog(provider, process.cwd());}
+      catch {catalogUnavailable = true;}
+    }
     return {
       provider_instance_id: provider.id,
       driver_kind: "claude",
@@ -173,39 +184,8 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       status: "ready",
       ...(version ? { version } : {}),
       authStatus: "authenticated",
-      models:
-        provider.models.length > 0
-          ? normalizeProviderModels(provider.models).map(model => ({...model, capabilities: {...model.capabilities, ...modelCapabilities}}))
-          : [
-              {
-                id: "sonnet",
-                label: "Claude Sonnet",
-                is_default: true,
-                capabilities: {
-                  image_input: true,
-                  option_descriptors: [
-                    {
-                      id: "effort",
-                      label: "Effort",
-                      type: "select",
-                      values: ["low", "medium", "high", "xhigh", "max"].map(
-                        (value) => ({ value, label: value }),
-                      ),
-                    },
-                  ],
-                },
-              },
-              {
-                id: "opus",
-                label: "Claude Opus",
-                capabilities: { option_descriptors: [], image_input: true },
-              },
-              {
-                id: "haiku",
-                label: "Claude Haiku",
-                capabilities: { option_descriptors: [], image_input: true },
-              },
-            ],
+      models,
+      ...(catalogUnavailable ? {message: "Claude Code is authenticated; its native model catalog is unavailable."} : {}),
     };
   }
 

@@ -14,6 +14,8 @@ import {realpath} from "node:fs/promises";
 import { NativeInteractions } from "../../native-interactions.js";
 import {claudePermissions} from "./claude-permissions.js";
 import {claudeElicitation} from "./claude-elicitation.js";
+import {hasInheritedClaudePlugins} from "./claude-inventory.js";
+import {claudeContextCapacity} from "./claude-context.js";
 import { ClaudeInput } from "./claude-input.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
@@ -35,6 +37,7 @@ export const claudeResultSchema = z.object({
         outputTokens: z.number().int().nonnegative(),
         cacheReadInputTokens: z.number().int().nonnegative(),
         cacheCreationInputTokens: z.number().int().nonnegative(),
+        contextWindow: z.number().int().positive().optional(),
       }),
     )
     .optional(),
@@ -61,6 +64,7 @@ export function createClaudeTurn(
     const selection =
       input.payload.model_selection ?? input.startPayload.model_selection;
     let context = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "new_native_request");
+    let nativeModel: string | undefined;
     emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
     const effort = selectedEffort(selection, "claude") as Options["effort"];
     const mcpServers: NonNullable<Options["mcpServers"]> = {};
@@ -137,7 +141,7 @@ export function createClaudeTurn(
           if (await realpath(confirmed.cwd) !== await realpath(input.startPayload.cwd) || confirmed.permissionMode !== permissionMode)
             throw new HarnessAdapterError("policy_mismatch", "Claude did not confirm the requested workspace and permission mode.");
           const expectedServers = Object.keys(mcpServers);
-          if (confirmed.plugins.length || confirmed.mcp_servers.length !== expectedServers.length ||
+          if (hasInheritedClaudePlugins(confirmed.plugins) || confirmed.mcp_servers.length !== expectedServers.length ||
               new Set(confirmed.mcp_servers.map(server => server.name)).size !== expectedServers.length ||
               confirmed.mcp_servers.some(server => !expectedServers.includes(server.name) || server.status !== "connected"))
             throw new HarnessAdapterError("mcp_scope_mismatch", "Claude exposed an unexpected plugin or did not confirm the selected MCP inventory.");
@@ -177,6 +181,7 @@ export function createClaudeTurn(
         } else if (message.type === "assistant") {
           // Nested agents have their own context; do not project them onto the root conversation.
           if (!message.parent_tool_use_id) {
+            nativeModel = message.message.model;
             const counters = z.object({input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
               cache_read_input_tokens: z.number().int().nonnegative().nullish(), cache_creation_input_tokens: z.number().int().nonnegative().nullish()}).safeParse(message.message.usage);
             context = counters.success ? measuredContext(selection, "claude.sdk.assistant.usage", counters.data.input_tokens + counters.data.output_tokens
@@ -255,6 +260,8 @@ export function createClaudeTurn(
           data: { delta },
         });
       let inputTokens = 0;
+      context = claudeContextCapacity(context, nativeModel, result.modelUsage);
+      emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
       let outputTokens = 0;
       let cachedInputTokens = 0;
       let cacheCreationInputTokens = 0;

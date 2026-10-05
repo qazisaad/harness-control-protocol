@@ -106,14 +106,14 @@ const server = createServer(async (request, response) => {
       sendEvent(stream, {
         type: "message.part.updated",
         properties: {
-          part: { sessionID: executionId, type: "reasoning" },
+          part: { id: `reasoning-${payload.messageID}`, messageID: usagePart.messageID, sessionID: executionId, type: "reasoning" },
           delta: "thinking ",
         },
       });
       sendEvent(stream, {
         type: "message.part.updated",
         properties: {
-          part: { sessionID: executionId, type: "text" },
+          part: { id: `text-${payload.messageID}`, messageID: usagePart.messageID, sessionID: executionId, type: "text" },
           delta: "hello",
         },
       });

@@ -1,12 +1,15 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { NativeProcess } from "./native-process.js";
+import {fetchNativeResponse} from "./native-http.js";
 import { NativeTurns } from "./native-turn.js";
 import { NativeInteractions } from "../../native-interactions.js";
 import {OpenCodeUsage, openCodeMessageId} from "./opencode-usage.js";
+import {OpenCodeText} from "./opencode-text.js";
+import {projectOpenCodeCatalog} from "./opencode-models.js";
 import {openCodeContext} from "./opencode-context.js";
 import {unavailableContext} from "./native-context.js";
-import {retainedContent, retainedFinalText, textChunks, type ContentPublisher} from "./content-projection.js";
+import {retainedContent, retainedFinalText, type ContentPublisher} from "./content-projection.js";
 
 import { z } from "zod";
 import type { HarnessExecutionCapabilities, HarnessModelSelection, HarnessUsageSnapshot } from "@harness-control/protocol";
@@ -125,6 +128,7 @@ export type OpenCodeRuntimeFactory = (input: OpenCodeRuntimeStartInput) => Promi
 export type OpenCodeHarnessAdapterOptions = {
   runtimeFactory?: OpenCodeRuntimeFactory;
   probeTimeoutMs?: number;
+  modelCatalog?: (provider: ProviderInstanceConfig) => Promise<ReturnType<typeof projectOpenCodeCatalog>>;
 };
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
@@ -135,12 +139,14 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
 
   readonly #runtimeFactory: OpenCodeRuntimeFactory;
   readonly #probeTimeoutMs: number;
+  readonly #modelCatalog: NonNullable<OpenCodeHarnessAdapterOptions["modelCatalog"]>;
   readonly #runtimes = new Map<string, OpenCodeRuntime>();
   readonly #turns = new NativeTurns("opencode", 10 * 60_000);
 
   constructor(options: OpenCodeHarnessAdapterOptions = {}) {
     this.#runtimeFactory = options.runtimeFactory ?? startOpenCodeRuntime;
     this.#probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+    this.#modelCatalog = options.modelCatalog ?? openCodeModelCatalog;
   }
 
   async probe(provider: ProviderInstanceConfig): Promise<ProviderDriverStatus> {
@@ -164,6 +170,11 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
         models: openCodeModels(provider),
       };
     }
+    let models: import("@harness-control/protocol").HarnessModel[] = openCodeModels(provider);
+    let catalogUnavailable = false;
+    if (supportedVersion(version) && !models.length) {
+      try {models = (await this.#modelCatalog(provider)).models;} catch {catalogUnavailable = true;}
+    }
     return {
       provider_instance_id: provider.id,
       driver_kind: this.driverKind,
@@ -173,7 +184,8 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       ...(supportedVersion(version) ? {execution_capabilities: executionCapabilities} :
         {message: "This OpenCode adapter requires the 1.3.15+ HTTP/SSE contract within major version 1."}),
       ...(version ? { version } : {}),
-      models: openCodeModels(provider),
+      models,
+      ...(catalogUnavailable ? {message: "OpenCode is installed; its native model catalog is unavailable."} : {}),
     };
   }
 
@@ -311,6 +323,18 @@ async function runProbe(
   return result;
 }
 
+async function openCodeModelCatalog(provider: ProviderInstanceConfig): Promise<ReturnType<typeof projectOpenCodeCatalog>> {
+  const cwd = process.cwd();
+  const runtime = new NativeProcess(provider.executable_path ?? "opencode",
+    [...provider.launch_args, "serve", "--hostname=127.0.0.1", "--port=0"], cwd,
+    {...process.env, ...providerEnvironment(provider)});
+  runtime.child.stdin.end();
+  try {
+    const baseUrl = await waitForServerUrl(runtime.child, DEFAULT_SERVER_START_TIMEOUT_MS);
+    return projectOpenCodeCatalog(await fetchJson(new URL(`/provider?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "GET"}));
+  } finally {await runtime.stop();}
+}
+
 async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<OpenCodeRuntime> {
   // Check at launch too: a cached capability snapshot cannot authorize another runtime version.
   const probe = await runProbe(input.executable, [...input.launchArgs, "--version"],
@@ -436,8 +460,13 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       for (const part of response.parts) usage.part(part);
       const measured = usage.snapshot();
       if (measured) input.onUsage?.(measured);
+      let capacities: Map<string, number> | undefined;
+      try {
+        capacities = projectOpenCodeCatalog(await fetchJson(new URL(`/provider?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl),
+          {method: "GET", signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(5_000)])})).capacities;
+      } catch { /* A catalog failure cannot turn measured request counters into guessed capacity. */ }
       input.onContext?.(openCodeContext(response.info, this.sessionId, messageId,
-        input.modelSelection ?? {model: input.model, ...(input.variant ? {options: [{id: "variant", value: input.variant}]} : {})}));
+        input.modelSelection ?? {model: input.model, ...(input.variant ? {options: [{id: "variant", value: input.variant}]} : {})}, capacities));
       return response.parts
         .filter((part): boolean => part.type === "text" && part.text !== undefined)
         .map((part): string => part.text ?? "")
@@ -519,6 +548,7 @@ function createEventStream(
   const requests = new Set<string>();
   const responses: Promise<void>[] = [];
   const completedItems = new Set<string>();
+  const text = new OpenCodeText(sessionId, usage.promptId, input.turnId, input.emitEvent);
   const completed: Promise<void> = (async (): Promise<void> => {
     try {
       const response: Response = await fetch(url, { headers: { accept: "text/event-stream" }, signal });
@@ -529,6 +559,7 @@ function createEventStream(
       await consumeSse(response.body, (value: unknown): void => {
         const event = eventSchema.parse(value);
         usage.observe(event);
+        text.observe(event);
         if ((event.type === "permission.asked" || event.type === "question.asked") && event.properties.sessionID === sessionId) {
           const id = z.string().min(1).parse(event.properties.id);
           if (requests.has(id)) return;
@@ -629,19 +660,11 @@ function emitOpenCodeEvent(value: unknown, sessionId: string, input: OpenCodeRun
         content: retainedContent({arguments: tool.state.input ?? {}, ...(tool.state.output !== undefined ? {output: tool.state.output} : {}), ...(tool.state.error ? {error: tool.state.error} : {})}, input.publishContent)}});
     return "continue";
   }
-  const delta: unknown = event.properties.delta;
-  if (typeof delta !== "string" || delta.length === 0) return "continue";
-  if (parsedPart.type !== "text" && parsedPart.type !== "reasoning") return "continue";
-  for (const chunk of textChunks(delta)) input.emitEvent({
-    event_type: parsedPart.type === "reasoning" ? "reasoning.delta" : "content.delta",
-    turn_id: input.turnId,
-    data: { delta: chunk },
-  });
   return "continue";
 }
 
 async function fetchJson(url: URL, init: RequestInit): Promise<unknown> {
-  const response: Response = await fetch(url, {...init, signal: init.signal ?? AbortSignal.timeout(30_000)});
+  const response: Response = await fetchNativeResponse(url, init);
   if (!response.ok) {
     await response.body?.cancel();
     throw new HarnessAdapterError("native_http_error", `OpenCode request failed with HTTP ${response.status}.`);
