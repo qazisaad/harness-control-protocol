@@ -7,7 +7,7 @@ import { z } from "zod";
 import { HarnessAdapterError } from "../types.js";
 import { adapterMcpServers, assertCliMcpAttachmentProxied } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
-import { NativeProcess } from "./native-process.js";
+import { ClaudeSessions } from "./claude-sessions.js";
 
 const resultSchema = z.object({
   type: z.literal("result"),
@@ -35,8 +35,9 @@ export type ClaudeQueryFactory = (input: Parameters<typeof query>[0]) => Query;
 
 export function createClaudeTurn(
   queryFactory: ClaudeQueryFactory = query,
-): NativeTurn {
-  return async (input, signal, emit) => {
+): NativeTurn & {close(): Promise<void>; stop(id: string): Promise<void>} {
+  const sessions = new ClaudeSessions(queryFactory);
+  const execute: NativeTurn = async (input, signal, emit) => {
     const selection =
       input.payload.model_selection ?? input.startPayload.model_selection;
     const effort = selectedEffort(selection, "claude") as Options["effort"];
@@ -48,17 +49,7 @@ export function createClaudeTurn(
       assertCliMcpAttachmentProxied(attachment, "Claude Code", "claude");
       mcpServers[attachment.name] = { type: "http", url: attachment.url };
     }
-    let processHandle: NativeProcess | undefined;
-    const abort = (): void => {
-      if (processHandle) void processHandle.stop();
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    let stream: Query | undefined;
-    try {
-      signal.throwIfAborted();
-      stream = queryFactory({
-        prompt: input.payload.input,
-        options: {
+    const lease = await sessions.acquire(input, {
           pathToClaudeCodeExecutable:
             input.provider.executable_path ?? "claude",
           cwd: input.startPayload.cwd,
@@ -86,22 +77,20 @@ export function createClaudeTurn(
             "Agent",
             "Task",
           ],
-          spawnClaudeCodeProcess: (options) => {
-            processHandle = new NativeProcess(
-              options.command,
-              options.args,
-              input.startPayload.cwd,
-              options.env,
-            );
-            processHandle.child.stderr.resume();
-            if (signal.aborted) abort();
-            return processHandle.child;
-          },
-        },
-      });
+    }, signal);
+    const runtime = lease.runtime;
+    let healthy = false;
+    const abort = () => {void runtime.process.stop();};
+    signal.addEventListener("abort", abort, {once: true});
+    try {
+      signal.throwIfAborted();
+      runtime.inputs.send(input.payload.input);
       let result: z.infer<typeof resultSchema> | undefined;
       let streamed = false;
-      for await (const message of stream) {
+      for (;;) {
+        const next = await runtime.stream.next();
+        if (next.done) break;
+        const message = next.value;
         if (
           message.type === "stream_event" &&
           message.event.type === "content_block_delta"
@@ -172,6 +161,7 @@ export function createClaudeTurn(
             );
           }
         }
+        if (result) break;
       }
       if (!result)
         throw new HarnessAdapterError(
@@ -193,6 +183,7 @@ export function createClaudeTurn(
           usage.cacheCreationInputTokens;
         outputTokens += usage.outputTokens;
       }
+      healthy = true;
       return {
         final_text: result.result,
         usage: {
@@ -210,8 +201,8 @@ export function createClaudeTurn(
       };
     } finally {
       signal.removeEventListener("abort", abort);
-      stream?.close();
-      if (processHandle) await processHandle.stop();
+      await lease.release(healthy && !signal.aborted);
     }
   };
+  return Object.assign(execute, {close: () => sessions.close(), stop: (id: string) => sessions.stop(id)});
 }

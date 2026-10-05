@@ -104,6 +104,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  fs.appendFileSync(process.env.RECORD,JSON.stringify(m)+'\n');
  if(m.id==='native-call') { if(!m.result?.success) throw new Error('Native MCP failed'); finishTool(); return; }
  if(m.method==='initialize') send({id:m.id,result:{}});
+ if(m.method==='thread/loaded/list') send({id:m.id,result:{data:[]}});
+ if(m.method==='thread/unsubscribe') {send({id:m.id,result:{status:'unsubscribed'}});notify('thread/closed',{threadId:'native-thread'});}
  if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never'}}); }
@@ -157,6 +159,7 @@ for (const mode of [
     const adapter = new CodexHarnessAdapter({
       turnTimeoutMs: mode === "sleep" ? 1500 : 5000,
     });
+    t.after(() => adapter.close());
     const events: HarnessAdapterEvent[] = [];
     const toolCalls: unknown[] = [];
     let running = true;
@@ -230,9 +233,10 @@ function fakeQuery(
   messages: unknown[],
   inspect: (options: Options) => void = () => {},
 ): ClaudeQueryFactory {
-  return ({ options }) => {
+  return ({ options, prompt }) => {
     inspect(options!);
     const stream = (async function* () {
+      if (typeof prompt !== "string") await prompt[Symbol.asyncIterator]().next();
       for (const message of messages) yield message as SDKMessage;
     })();
     return Object.assign(stream, { close() {} }) as Query;
@@ -254,7 +258,7 @@ for (const [label, result] of Object.entries({
   failure: { ...success, subtype: "error_during_execution" },
   tokenLimit: { ...success, stop_reason: "max_tokens" },
 })) {
-  it(`Claude SDK ${label} is classified truthfully`, async () => {
+  it(`Claude SDK ${label} is classified truthfully`, async (t) => {
     const delta = {
       type: "stream_event",
       event: {
@@ -272,6 +276,7 @@ for (const [label, result] of Object.entries({
         assert.equal(options.persistSession, false);
       }),
     });
+    t.after(() => adapter.close());
     const payload = start("claude", tmpdir());
     payload.model_selection.options = [{ id: "effort", value: "high" }];
     const events: HarnessAdapterEvent[] = [];
@@ -485,15 +490,12 @@ it("a second turn cannot silently start a fresh Claude conversation", async () =
   });
   const input = turn(start("claude", tmpdir()), provider("claude"));
   await adapter.sendTurn(input);
-  await assert.rejects(
-    adapter.sendTurn({
+  const ended = await adapter.sendTurn({
       ...input,
       payload: { ...input.payload, turn_id: "second" },
-    }),
-    (error: unknown) =>
-      error instanceof HarnessAdapterError &&
-      error.code === "session_turn_limit",
-  );
+    });
+  assert.equal(ended.at(-1)?.event_type, "turn.failed");
+  assert.equal((ended.at(-1)?.data.error as {code:string}).code, "claude_missing_result");
   assert.equal(calls, 1);
   await adapter.stopSession({ sessionId: "session" });
 });

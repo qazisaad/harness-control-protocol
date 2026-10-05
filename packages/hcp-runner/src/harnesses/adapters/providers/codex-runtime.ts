@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type {
   HarnessTurnFinalOutput,
   HarnessUsageSnapshot,
@@ -11,6 +12,37 @@ import { CodexRpc } from "./codex-rpc.js";
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
+import { RuntimeProcessPool } from "./runtime-process-pool.js";
+
+export function createCodexTurnRuntime(onProcessLease?: (reused: boolean) => void) {
+  type Launch = {executable: string; cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal};
+  const createRuntime = async (launch: Launch) => {
+    const rpc = new CodexRpc(launch.executable, launch.cwd, launch.env);
+    const abort = () => {void rpc.process.stop();};
+    launch.signal.addEventListener("abort", abort, {once: true});
+    if (launch.signal.aborted) abort();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([rpc.request("initialize", {clientInfo: {name: "hcp-runner", version: "0.0.0"}, capabilities: {experimentalApi: true}}),
+        new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new Error("Codex initialization timed out")), 5_000);})]);
+      rpc.notify("initialized");
+      return rpc;
+    } catch (error) {await rpc.process.stop(); throw error;}
+    finally {clearTimeout(timer); launch.signal.removeEventListener("abort", abort);}
+  };
+  const pool = new RuntimeProcessPool<CodexRpc>(async () => {throw new Error("Provider runtime requires invocation-scoped launch settings");});
+  const run: NativeTurn = async (input, signal, emit) => {
+    const env = {...process.env, ...input.provider.env, ...(input.provider.home ? {CODEX_HOME: input.provider.home} : {})};
+    const key = createHash("sha256").update(JSON.stringify({provider: input.provider,
+      workspace: input.startPayload.workspace_id, cwd: await realpath(input.startPayload.cwd),
+      sandbox: input.startPayload.sandbox_mode, approval: input.startPayload.approval_policy,
+      attachments: input.startPayload.mcp_servers, env})).digest("hex");
+    const create = () => createRuntime({executable: input.provider.executable_path ?? "codex", cwd: input.startPayload.cwd, env, signal});
+    return await runCodexTurn(input, signal, emit, pool, key, create, onProcessLease);
+
+  };
+  return {run, close: () => pool.close()};
+}
 
 const object = z.record(z.string(), z.unknown());
 const idObject = z.object({ id: z.string() });
@@ -55,32 +87,26 @@ const terminalSchema = z.object({
   }),
 });
 
-export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
+const runCodexTurn = async (input: Parameters<NativeTurn>[0], signal: AbortSignal,
+  emit: Parameters<NativeTurn>[2], pool: RuntimeProcessPool<CodexRpc>, key: string, create: () => Promise<CodexRpc>,
+  onProcessLease?: (reused: boolean) => void): ReturnType<NativeTurn> => {
   let interactions: NativeInteractions | undefined;
   signal.throwIfAborted();
   const selection =
     input.payload.model_selection ?? input.startPayload.model_selection;
   const effort = selectedEffort(selection, "codex");
-  const rpc = new CodexRpc(
-    input.provider.executable_path ?? "codex",
-    input.startPayload.cwd,
-    {
-      ...process.env,
-      ...input.provider.env,
-      ...(input.provider.home ? { CODEX_HOME: input.provider.home } : {}),
-    },
-  );
+  const lease = await pool.acquire(key, create);
+  const rpc = lease.runtime;
+  let reusable = false;
+  let cleanupThreadId: string | undefined;
   const abort = (): void => {
     void rpc.process.stop();
   };
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
   try {
-    await rpc.request("initialize", {
-      clientInfo: { name: "hcp-runner", version: "0.0.0" },
-      capabilities: { experimentalApi: true },
-    });
-    rpc.notify("initialized");
+    onProcessLease?.(lease.reused);
+    signal.throwIfAborted();
     const configResult = z.object({ config: object }).parse(
       await rpc.request("config/read", {
         cwd: input.startPayload.cwd,
@@ -158,6 +184,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       }
     }
     const threadId = started.thread.id;
+    cleanupThreadId = threadId;
     if (resumeThread && threadId !== resumeThread) {
       throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
     }
@@ -376,12 +403,39 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         "Codex returned conflicting turn identities.",
       );
     nativeTurnId = turn.turn.id;
-    return await terminal;
+    const output = await terminal;
+    reusable = true;
+    return output;
   } finally {
     interactions?.close();
     input.registerNativeInteractions?.(undefined);
     signal.removeEventListener("abort", abort);
-    await rpc.process.stop();
+    if (reusable && !signal.aborted && cleanupThreadId) {
+      // Unload the invocation's thread before reusing its process. Never retain
+      // callbacks, approvals or tool bridges belonging to the preceding owner.
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        rpc.onNotification = () => {};
+        const cleanup = async () => {
+          const response = z.object({status:z.enum(["notLoaded","notSubscribed","unsubscribed"])}).parse(
+            await rpc.request("thread/unsubscribe", {threadId:cleanupThreadId}));
+          if (response.status === "notSubscribed") throw new Error("Codex thread ownership is not confirmed");
+          // An unsubscribed client may no longer receive thread/closed. Verify
+          // that the server has actually unloaded every invocation thread.
+          for (;;) {
+            const loaded = z.object({data: z.array(z.string()), nextCursor: z.string().nullable().optional()}).parse(
+              await rpc.request("thread/loaded/list", {}));
+            if (loaded.data.length === 0 && !loaded.nextCursor) return;
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        };
+        await Promise.race([cleanup(),
+          new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new Error("Codex thread cleanup timed out")), 2_000);})]);
+        reusable = rpc.resetTurnHandlers();
+        } catch {reusable = false;}
+      finally {clearTimeout(timer);}
+    } else reusable = false;
+    await lease.release(reusable);
   }
 };
 

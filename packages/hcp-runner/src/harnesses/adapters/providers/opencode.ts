@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams } from "node:child_process";
+import {createHash} from "node:crypto";
+import {realpath} from "node:fs/promises";
+import {NativeProcess} from "./native-process.js";
+import {RuntimeProcessPool} from "./runtime-process-pool.js";
 
 import { z } from "zod";
 
@@ -46,6 +50,7 @@ const eventSchema = z
   .passthrough();
 
 type OpenCodeRuntimeStartInput = {
+  scope: {workspaceId: string; sandbox: string; approval: string};
   executable: string;
   launchArgs: string[];
   cwd: string;
@@ -82,9 +87,16 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   readonly #runtimes = new Map<string, OpenCodeRuntime>();
   readonly #activeTurns = new Map<string, string>();
   readonly #stopReasons = new Map<string, "cancel_requested" | "session_stopped">();
+  readonly #servers = new RuntimeProcessPool<OpenCodeServer>(async () => {throw new Error("Missing OpenCode launch settings");});
+  #closed = false;
+  async close(): Promise<void> {
+    this.#closed = true;
+    try {await Promise.all([...this.#runtimes.values()].map(runtime => runtime.close()));}
+    finally {this.#runtimes.clear(); await this.#servers.close();}
+  }
 
   constructor(options: OpenCodeHarnessAdapterOptions = {}) {
-    this.#runtimeFactory = options.runtimeFactory ?? startOpenCodeRuntime;
+    this.#runtimeFactory = options.runtimeFactory ?? (input => startOpenCodeRuntime(input, this.#servers));
     this.#probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   }
 
@@ -125,6 +137,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "OpenCode runtime owner is closed.");
     if (this.#runtimes.has(input.payload.session_id)) {
       throw new HarnessAdapterError("opencode_session_exists", `OpenCode session '${input.payload.session_id}' already exists.`);
     }
@@ -135,12 +148,14 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       mcpServers[name] = { type: "remote", url: attachment.url, enabled: true };
     }
     const runtime: OpenCodeRuntime = await this.#runtimeFactory({
+      scope: {workspaceId: input.payload.workspace_id, sandbox: input.payload.sandbox_mode, approval: input.payload.approval_policy},
       executable: input.provider.executable_path ?? "opencode",
       launchArgs: input.provider.launch_args,
       cwd: input.payload.cwd,
       env: providerEnvironment(input.provider),
       mcpServers,
     });
+    if (this.#closed) {await runtime.close(); throw new HarnessAdapterError("runner_closed", "OpenCode runtime owner closed during startup.");}
     this.#runtimes.set(input.payload.session_id, runtime);
     return { adapter_session_id: runtime.sessionId };
   }
@@ -248,55 +263,59 @@ async function runProbe(
   return result;
 }
 
-async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<OpenCodeRuntime> {
+type OpenCodeServer = {process: NativeProcess; baseUrl: string};
+
+async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput, pool: RuntimeProcessPool<OpenCodeServer>): Promise<OpenCodeRuntime> {
+  const key = createHash("sha256").update(JSON.stringify({...input, cwd: await realpath(input.cwd), inheritedEnv: process.env})).digest("hex");
+  const lease = await pool.acquire(key, () => startOpenCodeServer(input));
+  try {
+    const session = sessionSchema.parse(await fetchJson(new URL(`/session?directory=${encodeURIComponent(input.cwd)}`, lease.runtime.baseUrl), {
+      method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({title: "HCP session"}), signal: AbortSignal.timeout(10_000),
+    }));
+    return new HttpOpenCodeRuntime(lease.runtime.baseUrl, input.cwd, session.id, lease.release);
+  } catch (error) {await lease.release(false); throw error;}
+}
+
+async function startOpenCodeServer(input: OpenCodeRuntimeStartInput): Promise<OpenCodeServer> {
   const config: Record<string, unknown> = Object.keys(input.mcpServers).length > 0 ? { mcp: input.mcpServers } : {};
-  const child: ChildProcessWithoutNullStreams = spawn(
+  const processHandle = new NativeProcess(
     input.executable,
     [...input.launchArgs, "serve", "--hostname=127.0.0.1", "--port=0"],
-    {
-      cwd: input.cwd,
-      env: { ...process.env, ...input.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
-      stdio: "pipe",
-      detached: process.platform !== "win32",
-    },
+    input.cwd,
+    { ...process.env, ...input.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
   );
+  const child = processHandle.child;
   child.stdin.end();
-  const baseUrl: string = await waitForServerUrl(child, DEFAULT_SERVER_START_TIMEOUT_MS);
   try {
-    const session: z.infer<typeof sessionSchema> = sessionSchema.parse(
-      await fetchJson(new URL(`/session?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "HCP session" }),
-      }),
-    );
-    return new HttpOpenCodeRuntime(child, baseUrl, input.cwd, session.id);
+    const baseUrl = await waitForServerUrl(child, DEFAULT_SERVER_START_TIMEOUT_MS);
+    return {process: processHandle, baseUrl};
   } catch (error: unknown) {
-    terminateProcess(child);
+    await processHandle.stop();
     throw error;
   }
 }
 
 class HttpOpenCodeRuntime implements OpenCodeRuntime {
-  readonly #child: ChildProcessWithoutNullStreams;
   readonly #baseUrl: string;
   readonly #cwd: string;
   readonly sessionId: string;
   #activeRequest: AbortController | undefined;
+  #healthy = true;
+  #closing: Promise<void> | undefined;
 
   constructor(
-    child: ChildProcessWithoutNullStreams,
     baseUrl: string,
     cwd: string,
     sessionId: string,
+    readonly release: (healthy: boolean) => Promise<void>,
   ) {
-    this.#child = child;
     this.#baseUrl = baseUrl;
     this.#cwd = cwd;
     this.sessionId = sessionId;
   }
 
   async sendTurn(input: OpenCodeRuntimeTurnInput): Promise<string> {
+    if (this.#closing || !this.#healthy) throw new Error("OpenCode session is closed or failed.");
     if (this.#activeRequest) {
       throw new Error(`OpenCode session '${this.sessionId}' already has an active HTTP request.`);
     }
@@ -330,7 +349,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
         .filter((part): boolean => part.type === "text" && part.text !== undefined)
         .map((part): string => part.text ?? "")
         .join("");
-    } finally {
+    } catch (error) {this.#healthy = false; await this.close(); throw error;} finally {
       abortController.abort();
       await streamReady.completed;
       this.#activeRequest = undefined;
@@ -338,15 +357,31 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
   }
 
   async cancelTurn(): Promise<void> {
+    this.#healthy = false;
     this.#activeRequest?.abort();
-    await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/abort?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
-      method: "POST",
-    });
+    try {
+      await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/abort?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
+        method: "POST", signal: AbortSignal.timeout(2_000),
+      });
+    } catch {
+      // Aborting HTTP can make sendTurn retire the server before this native
+      // abort response arrives. Physical shutdown remains the cancellation proof.
+    } finally {await this.close();}
   }
 
   async close(): Promise<void> {
-    this.#activeRequest?.abort();
-    terminateProcess(this.#child);
+    this.#closing ??= (async () => {
+      if (this.#activeRequest) this.#healthy = false;
+      this.#activeRequest?.abort();
+      try {
+        if (this.#healthy) {
+          const deleted = await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {method: "DELETE", signal: AbortSignal.timeout(2_000)});
+          if (deleted !== true) this.#healthy = false;
+        }
+      } catch {this.#healthy = false;}
+      finally {await this.release(this.#healthy);}
+    })();
+    await this.#closing;
   }
 }
 

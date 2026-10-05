@@ -94,6 +94,7 @@ export type HarnessAdapterStopInput = {
 
 export type HarnessAdapter = {
   readonly driverKind: string;
+  close?(): Promise<void>;
   readonly durableMcpContinuation?: true;
   probe(provider: ProviderInstanceConfig): Promise<ProviderDriverStatus>;
   validateStart(input: HarnessAdapterStartInput): Promise<void>;

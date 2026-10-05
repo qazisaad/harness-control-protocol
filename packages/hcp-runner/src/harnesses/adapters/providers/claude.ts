@@ -47,6 +47,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly #processKillGraceMs: number;
   readonly #turns: NativeTurns;
   readonly #execute: ReturnType<typeof createClaudeTurn>;
+  async close(): Promise<void> {await this.#execute.close();}
   constructor(options: ClaudeHarnessAdapterOptions = {}) {
     this.#processSpawner = options.processSpawner ?? spawnProviderCliProcess;
     this.#probeTimeoutMs = options.probeTimeoutMs ?? 5_000;
@@ -221,7 +222,9 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   async stopSession(
     input: HarnessAdapterStopInput,
   ): Promise<HarnessAdapterEvent[]> {
-    return this.#turns.stop(input.sessionId);
+    const events = await this.#turns.stop(input.sessionId);
+    await this.#execute.stop(input.sessionId);
+    return events;
   }
   #runProcess(
     executable: string,

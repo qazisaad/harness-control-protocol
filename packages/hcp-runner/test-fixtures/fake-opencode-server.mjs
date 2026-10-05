@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import {appendFileSync} from "node:fs";
 
 if (process.argv.includes("--version")) {
   process.stdout.write("opencode 1.2.3-test\n");
@@ -6,10 +7,16 @@ if (process.argv.includes("--version")) {
 }
 
 const streams = new Set();
+const sessions = new Set();
+let counter = 0;
+const record = value => {if (process.env.REUSE_RECORD) appendFileSync(process.env.REUSE_RECORD, JSON.stringify({pid:process.pid,...value})+'\n');};
+record({kind:"server"});
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method === "POST" && url.pathname === "/session") {
-    writeJson(response, { id: "fake-opencode-session" });
+    const id = `fake-opencode-session-${++counter}`;
+    sessions.add(id); record({kind:"create",id});
+    writeJson(response, { id });
     return;
   }
   if (request.method === "GET" && url.pathname === "/event") {
@@ -23,28 +30,35 @@ const server = createServer(async (request, response) => {
     response.on("close", () => streams.delete(response));
     return;
   }
-  if (request.method === "POST" && url.pathname === "/session/fake-opencode-session/message") {
+  const sessionId = url.pathname.split('/')[2];
+  if (request.method === "DELETE" && url.pathname === `/session/${sessionId}`) {
+    record({kind:"delete",id:sessionId});
+    if (process.env.FAIL_DELETE) {response.writeHead(500).end();return;}
+    writeJson(response, sessions.delete(sessionId)); return;
+  }
+  if (request.method === "POST" && url.pathname === `/session/${sessionId}/message` && sessions.has(sessionId)) {
     for (const stream of streams) {
       sendEvent(stream, {
         type: "message.part.updated",
         properties: {
-          part: { sessionID: "fake-opencode-session", type: "reasoning" },
+          part: { sessionID: sessionId, type: "reasoning" },
           delta: "thinking ",
         },
       });
+      if (process.env.HOLD_TURN) continue;
       sendEvent(stream, {
         type: "message.part.updated",
         properties: {
-          part: { sessionID: "fake-opencode-session", type: "text" },
+          part: { sessionID: sessionId, type: "text" },
           delta: "hello",
         },
       });
-      sendEvent(stream, { type: "session.idle", properties: { sessionID: "fake-opencode-session" } });
+      sendEvent(stream, { type: "session.idle", properties: { sessionID: sessionId } });
     }
-    writeJson(response, { parts: [{ type: "text", text: "hello" }] });
+    if (!process.env.HOLD_TURN) writeJson(response, { parts: [{ type: "text", text: "hello" }] });
     return;
   }
-  if (request.method === "POST" && url.pathname === "/session/fake-opencode-session/abort") {
+  if (request.method === "POST" && url.pathname === `/session/${sessionId}/abort`) {
     writeJson(response, { ok: true });
     return;
   }

@@ -16,7 +16,7 @@ export function nativeExecutionCapabilities(
 ): HarnessExecutionCapabilities {
   return {
     streaming: true,
-    multi_turn: driver === "codex",
+    multi_turn: true,
     session_continuation: driver === "codex",
     plan_mode: driver === "codex",
     native_history: driver === "codex",
@@ -92,7 +92,7 @@ export class NativeTurns {
         "The session already has an active turn.",
       );
     }
-    if (this.driver !== "codex" && this.#usedSessions.has(sessionId)) {
+    if (this.driver !== "codex" && this.driver !== "claude" && this.#usedSessions.has(sessionId)) {
       throw new HarnessAdapterError(
         "session_turn_limit",
         "This provider profile supports one turn per session; native multi-turn sessions are not implemented.",

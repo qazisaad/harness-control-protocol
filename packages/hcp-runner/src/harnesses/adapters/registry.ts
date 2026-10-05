@@ -16,6 +16,9 @@ export class HarnessAdapterRegistry {
   get(driverKind: string): HarnessAdapter | undefined {
     return this.#adapters.get(driverKind);
   }
+  async close(): Promise<void> {
+    await Promise.all([...this.#adapters.values()].map(adapter => adapter.close?.()));
+  }
 
   require(driverKind: string): HarnessAdapter {
     const adapter: HarnessAdapter | undefined = this.get(driverKind);

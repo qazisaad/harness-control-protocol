@@ -6,7 +6,7 @@ The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`
 
 | Behavior | Codex | Claude |
 | --- | --- | --- |
-| Execution | Fresh ephemeral native thread per turn | Fresh SDK query per turn, persistence disabled |
+| Execution | Leased initialized app-server; fresh thread or explicitly authorized continuation | Persistent streaming-input SDK query within one live HCP session; disk persistence disabled |
 | Text/reasoning streaming | Native delta notifications | SDK partial messages |
 | Tool activity | Native item lifecycle | Tool-use/result item lifecycle |
 | Final output | Successful native terminal plus final assistant item required | Successful typed result required; limits/API errors never become success |
@@ -14,15 +14,19 @@ The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`
 | Sandbox | `read_only`, `workspace_write`, `danger_full_access` | Explicit `danger_full_access` only |
 | Approval policy | `full_access`, mapped to native `never` | `full_access`, mapped to `bypassPermissions` |
 | Model options | `reasoningEffort` forwarded to native `effort`; native catalog supplies choices | `effort` forwarded to SDK |
-| Continuation / interactive approvals / input | Unsupported | Unsupported |
+| Multiple turns in one live HCP session | Supported | Supported |
+| Continuation across HCP sessions / runner restart | Explicit authorized native continuation | Unsupported; expired/stopped conversations fail rather than silently losing history |
+| Interactive approvals / input | Supported native request owners | Unsupported in this profile |
 
 `full_access` describes approval behavior, not filesystem access. Codex workspace-write checks the returned policy and rejects extra writable roots or implicit temporary-directory writes. Claude restricted modes fail before provider execution; SDK permission modes are not treated as filesystem containment.
 
 Provider snapshots include optional `execution_capabilities`: `streaming`, `multi_turn`, `session_continuation`, `sandbox_modes`, and `approval_policies`. The same adapter contract advertises and validates these values. An omitted capability object means unknown support, not permission to assume support. `continuation_group_key` is an identity grouping, not a continuation guarantee. This pre-release schema addition requires matching runner/client builds; regenerate JSON Schema from source and pin the tested build.
 
-Each session accepts one turn. A second turn is rejected before provider execution rather than silently starting a fresh conversation.
+Claude retains the same query for related turns in one live HCP session. It cannot
+reuse that query for another conversation. Scope changes and idle retirement fail
+continuation visibly; they never substitute an empty conversation.
 
-Native drivers reject nonempty `launch_args`, unsupported/duplicate model options, and continuation requests. Use provider `executable_path`, `home`, `env`, and structured model selection. Host-local executable/environment configuration remains trusted configuration, not a remote escape hatch. Unknown provider-native optional notifications are ignored; unexpected interactive native requests fail the turn. HCP approval/input responses and live tool-server detach receive NACK instead of success for a no-op.
+Native drivers reject nonempty `launch_args` and unsupported/duplicate model options. Claude rejects cross-session continuation requests. Use provider `executable_path`, `home`, `env`, and structured model selection. Host-local executable/environment configuration remains trusted configuration, not a remote escape hatch. Unknown provider-native optional notifications are ignored; unexpected interactive native requests fail the turn. HCP approval/input responses and live tool-server detach receive NACK instead of success for a no-op.
 
 ## MCP and configuration
 

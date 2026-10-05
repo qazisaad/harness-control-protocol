@@ -150,6 +150,7 @@ describe("OpenCodeHarnessAdapter", () => {
       assert.deepEqual(terminal[0]?.data.final_output, { final_text: "hello" });
     } finally {
       if (started) await adapter.stopSession({ sessionId: "session-1" });
+      await adapter.close();
       await workspace.cleanup();
     }
   });
