@@ -64,7 +64,11 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/session/fake-opencode-session") {
-    writeJson(response, {id: "fake-opencode-session", directory: process.cwd()}); return;
+    writeJson(response, {id: "fake-opencode-session", directory: process.cwd(), permission: [
+      {permission: "*", pattern: "*", action: "ask"},
+      {permission: "question", pattern: "*", action: "allow"},
+      {permission: "task", pattern: "*", action: "deny"},
+    ]}); return;
   }
   if (request.method === "POST" && url.pathname === "/session/fake-opencode-session/summarize") {
     writeJson(response, true); return;

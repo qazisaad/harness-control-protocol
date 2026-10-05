@@ -42,6 +42,8 @@ Session commands resolve to an ACK. Snapshot, workspace, and local-action comman
 
 Capabilities advertise `native_history`, `history_pagination`, `conversation_fork`, `conversation_rollback`, `active_steering`, `manual_compaction` and `content_retrieval` independently. Omitted fields mean unknown support. A live execution session and a retained native conversation have distinct lifetimes.
 
+Use `configuration_inheritance` in a start payload to require which native sources may be inherited: `user_settings`, `project_settings`, `hooks`, `mcp_servers`, and `plugins`. Each requested boolean must match the adapter's declared enforcement; unknown or different enforcement rejects the start before provider launch. `session.configured` reports the adapter's declaration. An inherited MCP inventory is distinct from runner-authorized attachments. Only request properties your app needs; omission makes no isolation claim.
+
 ```ts
 const read = await host.readConversation("session-1", {limit: 50});
 const fork = await host.forkConversation("session-1", {

@@ -33,6 +33,7 @@ import {
   assertCliMcpAttachmentProxied,
   cliMcpServerConfigName,
   normalizeProviderModels,
+  validateConfigurationInheritance,
 } from "./shared.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
@@ -40,6 +41,7 @@ const DEFAULT_SERVER_START_TIMEOUT_MS = 10_000;
 const DEFAULT_EVENT_SETTLE_TIMEOUT_MS = 5_000;
 
 const executionCapabilities: HarnessExecutionCapabilities = {
+  configuration_inheritance: {user_settings: true, project_settings: true, hooks: true, mcp_servers: true, plugins: true},
   streaming: true, multi_turn: true, session_continuation: true, plan_mode: true, manual_compaction: true, content_retrieval: true,
   native_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
   sandbox_modes: ["danger_full_access"], approval_policies: ["ask", "auto_edits", "full_access"],
@@ -119,6 +121,7 @@ export type OpenCodeHarnessAdapterOptions = {
 };
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
+  readonly configurationInheritance = executionCapabilities.configuration_inheritance!;
   readonly driverKind = "opencode";
   readonly conversationOperations = ["read", "rollback", "fork"] as const;
 
@@ -167,6 +170,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   }
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
+    validateConfigurationInheritance(input.payload, this.configurationInheritance);
     if (input.payload.sandbox_mode !== "danger_full_access")
       throw new HarnessAdapterError("sandbox_unsupported", "This OpenCode adapter does not implement filesystem containment.");
     if (input.payload.continue_session && !input.payload.continuation_group_key)
@@ -176,9 +180,11 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   }
 
   async conversationOperation(input: HarnessAdapterConversationInput) {
+    if (!input.conversation.approval_policy)
+      throw new HarnessAdapterError("native_policy_unknown", "Resume this retained conversation to establish its authorized permission policy before reading or changing it.");
     const runtime = await this.#runtimeFactory({executable: input.provider.executable_path ?? "opencode",
       launchArgs: input.provider.launch_args, cwd: input.conversation.cwd, env: providerEnvironment(input.provider),
-      mcpServers: {}, nativeThreadId: input.conversation.native_thread_id});
+      mcpServers: {}, nativeThreadId: input.conversation.native_thread_id, approvalPolicy: input.conversation.approval_policy});
     try {
       const {openCodeConversation} = await import("./opencode-conversation.js");
       return await openCodeConversation(input, runtime);
@@ -307,35 +313,42 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
   try {
     const baseUrl: string = await waitForServerUrl(child, DEFAULT_SERVER_START_TIMEOUT_MS);
     if (input.nativeThreadId) {
-      const retained = z.object({id: z.string(), directory: z.string()}).parse(await fetchJson(
+      const retained = z.object({id: z.string(), directory: z.string(), permission: z.array(z.object({permission: z.string(), pattern: z.string(), action: z.enum(["allow", "ask", "deny"])}))}).parse(await fetchJson(
         new URL(`/session/${encodeURIComponent(input.nativeThreadId)}?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}));
       if (retained.id !== input.nativeThreadId || await realpath(retained.directory) !== await realpath(input.cwd))
         throw new HarnessAdapterError("native_continuation_binding", "OpenCode retained history belongs to another directory or conversation.");
-      return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, retained.id);
+      if (!input.approvalPolicy || JSON.stringify(retained.permission) !== JSON.stringify(permissionRules(input.approvalPolicy)))
+        throw new HarnessAdapterError("native_policy_mismatch", "OpenCode retained permissions differ from the runner-authorized policy.");
+      return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, retained.id, input.approvalPolicy);
     }
     const session: z.infer<typeof sessionSchema> = sessionSchema.parse(
       await fetchJson(new URL(`/session?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "HCP session", permission: [
-          {permission: "*", pattern: "*", action: input.approvalPolicy === "full_access" ? "allow" : "ask"},
-          ...(input.approvalPolicy === "auto_edits" ? [{permission: "edit", pattern: "*", action: "allow"}] : []),
-          {permission: "question", pattern: "*", action: input.approvalPolicy === "full_access" ? "deny" : "allow"},
-          {permission: "task", pattern: "*", action: "deny"},
-        ] }),
+        body: JSON.stringify({ title: "HCP session", permission: permissionRules(input.approvalPolicy ?? "ask") }),
       }),
     );
-    return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, session.id);
+    return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, session.id, input.approvalPolicy ?? "ask");
   } catch (error: unknown) {
     await processHandle.stop();
     throw error;
   }
 }
 
+function permissionRules(policy: "ask" | "auto_edits" | "full_access") {
+  return [
+    {permission: "*", pattern: "*", action: policy === "full_access" ? "allow" : "ask"},
+    ...(policy === "auto_edits" ? [{permission: "edit", pattern: "*", action: "allow"}] : []),
+    {permission: "question", pattern: "*", action: policy === "full_access" ? "deny" : "allow"},
+    {permission: "task", pattern: "*", action: "deny"},
+  ];
+}
+
 class HttpOpenCodeRuntime implements OpenCodeRuntime {
   readonly #process: NativeProcess;
   readonly #baseUrl: string;
   readonly #cwd: string;
+  readonly #approvalPolicy: "ask" | "auto_edits" | "full_access";
   readonly sessionId: string;
   #activeRequest: AbortController | undefined;
 
@@ -344,11 +357,13 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     baseUrl: string,
     cwd: string,
     sessionId: string,
+    approvalPolicy: "ask" | "auto_edits" | "full_access",
   ) {
     this.#process = processHandle;
     this.#baseUrl = baseUrl;
     this.#cwd = cwd;
     this.sessionId = sessionId;
+    this.#approvalPolicy = approvalPolicy;
     void processHandle.closed.then(() => this.#activeRequest?.abort());
   }
 
@@ -410,16 +425,18 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
   }
 
   async readHistory(sessionId: string): Promise<unknown> {
-    const scope = z.object({id: z.string(), directory: z.string()}).passthrough().parse(await fetchJson(
+    const scope = z.object({id: z.string(), directory: z.string(), permission: z.array(z.json())}).passthrough().parse(await fetchJson(
       new URL(`/session/${encodeURIComponent(sessionId)}?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {method: "GET"}));
     if (scope.id !== sessionId || await realpath(scope.directory) !== await realpath(this.#cwd))
       throw new HarnessAdapterError("native_history_binding", "OpenCode history has another directory or conversation.");
+    this.#verifyPermissions(scope.permission);
     return await fetchJson(new URL(`/session/${encodeURIComponent(sessionId)}/message?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {method: "GET"});
   }
 
   async forkHistory(beforeMessageId?: string): Promise<string> {
     const source = z.object({permission: z.array(z.record(z.string(), z.json()))}).parse(await fetchJson(
       new URL(`/session/${encodeURIComponent(this.sessionId)}?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {method: "GET"}));
+    this.#verifyPermissions(source.permission);
     const target = sessionSchema.parse(await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/fork?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
       method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(beforeMessageId ? {messageID: beforeMessageId} : {})}));
     if (target.id === this.sessionId) throw new HarnessAdapterError("native_fork_unknown", "OpenCode returned the source instead of an independent fork.");
@@ -436,6 +453,11 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/abort?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
       method: "POST",
     });
+  }
+
+  #verifyPermissions(actual: unknown) {
+    if (JSON.stringify(actual) !== JSON.stringify(permissionRules(this.#approvalPolicy)))
+      throw new HarnessAdapterError("native_policy_mismatch", "OpenCode retained permissions differ from the runner-authorized policy.");
   }
 
   async close(): Promise<void> {

@@ -119,6 +119,7 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  readonly configurationInheritance?: import("@harness-control/protocol").HarnessConfigurationInheritance;
   readonly driverKind: string;
   readonly durableMcpContinuation?: true;
   readonly conversationOperations?: readonly HarnessConversationOperation[];

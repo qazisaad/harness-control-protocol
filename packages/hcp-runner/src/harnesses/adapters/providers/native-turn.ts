@@ -9,12 +9,14 @@ import {
   type HarnessAdapterStartInput,
   type HarnessAdapterTurnInput,
 } from "../types.js";
-import { turnFailedEvent } from "./shared.js";
+import { turnFailedEvent, validateConfigurationInheritance } from "./shared.js";
 
 export function nativeExecutionCapabilities(
   driver: "codex" | "claude",
 ): HarnessExecutionCapabilities {
   return {
+    configuration_inheritance: driver === "codex" ? {mcp_servers: false, plugins: false} :
+      {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false},
     streaming: true,
     multi_turn: true,
     session_continuation: true,
@@ -39,6 +41,7 @@ export function validateNativeStart(
   driver: "codex" | "claude",
 ): void {
   const capabilities = nativeExecutionCapabilities(driver);
+  validateConfigurationInheritance(input.payload, capabilities.configuration_inheritance);
   if (input.payload.continue_session && !input.payload.continuation_group_key)
     throw new HarnessAdapterError("continuation_key_required", "Native continuation requires its durable conversation key.");
   if (input.payload.continue_session && !capabilities.session_continuation)

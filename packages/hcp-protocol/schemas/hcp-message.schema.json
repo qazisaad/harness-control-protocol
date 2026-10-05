@@ -1686,6 +1686,27 @@
                   "execution_capabilities": {
                     "type": "object",
                     "properties": {
+                      "configuration_inheritance": {
+                        "type": "object",
+                        "properties": {
+                          "user_settings": {
+                            "type": "boolean"
+                          },
+                          "project_settings": {
+                            "type": "boolean"
+                          },
+                          "hooks": {
+                            "type": "boolean"
+                          },
+                          "mcp_servers": {
+                            "type": "boolean"
+                          },
+                          "plugins": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
                       "streaming": {
                         "type": "boolean"
                       },
@@ -2321,6 +2342,27 @@
         "payload": {
           "type": "object",
           "properties": {
+            "configuration_inheritance": {
+              "type": "object",
+              "properties": {
+                "user_settings": {
+                  "type": "boolean"
+                },
+                "project_settings": {
+                  "type": "boolean"
+                },
+                "hooks": {
+                  "type": "boolean"
+                },
+                "mcp_servers": {
+                  "type": "boolean"
+                },
+                "plugins": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
             "session_id": {
               "type": "string",
               "minLength": 1
@@ -8560,6 +8602,27 @@
             "data": {
               "type": "object",
               "properties": {
+                "configuration_inheritance": {
+                  "type": "object",
+                  "properties": {
+                    "user_settings": {
+                      "type": "boolean"
+                    },
+                    "project_settings": {
+                      "type": "boolean"
+                    },
+                    "hooks": {
+                      "type": "boolean"
+                    },
+                    "mcp_servers": {
+                      "type": "boolean"
+                    },
+                    "plugins": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "provider_instance_id": {
                   "type": "string",
                   "minLength": 1
@@ -8758,6 +8821,27 @@
             "data": {
               "type": "object",
               "properties": {
+                "configuration_inheritance": {
+                  "type": "object",
+                  "properties": {
+                    "user_settings": {
+                      "type": "boolean"
+                    },
+                    "project_settings": {
+                      "type": "boolean"
+                    },
+                    "hooks": {
+                      "type": "boolean"
+                    },
+                    "mcp_servers": {
+                      "type": "boolean"
+                    },
+                    "plugins": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "provider_instance_id": {
                   "type": "string",
                   "minLength": 1
@@ -8956,6 +9040,27 @@
             "data": {
               "type": "object",
               "properties": {
+                "configuration_inheritance": {
+                  "type": "object",
+                  "properties": {
+                    "user_settings": {
+                      "type": "boolean"
+                    },
+                    "project_settings": {
+                      "type": "boolean"
+                    },
+                    "hooks": {
+                      "type": "boolean"
+                    },
+                    "mcp_servers": {
+                      "type": "boolean"
+                    },
+                    "plugins": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "provider_instance_id": {
                   "type": "string",
                   "minLength": 1
@@ -9154,6 +9259,27 @@
             "data": {
               "type": "object",
               "properties": {
+                "configuration_inheritance": {
+                  "type": "object",
+                  "properties": {
+                    "user_settings": {
+                      "type": "boolean"
+                    },
+                    "project_settings": {
+                      "type": "boolean"
+                    },
+                    "hooks": {
+                      "type": "boolean"
+                    },
+                    "mcp_servers": {
+                      "type": "boolean"
+                    },
+                    "plugins": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "provider_instance_id": {
                   "type": "string",
                   "minLength": 1
@@ -16376,6 +16502,7 @@
                     "command",
                     "file_read",
                     "file_change",
+                    "permissions",
                     "mcp_tool",
                     "other"
                   ]

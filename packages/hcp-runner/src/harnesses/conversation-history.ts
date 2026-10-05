@@ -5,12 +5,12 @@ import {HarnessAdapterError} from "./adapters/types.js";
 import {retainedContent, type ContentPublisher} from "./adapters/providers/content-projection.js";
 export const conversationHistoryTurnSchema = z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json()))});
 export type HistoryTurn = z.infer<typeof conversationHistoryTurnSchema>;
-export type Thread = {id: string; turns: HistoryTurn[]};
+export type Thread = {id: string; turns: HistoryTurn[]; revision?: string};
 const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted) : value && typeof value === "object"
   ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, sorted(child)])) : value;
 export const hash = (turns: Thread["turns"]) => createHash("sha256").update(JSON.stringify(sorted(turns))).digest("hex");
 export function publicHistory(thread: Thread, publish?: ContentPublisher, request?: Extract<HcpConversationRequestPayload["operation"], {kind: "read"}>): NonNullable<HcpConversationResultPayload["history"]> {
-  const historyHash = hash(thread.turns);
+  const historyHash = thread.revision ?? hash(thread.turns);
   let offset = 0;
   if (request?.cursor) {
     let cursor: {hash: string; offset: number; thread: string};

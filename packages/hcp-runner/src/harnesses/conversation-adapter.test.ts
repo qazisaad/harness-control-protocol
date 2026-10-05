@@ -42,9 +42,30 @@ async function fixture() {
   const first = manager();
   await first.startSession(start);
   await first.sendTurn({session_id: "session", turn_id: "turn", input: "hello"});
-  return {adapter, state, calls, config, first, manager, setOperation: (next: typeof operation) => {operation = next;},
+  return {adapter, state, calls, config, first, manager, start, setOperation: (next: typeof operation) => {operation = next;},
     cleanup: () => rm(cwd, {recursive: true, force: true})};
 }
+
+test("configuration inheritance requirements fail before native launch when support is unknown or differs", async () => {
+  const f = await fixture();
+  let launches = 0;
+  const launch = f.adapter.startSession;
+  f.adapter.startSession = async input => {launches++; return launch(input);};
+  try {
+    await f.first.stopSession("session", "idle");
+    const payload = {...f.start, session_id: "isolated", continuation_group_key: "new-conversation", configuration_inheritance: {hooks: false}};
+    await assert.rejects(f.first.startSession(payload), /cannot enforce.*hooks/);
+    assert.equal(launches, 0);
+    Object.assign(f.adapter, {configurationInheritance: {hooks: true}});
+    await assert.rejects(f.first.startSession(payload), /cannot enforce.*hooks/);
+    assert.equal(launches, 0);
+    Object.assign(f.adapter, {configurationInheritance: {hooks: false}});
+    const configured = await f.first.startSession(payload);
+    assert.equal(launches, 1);
+    assert.deepEqual((configured.find(event => event.event_type === "session.configured")!.data as Record<string, unknown>).configuration_inheritance, {hooks: false});
+    await f.first.stopSession("isolated", "done");
+  } finally {await f.cleanup();}
+});
 
 test("a custom public adapter reads and rolls back its retained conversation after manager recreation", async () => {
   const f = await fixture();

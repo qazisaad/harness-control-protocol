@@ -9,6 +9,7 @@ import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import {isDeepStrictEqual} from "node:util";
 import { isAbsolute, relative, resolve } from "node:path";
+import {validateConfigurationInheritance} from "./adapters/providers/shared.js";
 
 import type {
   HcpHarnessEventPayload,
@@ -504,6 +505,8 @@ export class HarnessSessionManager {
         result: "passed",
       }),
       this.#event(payload.session_id, undefined, "session.configured", {
+        ...(this.#adapterRegistry.require(provider.driver_kind).configurationInheritance ?
+          {configuration_inheritance: this.#adapterRegistry.require(provider.driver_kind).configurationInheritance} : {}),
         model_selection: payload.model_selection,
         mcp_server_count: payload.mcp_servers.length,
         local_capabilities: localCapabilityLease?.capabilities.map((capability) => capability.id) ?? [],
@@ -565,6 +568,7 @@ export class HarnessSessionManager {
       provider,
     );
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
+    validateConfigurationInheritance(payload, adapter.configurationInheritance);
     await adapter.validateStart({ payload, provider });
     if (payload.continuation_group_key && [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === payload.continuation_group_key))
       throw new HarnessAdapterError("native_conversation_busy", "This native conversation already has an active session.");
@@ -867,6 +871,7 @@ export class HarnessSessionManager {
           ...(previous?.rollback ? {rollback: previous.rollback} : {}),
           ...(previous?.fork ? {fork: previous.fork} : {}),
           native_thread_id: threadId, binding_hash: session.nativeBindingHash!, updated_at: new Date().toISOString(),
+          approval_policy: session.startPayload.approval_policy,
           last_session_id: session.sessionId, provider_instance_id: session.providerInstanceId, workspace_id: session.workspaceId, cwd: session.cwd,
           provider_binding_hash: nativeProviderHash(this.#requireProvider(session.providerInstanceId, session.driverKind)),
         });

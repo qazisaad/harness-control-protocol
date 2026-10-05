@@ -11,7 +11,7 @@ import { RunnerConfigSchema } from "../config/index.js";
 import { JsonRunnerStateStore } from "../state/index.js";
 import type { ClaudeQueryFactory } from "./adapters/providers/claude-runtime.js";
 
-for (const kind of ["approval", "question", "steer"] as const) test(`Claude ${kind} uses public controls and resumes the same conversation after runner recreation`, async () => {
+for (const kind of ["approval", "file-read", "other", "question", "steer"] as const) test(`Claude ${kind} uses public controls and resumes the same conversation after runner recreation`, async () => {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-claude-conversation-"));
   const optionsSeen: Options[] = [];
   const turns: string[] = [];
@@ -26,7 +26,10 @@ for (const kind of ["approval", "question", "steer"] as const) test(`Claude ${ki
       const first = await iterator.next();
       const text = first.value!.message.content as string;
       turns.push(text);
-      yield {type: "system", subtype: "init", session_id: nativeId} as SDKMessage;
+      yield {type: "system", subtype: "init", session_id: nativeId, cwd: options!.cwd, permissionMode: options!.permissionMode,
+        mcp_servers: Object.keys(options!.mcpServers ?? {}).map(name => ({name, status: "connected"})), plugins: [],
+        apiKeySource: "none", claude_code_version: "fixture", tools: [], model: options!.model!, slash_commands: [], output_style: "default", skills: [],
+        uuid: "00000000-0000-0000-0000-000000000000"} as SDKMessage;
       if (text === "/compact" && compactProof) yield {type: "system", subtype: "compact_boundary", session_id: nativeId} as SDKMessage;
       let result = text;
       if (text === "first") {
@@ -34,9 +37,9 @@ for (const kind of ["approval", "question", "steer"] as const) test(`Claude ${ki
           nativeReady();
           result = (await iterator.next()).value!.message.content as string;
         } else {
-          const args = kind === "approval" ? {command: "echo approved"} : {questions: [{header: "Scope", question: "Which scope?", multiSelect: true,
+          const args = kind === "approval" ? {command: "echo approved"} : kind === "file-read" ? {file_path: join(cwd, "file.txt")} : kind === "other" ? {pattern: "*.ts"} : {questions: [{header: "Scope", question: "Which scope?", multiSelect: true,
             options: [{label: "A", description: "first"}, {label: "B", description: "second"}]}]};
-          const response = await options!.canUseTool!(kind === "approval" ? "Bash" : "AskUserQuestion", args,
+          const response = await options!.canUseTool!(kind === "approval" ? "Bash" : kind === "file-read" ? "Read" : kind === "other" ? "Glob" : "AskUserQuestion", args,
             {toolUseID: "native-tool", requestId: "native-request", signal: new AbortController().signal});
           assert.equal(response?.behavior, "allow");
           if (kind === "question") assert.deepEqual(response?.behavior === "allow" && response.updatedInput?.answers, {"Which scope?": "A, B"});
@@ -83,6 +86,7 @@ for (const kind of ["approval", "question", "steer"] as const) test(`Claude ${ki
     assert.equal(optionsSeen[0]?.permissionMode, "default");
     assert.equal(optionsSeen[0]?.persistSession, true);
     assert.deepEqual(optionsSeen[0]?.settingSources, []);
+    assert.deepEqual(optionsSeen[0]?.settings, {disableAllHooks: true});
     const compact = await runner.sendTurn({session_id: "second-session", turn_id: "compact", input: "", action: "compact"});
     assert.equal(compact.at(-1)?.event_type, "turn.completed");
     assert.equal(optionsSeen[2]?.resume, optionsSeen[0]?.sessionId);

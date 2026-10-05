@@ -58,7 +58,7 @@ export class NativeInteractions {
     });
   }
 
-  approval(params: unknown, requestType: "command" | "file_read" | "file_change" | "other", signal: AbortSignal): Promise<{decision: string}> {
+  approval(params: unknown, requestType: "command" | "file_read" | "file_change" | "permissions" | "other", signal: AbortSignal): Promise<{decision: string}> {
     return this.#serialize(async () => {
       const binding = this.#bind(params);
       const action = JSON.stringify({kind: "native_operation", operation: requestType, details: z.record(z.string(), z.json()).parse(params)});
@@ -80,7 +80,8 @@ export class NativeInteractions {
           data: {request_id: id, session_id: this.start.session_id, turn_id: this.turn.turn_id, workspace_id: this.start.workspace_id,
             provider_instance_id: this.start.provider_instance_id, driver_kind: this.start.driver_kind, request_type: requestType,
             risk_class: "high", action, action_hash: actionHash, allowed_decisions: allowed,
-            expires_at: new Date(expires).toISOString(), display: {title: requestType === "command" ? "Approve native command" : "Approve native file change", detail: `Native item ${binding.itemId}`}}}));
+            expires_at: new Date(expires).toISOString(), display: {title: {command: "Approve native command", file_read: "Approve native file read",
+              file_change: "Approve native file change", permissions: "Approve native permissions", other: "Approve native action"}[requestType], detail: `Native item ${binding.itemId}`}}}));
       return {decision};
     });
   }

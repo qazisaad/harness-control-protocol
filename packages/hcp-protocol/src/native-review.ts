@@ -3,7 +3,7 @@ import { z } from "zod";
 export const NATIVE_REVIEW_MAX_ACTION_BYTES = 48 * 1024;
 /** Credential-free presentation; the executable request remains owned by its native adapter. */
 export const nativeReviewActionSchema = z.object({
-  kind: z.literal("native_operation"), operation: z.enum(["command", "file_change"]),
+  kind: z.literal("native_operation"), operation: z.enum(["command", "file_read", "file_change", "permissions", "other"]),
   details: z.record(z.string(), z.json()),
 }).strict();
 export type NativeReviewAction = z.infer<typeof nativeReviewActionSchema>;

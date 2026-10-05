@@ -7,6 +7,14 @@ import {
   type HarnessAdapterMcpServer,
 } from "../types.js";
 
+export function validateConfigurationInheritance(payload: HcpSessionStartPayload,
+  actual?: import("@harness-control/protocol").HarnessConfigurationInheritance): void {
+  for (const [source, requested] of Object.entries(payload.configuration_inheritance ?? {})) {
+    if (requested !== actual?.[source as keyof NonNullable<HcpSessionStartPayload["configuration_inheritance"]>])
+      throw new HarnessAdapterError("configuration_inheritance_unsupported", `This adapter cannot enforce the requested '${source}' inheritance policy.`);
+  }
+}
+
 export function normalizeProviderModels(models: ProviderInstanceConfig["models"]): HarnessModel[] {
   return models.map((model): HarnessModel => {
     const normalized: HarnessModel = {

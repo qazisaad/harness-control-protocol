@@ -71,6 +71,13 @@ test("OpenCode HTTP history forks and logical rollback retain permissions and ne
     await runner.startSession(start);
     await runner.sendTurn({session_id: "session", turn_id: "turn", input: "initial"});
     await runner.stopSession("session", "idle");
+    const original = JSON.parse(await readFile(historyFile, "utf8"));
+    const modified = structuredClone(original);
+    modified[sourceId].permission[0].action = "allow";
+    await writeFile(historyFile, JSON.stringify(modified));
+    await assert.rejects(runner.conversationOperation("drift-read", {session_id: "session", operation: {kind: "read"}}), /retained permissions differ/);
+    await assert.rejects(runner.startSession({...start, session_id: "drift-resume", continue_session: true}), /retained permissions differ/);
+    await writeFile(historyFile, JSON.stringify(original));
     const read = await runner.conversationOperation("read", {session_id: "session", operation: {kind: "read", limit: 1}});
     assert.equal(read.history?.turn_count, 2);
     const older = await runner.conversationOperation("older", {session_id: "session", operation: {kind: "read", cursor: read.history!.next_cursor!, limit: 1}});

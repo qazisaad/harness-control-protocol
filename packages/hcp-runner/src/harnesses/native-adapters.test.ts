@@ -229,11 +229,15 @@ for (const mode of [
 function fakeQuery(
   messages: unknown[],
   inspect: (options: Options) => void = () => {},
+  initialization: Record<string, unknown> = {},
 ): ClaudeQueryFactory {
   return ({ options }) => {
     inspect(options!);
     const stream = (async function* () {
-      yield {type: "system", subtype: "init", session_id: options!.resume ?? options!.sessionId} as SDKMessage;
+      yield {type: "system", subtype: "init", session_id: options!.resume ?? options!.sessionId, cwd: options!.cwd, permissionMode: options!.permissionMode,
+        mcp_servers: Object.keys(options!.mcpServers ?? {}).map(name => ({name, status: "connected"})), plugins: [],
+        apiKeySource: "none", claude_code_version: "fixture", tools: [], model: options!.model!, slash_commands: [], output_style: "default", skills: [],
+        uuid: "00000000-0000-0000-0000-000000000000", ...initialization} as SDKMessage;
       for (const message of messages) yield message as SDKMessage;
     })();
     return Object.assign(stream, { close() {} }) as Query;
@@ -247,6 +251,19 @@ const success = {
   terminal_reason: "completed",
   stop_reason: "end_turn",
 };
+for (const [kind, initialization] of Object.entries({workspace: {cwd: process.cwd()}, mode: {permissionMode: "default"},
+  mcp: {mcp_servers: [{name: "unselected", status: "connected"}]}, plugins: {plugins: [{name: "unselected", path: "/plugin"}]}})) {
+  it(`Claude rejects ${kind} initialization mismatch before publishing a retained binding`, async () => {
+    const adapter = new ClaudeHarnessAdapter({queryFactory: fakeQuery([success], undefined, initialization)});
+    let retained = false;
+    const events: HarnessAdapterEvent[] = [];
+    const input = {...turn(start("claude", tmpdir()), provider("claude"), event => events.push(event)), persistNativeThread() {retained = true;}};
+    events.push(...await adapter.sendTurn(input));
+    assert.equal(retained, false);
+    assert.equal(events.at(-1)?.event_type, "turn.failed");
+    assert.equal(events.some(event => event.event_type === "session.configured"), false);
+  });
+}
 for (const [label, result] of Object.entries({
   success,
   overloaded: { ...success, api_error_status: 529 },

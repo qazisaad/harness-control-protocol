@@ -42,6 +42,7 @@ export type CodexHarnessAdapterOptions = {
   processKillGraceMs?: number;
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
+  readonly configurationInheritance = nativeExecutionCapabilities("codex").configuration_inheritance!;
   readonly driverKind = "codex";
   readonly durableMcpContinuation = true;
   readonly conversationOperations = ["read", "rollback", "fork"] as const;

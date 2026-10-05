@@ -4,14 +4,29 @@ import type {ProviderInstanceConfig} from "../../../config/index.js";
 
 const sdk = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
 const script = `
-import {getSessionInfo, getSessionMessages, forkSession} from ${JSON.stringify(sdk)};
+import {getSessionInfo, getSessionMessages, forkSession, importSessionToStore} from ${JSON.stringify(sdk)};
+import {createHash} from 'node:crypto';
 let input = ''; for await (const chunk of process.stdin) input += chunk;
 const request = JSON.parse(input);
+async function revision() {
+  const hash = createHash('sha256'); let size = 0;
+  await importSessionToStore(request.sessionId, {async append(_key, entries) {
+    for (const entry of entries) {
+      const encoded = JSON.stringify(entry) + '\\n'; size += Buffer.byteLength(encoded);
+      if (size > 8 * 1024 * 1024) throw new Error('History limit');
+      hash.update(encoded);
+    }
+  }}, {dir: request.cwd, includeSubagents: false});
+  return hash.digest('hex');
+}
 if (request.kind === 'read') {
+  const before = await revision();
   const info = await getSessionInfo(request.sessionId, {dir: request.cwd});
   if (!info) throw new Error('Session unavailable');
   const messages = await getSessionMessages(request.sessionId, {dir: request.cwd, includeSystemMessages: true});
-  process.stdout.write(JSON.stringify({info, messages}));
+  const after = await revision();
+  if (before !== after) throw new Error('History changed during read');
+  process.stdout.write(JSON.stringify({info, messages, revision: after}));
 } else if (request.kind === 'fork') {
   process.stdout.write(JSON.stringify(await forkSession(request.sessionId, {dir: request.cwd,
     ...(request.upToMessageId ? {upToMessageId: request.upToMessageId} : {})})));

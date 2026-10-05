@@ -28,16 +28,18 @@ createInterface({input:process.stdin}).on('line', line => {
  appendFileSync(process.env.RECORD, JSON.stringify(request)+'\n');
  if(request.id==='approval') { complete(request.result.decision); return; }
  if(request.id==='question') { complete(request.result.answers.scope.answers[0]); return; }
+ if(request.id==='permissions') { complete(JSON.stringify(request.result)); return; }
  if(!request.id) return;
  if(request.method==='initialize') send({id:request.id,result:{}});
  if(request.method==='config/read') send({id:request.id,result:{config:{}}});
  if(request.method==='mcpServerStatus/list') send({id:request.id,result:{data:[],nextCursor:null}});
- if(request.method==='thread/start' || request.method==='thread/resume') send({id:request.id,result:{thread:{id:'thread'},sandbox:{type:'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:request.params.approvalPolicy}});
+ if(request.method==='thread/start' || request.method==='thread/resume') send({id:request.id,result:{thread:{id:'thread'},sandbox:{type:request.params.sandbox==='danger-full-access'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:request.params.approvalPolicy}});
  if(request.method==='turn/start') {
   turnId=request.params.input[0].text;
   notify('turn/started',{threadId:'thread',turn:{id:turnId}});
   send({id:request.id,result:{turn:{id:turnId}}});
   if(turnId==='question') send({id:'question',method:'item/tool/requestUserInput',params:{...binding(),questions:[{id:'scope',header:'Scope',question:'Choose scope',options:[{label:'Small',description:'One file'}]}]}});
+  else if(turnId==='permissions') send({id:'permissions',method:'item/permissions/requestApproval',params:{...binding(),permissions:{network:{enabled:true}}}});
   else if(turnId==='approval' || turnId==='interrupt') send({id:'approval',method:'item/commandExecution/requestApproval',params:{...binding(),command:'echo done',cwd:process.cwd(),availableDecisions:['accept','decline','cancel']}});
   else if(turnId!=='steer') complete('remembered context');
  }
@@ -69,6 +71,34 @@ async function fixture() {
   const requests = async () => (await readFile(record,"utf8")).trim().split("\n").map(line => JSON.parse(line));
   return {cwd,manager,payload,requests,cleanup:() => rm(cwd,{recursive:true,force:true})};
 }
+
+for (const unrestricted of [false, true]) test(`native permission grants use turn scope and ${unrestricted ? "allow unrestricted approval" : "preserve restricted containment"}`, async () => {
+  const f = await fixture(), manager = f.manager();
+  try {
+    const start = {...f.payload("permissions-session", "permissions", false), sandbox_mode: unrestricted ? "danger_full_access" as const : "workspace_write" as const};
+    await manager.startSession(start);
+    let response: Promise<unknown> | undefined;
+    const events: HcpHarnessEventPayload[] = [];
+    await manager.sendFirstTurn(start, event => {
+      events.push(event);
+      if (event.event_type === "approval.requested") {
+        const data = event.data as Record<string, unknown>;
+        assert.equal(data.request_type, "permissions");
+        assert.equal((data.allowed_decisions as string[]).includes("accept"), unrestricted);
+        assert.equal((data.allowed_decisions as string[]).includes("accept_for_session"), false);
+        response = manager.respondToMcpReview({session_id: start.session_id, turn_id: start.first_turn!.turn_id,
+          request_id: data.request_id as string, action_hash: data.action_hash as string,
+          decision: unrestricted ? "accept" : "decline", actor_id: "actor"}, () => {});
+      }
+    });
+    await response;
+    assert.equal(events.at(-1)?.event_type, "turn.completed");
+    const result = (await f.requests()).find(request => request.id === "permissions").result;
+    assert.equal(result.scope, "turn");
+    assert.deepEqual(result.permissions, unrestricted ? {network: {enabled: true}} : {});
+    await manager.stopSession(start.session_id, "done");
+  } finally {await f.cleanup();}
+});
 
 for (const mode of ["approval", "question"] as const) {
   test(`native ${mode} goes through manager, real stdio and canonical reducer; reopening preserves the native thread`, {timeout:10_000}, async () => {

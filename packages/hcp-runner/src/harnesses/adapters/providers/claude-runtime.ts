@@ -10,6 +10,7 @@ import { adapterMcpServers, assertCliMcpAttachmentProxied } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
 import { NativeProcess } from "./native-process.js";
 import { randomUUID } from "node:crypto";
+import {realpath} from "node:fs/promises";
 import { NativeInteractions } from "../../native-interactions.js";
 import { ClaudeInput } from "./claude-input.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
@@ -71,6 +72,7 @@ export function createClaudeTurn(
     };
     signal.addEventListener("abort", abort, { once: true });
     let stream: Query | undefined;
+    const permissionMode = input.payload.mode === "plan" ? "plan" : ({ask: "default", auto_edits: "acceptEdits", full_access: "bypassPermissions"} as const)[input.startPayload.approval_policy];
     try {
       signal.throwIfAborted();
       stream = queryFactory({
@@ -90,12 +92,13 @@ export function createClaudeTurn(
           },
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: [],
+          settings: {disableAllHooks: true},
           persistSession: true,
           ...(resume ? {resume} : {sessionId: nativeId}),
           includePartialMessages: true,
           strictMcpConfig: true,
           mcpServers,
-          permissionMode: input.payload.mode === "plan" ? "plan" : ({ask: "default", auto_edits: "acceptEdits", full_access: "bypassPermissions"} as const)[input.startPayload.approval_policy],
+          permissionMode,
           allowDangerouslySkipPermissions: input.startPayload.approval_policy === "full_access",
           canUseTool: async (tool, arguments_, options) => {
             if (!initialized) throw new HarnessAdapterError("native_request_binding", "Claude requested a tool before confirming its conversation.");
@@ -140,6 +143,15 @@ export function createClaudeTurn(
         if ("session_id" in message && message.session_id !== nativeId)
           throw new HarnessAdapterError("native_continuation_binding", "Claude returned another native conversation identity.");
         if (message.type === "system" && message.subtype === "init") {
+          const confirmed = z.object({cwd: z.string(), permissionMode: z.string(),
+            mcp_servers: z.array(z.object({name: z.string(), status: z.string()})), plugins: z.array(z.unknown())}).parse(message);
+          if (await realpath(confirmed.cwd) !== await realpath(input.startPayload.cwd) || confirmed.permissionMode !== permissionMode)
+            throw new HarnessAdapterError("policy_mismatch", "Claude did not confirm the requested workspace and permission mode.");
+          const expectedServers = Object.keys(mcpServers);
+          if (confirmed.plugins.length || confirmed.mcp_servers.length !== expectedServers.length ||
+              new Set(confirmed.mcp_servers.map(server => server.name)).size !== expectedServers.length ||
+              confirmed.mcp_servers.some(server => !expectedServers.includes(server.name) || server.status !== "connected"))
+            throw new HarnessAdapterError("mcp_scope_mismatch", "Claude exposed an unexpected plugin or did not confirm the selected MCP inventory.");
           initialized = true;
           input.session.native_thread_id = nativeId;
           delete input.session.native_fresh;

@@ -9,6 +9,7 @@ const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(t
 /** A deterministic provider for public-package conformance; no native CLI or consumer-specific IDs. */
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "example.controls";
+  readonly configurationInheritance = {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false};
   readonly conversationOperations = ["read", "rollback", "fork"] as const;
   readonly histories = new Map<string, Turn[]>();
   mutations = 0;
@@ -17,7 +18,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       status: "ready" as const, models: [{id: "fixture", label: "Fixture", capabilities: {option_descriptors: []}}],
       execution_capabilities: {streaming: true, multi_turn: true, session_continuation: true, native_history: true,
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
-        manual_compaction: true, content_retrieval: true, approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
+        manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
+        approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
   }
   async validateStart({payload}: HarnessAdapterStartInput) {
     if (payload.sandbox_mode !== "read_only" || payload.approval_policy !== "full_access" || payload.model_selection.model !== "fixture")

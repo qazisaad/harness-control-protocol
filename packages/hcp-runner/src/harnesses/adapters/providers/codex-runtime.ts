@@ -212,6 +212,14 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     input.registerNativeInteractions?.(interactions);
     rpc.setRequestHandler("item/commandExecution/requestApproval", (params, requestSignal) => interactions!.approval(params, "command", requestSignal));
     rpc.setRequestHandler("item/fileChange/requestApproval", (params, requestSignal) => interactions!.approval(params, "file_change", requestSignal));
+    rpc.setRequestHandler("item/permissions/requestApproval", async (params, requestSignal) => {
+      const request = z.object({threadId: z.string(), turnId: z.string(), itemId: z.string(),
+        permissions: z.record(z.string(), z.json())}).passthrough().parse(params);
+      // This isolated profile never offers session grants or a grant that broadens restricted containment.
+      const response = await interactions!.approval({...request, additionalPermissions: request.permissions,
+        availableDecisions: ["accept", "decline", "cancel"]}, "permissions", requestSignal);
+      return {permissions: response.decision === "accept" ? request.permissions : {}, scope: "turn"};
+    });
     rpc.setRequestHandler("item/tool/requestUserInput", (params, requestSignal) => interactions!.questions(params, requestSignal));
     rpc.setRequestHandler("item/tool/call", async (params, requestSignal) => {
       if (!nativeTurnId) throw new HarnessAdapterError("codex_turn_missing", "Native tool calls require an active turn.");

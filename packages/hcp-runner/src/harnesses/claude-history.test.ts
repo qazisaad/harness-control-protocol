@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, rm, writeFile, appendFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {randomUUID} from "node:crypto";
@@ -32,12 +32,17 @@ test("Claude SDK history, bounded forks and logical rollback preserve context wi
     save: value => {conversation = value;}, beginMutation() {},
     publishContent() {throw new Error("Unexpected oversized content");}});
   try {
-    const read = await claudeConversation(input({kind: "read"}));
+    let read = await claudeConversation(input({kind: "read"}));
     assert.equal(read.history?.turns.length, 2);
     const fork = await claudeConversation(input({kind: "fork", target_session_id: "child", continuation_group_key: "child-key",
       expected_history_hash: read.history!.history_hash, last_turn_id: read.history!.turns[0]!.id}));
     const child = await claudeSessionHelper(provider, cwd, {kind: "read", sessionId: fork.fork!.native_reference}) as {messages: unknown[]};
     assert.equal(child.messages.length, 2);
+    await appendFile(join(directory, `${sessionId}.jsonl`), JSON.stringify({type: "custom-title", sessionId,
+      customTitle: "metadata-only change", uuid: randomUUID(), timestamp: new Date().toISOString()}) + "\n");
+    await assert.rejects(claudeConversation(input({kind: "rollback", num_turns: 1, expected_history_hash: read.history!.history_hash})), /Read the current history/);
+    assert.equal(conversation.rollback, undefined);
+    read = await claudeConversation(input({kind: "read"}));
     const commandId = randomUUID();
     const rollback = await claudeConversation(input({kind: "rollback", num_turns: 1, expected_history_hash: read.history!.history_hash}, commandId));
     assert.equal(rollback.history?.turns.length, 1);

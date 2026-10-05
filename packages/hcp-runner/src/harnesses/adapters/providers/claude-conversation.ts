@@ -13,10 +13,10 @@ function contextHash(turns: HistoryTurn[]): string {
   return hash(turns.map(turn => ({...turn, id: "", items: turn.items.map(({id: _id, ...item}) => item)})));
 }
 const messageSchema = z.object({type: z.enum(["user", "assistant", "system"]), uuid: z.string(), session_id: z.string(),
-  message: z.record(z.string(), z.json())});
+  message: z.record(z.string(), z.json()).default({})});
 
-async function history(input: HarnessAdapterConversationInput, nativeId: string, helper: ClaudeSessionHelper, boundaries = new Map<string, string>()): Promise<HistoryTurn[]> {
-  const data = z.object({info: z.object({sessionId: z.string(), cwd: z.string()}), messages: z.array(messageSchema)}).parse(
+async function history(input: HarnessAdapterConversationInput, nativeId: string, helper: ClaudeSessionHelper, boundaries = new Map<string, string>()): Promise<{turns: HistoryTurn[]; revision: string}> {
+  const data = z.object({info: z.object({sessionId: z.string(), cwd: z.string()}), messages: z.array(messageSchema), revision: z.string().regex(/^[a-f0-9]{64}$/)}).parse(
     await helper(input.provider, input.conversation.cwd, {kind: "read", sessionId: nativeId}));
   if (data.info.sessionId !== nativeId || await realpath(data.info.cwd) !== await realpath(input.conversation.cwd) || data.messages.some(message => message.session_id !== nativeId))
     throw new HarnessAdapterError("native_history_binding", "Claude history belongs to another conversation or workspace.");
@@ -38,7 +38,7 @@ async function history(input: HarnessAdapterConversationInput, nativeId: string,
     }
     boundaries.set(turns.at(-1)!.id, message.uuid);
   }
-  return turns;
+  return {turns, revision: data.revision};
 }
 
 export async function claudeConversation(input: HarnessAdapterConversationInput, helper: ClaudeSessionHelper = claudeSessionHelper): Promise<HcpConversationResultPayload> {
@@ -47,10 +47,11 @@ export async function claudeConversation(input: HarnessAdapterConversationInput,
     throw new HarnessAdapterError("conversation_operation_unsupported", "Claude supports read, fork and rollback.");
   const boundaries = new Map<string, string>();
   let nativeId = conversation.native_thread_id, fresh = conversation.fresh;
-  let turns = fresh ? [] : await history(input, nativeId, helper, boundaries);
+  let snapshot = fresh ? {turns: [], revision: hash([])} : await history(input, nativeId, helper, boundaries);
+  let {turns, revision} = snapshot;
   if (request.operation.kind === "fork") {
     const operation = request.operation;
-    if (hash(turns) !== operation.expected_history_hash || (operation.last_turn_id && !turns.some(turn => turn.id === operation.last_turn_id)))
+    if (revision !== operation.expected_history_hash || (operation.last_turn_id && !turns.some(turn => turn.id === operation.last_turn_id)))
       throw new HarnessAdapterError("native_history_changed", "Read the source history again before forking.");
     if (!input.beginMutation) throw new HarnessAdapterError("native_mutation_fence_missing", "A fork requires its durable runner fence.");
     const end = operation.last_turn_id ? turns.findIndex(turn => turn.id === operation.last_turn_id) + 1 : turns.length;
@@ -60,7 +61,8 @@ export async function claudeConversation(input: HarnessAdapterConversationInput,
     input.beginMutation();
     const forkId = fresh ? randomUUID() : z.object({sessionId: z.string()}).parse(await helper(input.provider, conversation.cwd,
       {kind: "fork", sessionId: nativeId, ...(boundary ? {upToMessageId: boundary} : {})})).sessionId;
-    if (forkId === nativeId || (!fresh && contextHash(await history(input, forkId, helper)) !== contextHash(turns.slice(0, end))))
+    if (forkId === nativeId || (!fresh && (contextHash((await history(input, forkId, helper)).turns) !== contextHash(turns.slice(0, end)) ||
+        (await history(input, nativeId, helper)).revision !== revision)))
       throw new HarnessAdapterError("native_fork_unknown", "Claude did not confirm an independent copy of the selected context.");
     return {command_id: commandId, session_id: request.session_id, operation: "fork", filesystem_undo: false,
       ...(fresh ? {native_fresh: true} : {}), fork: {session_id: operation.target_session_id, continuation_group_key: operation.continuation_group_key, native_reference: forkId}};
@@ -71,26 +73,30 @@ export async function claudeConversation(input: HarnessAdapterConversationInput,
       if (prior.phase !== "completed" || !prior.replacement_native_thread_id)
         throw new HarnessAdapterError("native_rollback_unknown", "An earlier rollback has no confirmed replacement; it will not be repeated.");
       nativeId = prior.replacement_native_thread_id; fresh = prior.native_fresh;
-      turns = fresh ? [] : await history(input, nativeId, helper);
-      if (hash(turns) !== prior.target_hash) throw new HarnessAdapterError("native_rollback_unknown", "The replacement history no longer matches its durable proof.");
+      snapshot = fresh ? {turns: [], revision: hash([])} : await history(input, nativeId, helper);
+      ({turns, revision} = snapshot);
+      if (revision !== prior.target_hash) throw new HarnessAdapterError("native_rollback_unknown", "The replacement history no longer matches its durable proof.");
     } else {
       if (prior?.phase === "pending") throw new HarnessAdapterError("native_rollback_unknown", "An earlier rollback has an unknown outcome.");
-      if (hash(turns) !== request.operation.expected_history_hash || request.operation.num_turns > turns.length)
+      if (revision !== request.operation.expected_history_hash || request.operation.num_turns > turns.length)
         throw new HarnessAdapterError("native_history_changed", "Read the current history before requesting rollback.");
       const retained = turns.slice(0, -request.operation.num_turns);
       fresh = retained.length ? undefined : true;
       const boundary = retained.length ? boundaries.get(retained.at(-1)!.id) : undefined;
       if (!fresh && !boundary) throw new HarnessAdapterError("native_history_boundary", "The retained history has no stable SDK message boundary.");
-      const intent = {command_id: commandId, source_hash: hash(turns), target_hash: hash(retained), phase: "pending" as const};
+      const intent = {command_id: commandId, source_hash: revision, target_hash: hash(retained), phase: "pending" as const};
       input.save({...conversation, rollback: intent});
       nativeId = fresh ? randomUUID() : z.object({sessionId: z.string()}).parse(await helper(input.provider, conversation.cwd,
         {kind: "fork", sessionId: nativeId, upToMessageId: boundary!})).sessionId;
-      turns = fresh ? [] : await history(input, nativeId, helper);
+      snapshot = fresh ? {turns: [], revision: hash([])} : await history(input, nativeId, helper);
+      ({turns, revision} = snapshot);
       if (nativeId === conversation.native_thread_id || contextHash(turns) !== contextHash(retained)) throw new HarnessAdapterError("native_rollback_unknown", "Claude did not confirm the expected retained context.");
-      input.save({...conversation, rollback: {...intent, target_hash: hash(turns), phase: "completed", replacement_native_thread_id: nativeId, ...(fresh ? {native_fresh: true} : {})}});
+      if (!conversation.fresh && (await history(input, conversation.native_thread_id, helper)).revision !== intent.source_hash)
+        throw new HarnessAdapterError("native_rollback_unknown", "Claude source history changed during rollback.");
+      input.save({...conversation, rollback: {...intent, target_hash: revision, phase: "completed", replacement_native_thread_id: nativeId, ...(fresh ? {native_fresh: true} : {})}});
     }
   }
   return {command_id: commandId, session_id: request.session_id, operation: request.operation.kind, filesystem_undo: false,
     ...(request.operation.kind === "rollback" ? {native_reference: nativeId, ...(fresh ? {native_fresh: true} : {})} : {}),
-    history: publicHistory({id: nativeId, turns}, input.publishContent, request.operation.kind === "read" ? request.operation : undefined)};
+    history: publicHistory({id: nativeId, turns, revision}, input.publishContent, request.operation.kind === "read" ? request.operation : undefined)};
 }

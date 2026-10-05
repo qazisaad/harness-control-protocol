@@ -243,6 +243,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  configuration_inheritance?: HarnessConfigurationInheritance;
   streaming: boolean;
   multi_turn: boolean;
   session_continuation: boolean;
@@ -257,6 +258,11 @@ export type HarnessExecutionCapabilities = {
   sandbox_modes: Array<"read_only" | "workspace_write" | "danger_full_access">;
   approval_policies: Array<"ask" | "auto_edits" | "full_access">;
 };
+
+/** Describes which native configuration sources this execution path permits; omitted fields are unknown. */
+export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.boolean().optional(), project_settings: z.boolean().optional(),
+  hooks: z.boolean().optional(), mcp_servers: z.boolean().optional(), plugins: z.boolean().optional()}).strict();
+export type HarnessConfigurationInheritance = z.infer<typeof harnessConfigurationInheritanceSchema>;
 
 export type HarnessProviderSnapshot = {
   execution_capabilities?: HarnessExecutionCapabilities;
@@ -416,6 +422,7 @@ export type RunnerStdioMcpProfileAttachment = {
 export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
+  configuration_inheritance?: HarnessConfigurationInheritance;
   session_id: string;
   workspace_id: string;
   provider_instance_id: string;
@@ -1064,6 +1071,7 @@ export const harnessModelSchema = z
 export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
+      configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
       streaming: z.boolean(),
       multi_turn: z.boolean(),
       session_continuation: z.boolean(),
@@ -1327,6 +1335,7 @@ const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(im
 
 export const hcpSessionStartPayloadSchema = z
   .object({
+    configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     session_id: nonEmptyStringSchema,
     workspace_id: nonEmptyStringSchema,
     provider_instance_id: nonEmptyStringSchema,
@@ -2247,6 +2256,7 @@ export const hcpRawDiagnosticPayloadSchema = z
 
 const sessionEventDataSchema = z
   .object({
+    configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     provider_instance_id: nonEmptyStringSchema.optional(),
     driver_kind: nonEmptyStringSchema.optional(),
     workspace_id: nonEmptyStringSchema.optional(),
@@ -2391,7 +2401,7 @@ const approvalRequestedEventDataSchema = z
     workspace_id: nonEmptyStringSchema,
     provider_instance_id: nonEmptyStringSchema,
     driver_kind: nonEmptyStringSchema,
-    request_type: z.enum(["command", "file_read", "file_change", "mcp_tool", "other"]),
+    request_type: z.enum(["command", "file_read", "file_change", "permissions", "mcp_tool", "other"]),
     risk_class: z.enum(["low", "medium", "high"]),
     action: z.unknown(),
     action_hash: nonEmptyStringSchema,

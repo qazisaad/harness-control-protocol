@@ -69,6 +69,7 @@ type RunnerStateData = {
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
   updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
   fresh: z.literal(true).optional(),
+  approval_policy: z.enum(["ask", "auto_edits", "full_access"]).optional(),
   rollback: z.object({command_id: z.string(), source_hash: z.string(), target_hash: z.string(), phase: z.enum(["pending", "completed"]),
     replacement_native_thread_id: z.string().optional(), native_fresh: z.literal(true).optional()}).strict().optional(),
   fork: z.object({command_id: z.string(), target_key: z.string(), target_session_id: z.string(), phase: z.enum(["pending", "completed"]),
@@ -193,6 +194,7 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     if (previous && (previous.binding_hash !== conversation.binding_hash ||
         previous.provider_binding_hash !== conversation.provider_binding_hash || previous.provider_instance_id !== conversation.provider_instance_id ||
         previous.workspace_id !== conversation.workspace_id || previous.cwd !== conversation.cwd ||
+        (previous.approval_policy !== undefined && previous.approval_policy !== conversation.approval_policy) ||
         (previous.native_thread_id !== conversation.native_thread_id && !provenReplacement)))
       throw new Error("Native conversation identity or execution scope changed.");
     if (!previous && Object.keys(this.data.nativeConversations).length >= 1024)
