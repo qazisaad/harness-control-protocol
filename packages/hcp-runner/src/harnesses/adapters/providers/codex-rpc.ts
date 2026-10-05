@@ -38,7 +38,7 @@ export class CodexRpc {
   constructor(executable: string, cwd: string, env: NodeJS.ProcessEnv) {
     this.process = new NativeProcess(
       executable,
-      ["app-server", "--listen", "stdio://"],
+      ["app-server", "--listen", "stdio://", "-c", "thread_unload_delay_secs=0"],
       cwd,
       env,
     );
@@ -93,6 +93,14 @@ export class CodexRpc {
       throw new Error(`A native request handler is already registered for ${method}.`);
     }
     this.#handlers.set(method, handler);
+  }
+
+  resetTurnHandlers(): boolean {
+    if (this.#failure || this.#pending.size || this.#activeRequests.size) return false;
+    this.#handlers.clear();
+    this.onNotification = () => {};
+    this.onFailure = () => {};
+    return true;
   }
 
   async #handleRequest(

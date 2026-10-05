@@ -104,6 +104,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  fs.appendFileSync(process.env.RECORD,JSON.stringify(m)+'\n');
  if(m.id==='native-call') { if(!m.result?.success) throw new Error('Native MCP failed'); finishTool(); return; }
  if(m.method==='initialize') send({id:m.id,result:{}});
+ if(m.method==='thread/loaded/list') send({id:m.id,result:{data:[]}});
+ if(m.method==='thread/unsubscribe') {send({id:m.id,result:{status:'unsubscribed'}});notify('thread/closed',{threadId:'native-thread'});}
  if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never'}}); }
@@ -157,6 +159,7 @@ for (const mode of [
     const adapter = new CodexHarnessAdapter({
       turnTimeoutMs: mode === "sleep" ? 1500 : 5000,
     });
+    t.after(() => adapter.close());
     const events: HarnessAdapterEvent[] = [];
     const toolCalls: unknown[] = [];
     let running = true;

@@ -32,8 +32,9 @@ import {
   nativeExecutionCapabilities,
   validateNativeStart,
 } from "./native-turn.js";
-import { runCodexTurn } from "./codex-runtime.js";
+import { createCodexTurnRuntime } from "./codex-runtime.js";
 export type CodexHarnessAdapterOptions = {
+  onProcessLease?: (reused: boolean) => void;
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
   turnTimeoutMs?: number;
@@ -46,8 +47,11 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   readonly #probeTimeoutMs: number;
   readonly #processKillGraceMs: number;
   readonly #turns: NativeTurns;
+  readonly #runtime: ReturnType<typeof createCodexTurnRuntime>;
+  async close(): Promise<void> {await this.#runtime.close();}
 
   constructor(options: CodexHarnessAdapterOptions = {}) {
+    this.#runtime = createCodexTurnRuntime(options.onProcessLease);
     this.#processSpawner = options.processSpawner ?? spawnProviderCliProcess;
     this.#probeTimeoutMs = options.probeTimeoutMs ?? 5_000;
     this.#processKillGraceMs = options.processKillGraceMs ?? 1_000;
@@ -193,7 +197,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         payload: request.startPayload,
         provider: request.provider,
       });
-      return runCodexTurn(request, signal, emit);
+      return this.#runtime.run(request, signal, emit);
     });
   }
   async cancelTurn(
