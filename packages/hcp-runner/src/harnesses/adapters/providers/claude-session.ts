@@ -238,6 +238,10 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       return;
     }
     const parent = "parent_tool_use_id" in message ? message.parent_tool_use_id : null;
+    if (!parent && (message.type === "assistant" || message.type === "stream_event" && message.event.type === "message_start")) {
+      // Each root message starts a correlation lane. Autonomous wakes must not inherit the prior app prompt's lane.
+      this.#boundRoot = this.#active && ids.some(id => this.#active!.ids.has(id)) ? this.#active : undefined;
+    }
     const root = parent ? this.#launches.get(parent)?.root : this.#boundRoot;
     if (message.type === "assistant") {
       if (root) for (const block of message.message.content) if (block.type === "tool_use") {
@@ -277,7 +281,11 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     }
     if (message.type === "result") {
       // An unstamped result may be an autonomous background wake. It cannot complete an app's root.
-      if (!ids.length) {if (this.#active) throw error("native_result_binding_unconfirmed", "Persistent results require the admitted user-message identity."); return;}
+      if (!ids.length) {
+        if (this.#active && (this.#boundRoot === this.#active || this.#active.pendingCompactContext))
+          throw error("native_result_binding_unconfirmed", "Persistent results require the admitted user-message identity.");
+        return;
+      }
       if (!root || root !== this.#active || !ids.some(id => root.ids.has(id))) return;
       const parsed = claudeResultSchema.safeParse(message);
       if (!parsed.success || parsed.data.api_error_status != null && parsed.data.api_error_status >= 400

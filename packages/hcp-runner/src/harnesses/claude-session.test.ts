@@ -375,6 +375,24 @@ test("persistent root results require explicit prompt identity and never auto-re
   } finally {await f.cleanup();}
 });
 
+test("autonomous Claude messages and unstamped results cannot inherit an active app turn", async () => {
+  const f = await fixture();
+  try {
+    const pending = f.send("waiting", "wait");
+    await until(() => f.prompts.length === 1);
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start"}});
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "autonomous"}}});
+    f.emit({type: "assistant", parent_tool_use_id: null, message: {content: [], usage: {input_tokens: 10, output_tokens: 2}}});
+    f.emit({type: "result", subtype: "success", is_error: false, result: "autonomous", modelUsage: {}});
+    f.assistant(f.prompts[0]!.uuid!); f.result(f.prompts[0]!, "app-owned");
+    const result = await pending;
+    assert.equal(result.at(-1)?.event_type, "turn.completed");
+    assert.doesNotMatch(JSON.stringify(f.events.filter(event => event.turn_id === "waiting")), /autonomous/);
+    assert.equal(f.events.some(event => event.event_type === "native.work.owner_lost"), false);
+    assert.equal(f.prompts.length, 1);
+  } finally {await f.cleanup();}
+});
+
 test("query initialization failure fences the runtime without unhandled completion or automatic restart", async () => {
   const f = await fixture();
   try {

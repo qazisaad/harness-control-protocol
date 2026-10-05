@@ -6,6 +6,7 @@ import { NativeTurns } from "./native-turn.js";
 import { NativeInteractions } from "../../native-interactions.js";
 import {OpenCodeUsage, openCodeMessageId} from "./opencode-usage.js";
 import {OpenCodeText} from "./opencode-text.js";
+import {OpenCodeItems} from "./opencode-items.js";
 import {projectOpenCodeCatalog} from "./opencode-models.js";
 import {openCodeContext} from "./opencode-context.js";
 import {unavailableContext} from "./native-context.js";
@@ -505,9 +506,10 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
 
   async cancelTurn(): Promise<void> {
     this.#activeRequest?.abort();
-    await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/abort?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
+    const outcome = await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/abort?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
       method: "POST",
     });
+    if (outcome !== true) throw new HarnessAdapterError("native_cancel_unknown", "OpenCode did not acknowledge session cancellation.");
   }
 
   #verifyPermissions(actual: unknown) {
@@ -547,8 +549,8 @@ function createEventStream(
   void settled.catch(() => {});
   const requests = new Set<string>();
   const responses: Promise<void>[] = [];
-  const completedItems = new Set<string>();
   const text = new OpenCodeText(sessionId, usage.promptId, input.turnId, input.emitEvent);
+  const items = new OpenCodeItems(sessionId, input.turnId, id => text.ownsMessage(id), input.emitEvent, input.publishContent);
   const completed: Promise<void> = (async (): Promise<void> => {
     try {
       const response: Response = await fetch(url, { headers: { accept: "text/event-stream" }, signal });
@@ -560,6 +562,7 @@ function createEventStream(
         const event = eventSchema.parse(value);
         usage.observe(event);
         text.observe(event);
+        items.observe(event);
         if ((event.type === "permission.asked" || event.type === "question.asked") && event.properties.sessionID === sessionId) {
           const id = z.string().min(1).parse(event.properties.id);
           if (requests.has(id)) return;
@@ -590,7 +593,7 @@ function createEventStream(
           void response.catch(error => rejectSettled(error instanceof Error ? error : new Error("Native response failed.")));
           return;
         }
-        const outcome: OpenCodeEventOutcome = emitOpenCodeEvent(value, sessionId, input, completedItems);
+        const outcome: OpenCodeEventOutcome = emitOpenCodeEvent(value, sessionId, input);
         if (outcome === "settled") void Promise.all(responses).then(markSettled, rejectSettled);
         if (outcome instanceof Error) rejectSettled(outcome);
       });
@@ -632,7 +635,7 @@ async function consumeSse(stream: ReadableStream<Uint8Array>, onData: (value: un
 
 type OpenCodeEventOutcome = "continue" | "settled" | Error;
 
-function emitOpenCodeEvent(value: unknown, sessionId: string, input: OpenCodeRuntimeTurnInput, completedItems: Set<string>): OpenCodeEventOutcome {
+function emitOpenCodeEvent(value: unknown, sessionId: string, input: OpenCodeRuntimeTurnInput): OpenCodeEventOutcome {
   const event: z.infer<typeof eventSchema> = eventSchema.parse(value);
   if (event.type === "session.idle") {
     return event.properties.sessionID === sessionId ? "settled" : "continue";
@@ -642,22 +645,6 @@ function emitOpenCodeEvent(value: unknown, sessionId: string, input: OpenCodeRun
   }
   if (event.type === "todo.updated" && event.properties.sessionID === sessionId) {
     input.emitEvent({event_type: "turn.plan.updated", turn_id: input.turnId, data: {plan: retainedContent(event.properties.todos, input.publishContent)}});
-    return "continue";
-  }
-  if (event.type !== "message.part.updated") return "continue";
-  const part: unknown = event.properties.part;
-  const partSchema = z.object({ sessionID: z.string(), type: z.string() }).passthrough();
-  const parsedPart: z.infer<typeof partSchema> = partSchema.parse(part);
-  if (parsedPart.sessionID !== sessionId) return "continue";
-  if (parsedPart.type === "tool") {
-    const tool = z.object({id: z.string(), tool: z.string(), state: z.object({status: z.enum(["pending", "running", "completed", "error"]),
-      input: z.record(z.string(), z.json()).optional(), output: z.string().optional(), error: z.string().optional()})}).parse(parsedPart);
-    if (completedItems.has(tool.id)) return "continue";
-    const finished = ["completed", "error"].includes(tool.state.status);
-    if (finished) completedItems.add(tool.id);
-    input.emitEvent({event_type: finished ? "item.completed" : "item.updated", turn_id: input.turnId,
-      data: {item_id: tool.id, item_type: "tool_call", summary: tool.tool, status: tool.state.status === "error" ? "failed" : tool.state.status,
-        content: retainedContent({arguments: tool.state.input ?? {}, ...(tool.state.output !== undefined ? {output: tool.state.output} : {}), ...(tool.state.error ? {error: tool.state.error} : {})}, input.publishContent)}});
     return "continue";
   }
   return "continue";

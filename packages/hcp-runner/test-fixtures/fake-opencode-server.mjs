@@ -11,8 +11,10 @@ const streams = new Set();
 const pending = new Map();
 const emit = value => {for (const stream of streams) sendEvent(stream, value);};
 const finish = response => {
-  emit({type: "message.part.updated", properties: {part: {id: "tool", sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "completed", input: {command: "echo hello"}, output: "hello"}}}});
-  emit({type: "message.part.updated", properties: {part: {id: "tool", sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "running", input: {command: "echo late"}}}}});
+  const messageID = `assistant-tools-${response.hcpMessageId}`;
+  emit({type: "message.updated", properties: {info: {id: messageID, sessionID: "fake-opencode-session", role: "assistant", parentID: response.hcpMessageId}}});
+  emit({type: "message.part.updated", properties: {part: {id: "tool", messageID, sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "completed", input: {command: "echo hello"}, output: "hello"}}}});
+  emit({type: "message.part.updated", properties: {part: {id: "tool", messageID, sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "running", input: {command: "echo late"}}}}});
   emit({type: "session.idle", properties: {sessionID: "fake-opencode-session"}});
   writeJson(response, {parts: [{type: "text", text: "hello"}]});
 };
@@ -87,6 +89,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && /^\/session\/[^/]+\/message$/.test(url.pathname)) {
     const executionId = url.pathname.split("/")[2];
     const text = payload.parts[0].text;
+    response.hcpMessageId = payload.messageID;
     if (text === "approval" || text === "question") {
       pending.set(text, response);
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "another-session", permission: "bash", questions: []}});

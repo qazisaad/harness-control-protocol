@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, readFile, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, writeFile, access} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {randomUUID} from "node:crypto";
@@ -19,6 +19,7 @@ for (const driver of providers) {
   const session = `${driver}-interactions`, events = [], responses = [], passed = [];
   const marker = randomUUID(), target = join(cwd, "approved.txt");
   const command = `printf '%s' '${marker}' > '${target}'`;
+  let cancelledRequest;
   let stage = "approval";
   const observed = new Set();
   const track = (promise, turnId) => {
@@ -31,6 +32,11 @@ for (const driver of providers) {
     observed.add(identity);
     hcpHarnessEventPayloadSchema.parse(event); events.push(event);
     if (event.event_type === "approval.requested") {
+      if (stage === "cancel") {
+        cancelledRequest = event;
+        track(manager.cancelTurn(session, event.turn_id), event.turn_id);
+        return;
+      }
       const action = JSON.parse(event.data.action);
       const details = action.details;
       // Approve only the exact controlled test write. Unexpected native actions are declined.
@@ -46,12 +52,12 @@ for (const driver of providers) {
     }
   };
   const unsubscribe = manager.subscribeEvents(observe);
-  const run = async (turn_id, input) => {
+  const run = async (turn_id, input, expected = "turn.completed") => {
     console.log(JSON.stringify({driver, stage, cwd}));
     await manager.sendTurn({session_id: session, turn_id, input}, observe);
     await Promise.all(responses);
     const terminal = events.findLast(event => event.turn_id === turn_id && ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type));
-    assert.equal(terminal?.event_type, "turn.completed", JSON.stringify(terminal?.data));
+    assert.equal(terminal?.event_type, expected, JSON.stringify(terminal?.data));
     return terminal;
   };
   try {
@@ -68,6 +74,20 @@ for (const driver of providers) {
     assert.ok(events.some(event => event.turn_id === "question" && event.event_type === "user_input.requested"), "No native question was observed");
     assert.match(JSON.stringify(answer.data.final_output), /Green/);
     passed.push("native-question", "question-response");
+    if (process.env.HCP_LIVE_CANCEL === "1") {
+      stage = "cancel";
+      const cancelledTarget = join(cwd, "cancelled.txt");
+      const cancelledCommand = `printf '%s' '${marker}' > '${cancelledTarget}'`;
+      await run("cancel", `Use the ${driver === "claude" ? "Bash" : "bash"} tool to run exactly this command, with no prefix or suffix: ${cancelledCommand}\nDo not use any other tool. Wait for permission if asked, then reply done.`, "turn.cancelled");
+      assert.ok(cancelledRequest, "No native approval was observed before cancellation");
+      await assert.rejects(access(cancelledTarget), {code: "ENOENT"});
+      await assert.rejects(manager.respondToMcpReview({session_id: session, turn_id: "cancel", request_id: cancelledRequest.data.request_id,
+        action_hash: cancelledRequest.data.action_hash, decision: "accept", actor_id: "live-test"}, observe));
+      passed.push("cancel-waiting-approval", "cancelled-effect-absent", "lost-callback-refused");
+      stage = "after-cancel";
+      await run("after-cancel", "Reply STILL_USABLE only. Do not use tools.");
+      passed.push("followup-after-cancel");
+    }
     console.log(JSON.stringify({driver, passed, cwd, event_count: events.length}));
   } catch (error) {
     console.error(JSON.stringify({driver, passed, cwd, failed: error instanceof Error ? error.message : String(error)}));

@@ -14,6 +14,7 @@ export class OpenCodeText {
   #bytes = 0;
   constructor(readonly sessionId: string, readonly promptId: string, readonly turnId: string,
     readonly emit: (event: HarnessAdapterEvent) => void) {}
+  ownsMessage(messageId: string): boolean | undefined {return this.#owners.get(messageId);}
 
   observe(event: {type: string; properties: Record<string, unknown>}): void {
     if (event.type === "message.updated") {
