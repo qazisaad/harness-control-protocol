@@ -9,7 +9,7 @@ function value(input: unknown, publish?: ContentPublisher): HarnessHistoryValue 
   if (input === undefined) return {storage: "unavailable", reason: "unsupported_native_shape"};
   const encoded = JSON.stringify(input ?? null);
   if (Buffer.byteLength(encoded) <= 32 * 1024) return harnessHistoryValueSchema.parse({storage: "inline", value: json(input)});
-  return publish ? {storage: "reference", content_ref: publish(json(input)), preview: encoded.slice(0, 4096)}
+  return publish ? {storage: "reference", content_ref: publish(json(input)), preview: [...encoded].slice(0, 4096).join("")}
     : {storage: "unavailable", reason: "not_retained"};
 }
 function status(input: unknown): HarnessPortableHistoryItem["status"] {

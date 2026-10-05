@@ -10,6 +10,36 @@ import {JsonRunnerStateStore} from "../state/index.js";
 
 const observation = (phase: string): HarnessAdapterEvent => ({event_type: "extension.example.observation", data: {summary: "Native observation", fields: {phase}}});
 
+test("a reentrant observer has bounded publication admission and cannot block later observations", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-session-reentry-"));
+  let emit!: (event: HarnessAdapterEvent) => void;
+  const adapter: HarnessAdapter = {driverKind: "example", sessionEvents: true,
+    async probe() {return {driver_kind: "example", installed: true, available: true, models: []};}, async validateStart() {},
+    async startSession(input) {emit = input.emitSessionEvent!; return {adapter_session_id: "native"};},
+    async sendTurn() {return [];}, async cancelTurn() {return [];}, async stopSession() {return [];} };
+  const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
+    provider_instances: [{id: "provider", driver_kind: "example"}]});
+  const manager = new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(join(cwd, "state.json")), adapterRegistry: new HarnessAdapterRegistry([adapter])});
+  try {
+    await manager.startSession({session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example",
+      model_selection: {model: "example"}, sandbox_mode: "read_only", approval_policy: "ask", continue_session: false, mcp_servers: []});
+    const events: HcpHarnessEventPayload[] = [];
+    const errors: unknown[] = [];
+    manager.subscribeEvents(event => events.push(event));
+    let count = 0;
+    manager.subscribeEvents(() => emit(observation(String(++count))), error => errors.push(error));
+    emit(observation("seed"));
+    assert.equal(events.length, 128);
+    assert.equal(errors.length, 1);
+    assert.match(String(errors[0]), /backpressure|publication/i);
+    assert.ok(events.every((event, index) => index === 0 || event.sequence === events[index - 1]!.sequence + 1));
+    emit(observation("later"));
+    assert.equal(events.length, 129);
+    assert.equal((events.at(-1)!.data as {fields: {phase: string}}).fields.phase, "later");
+    await manager.stopSession("session", "done");
+  } finally {await rm(cwd, {recursive: true, force: true});}
+});
+
 test("session observations survive root completion, remain ordered under reentry and reject a closed owner", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-session-events-"));
   let emit!: (event: HarnessAdapterEvent) => void;

@@ -170,6 +170,7 @@ export class HarnessSessionManager {
   readonly #eventListeners = new Map<(event: HcpHarnessEventPayload) => void, ((error: unknown) => void) | undefined>();
   readonly #publicationQueue: HcpHarnessEventPayload[] = [];
   #publishing = false;
+  #publicationAdmissions = 0;
   readonly #mcpReviews = new Map<string, HarnessMcpReview>();
   readonly #mcpResumes = new Set<string>();
   #restoredMcpReviews = false;
@@ -1320,7 +1321,7 @@ export class HarnessSessionManager {
     data: Record<string, unknown>,
     nativeWorkState?: NativeWorkState,
   ): HcpHarnessEventPayload {
-    if (this.#publishing && this.#publicationQueue.length >= 128)
+    if (this.#publishing && this.#publicationAdmissions >= 128)
       throw new HarnessSessionError("event_publication_backpressure", "Reentrant event observations exceeded their bounded publication queue.");
     if (eventType === "native.work.updated" && !nativeWorkState) {
       const session = this.#sessions.get(sessionId);
@@ -1373,6 +1374,7 @@ export class HarnessSessionManager {
       this.#stateStore.appendEvent(payload);
     }
     this.#publicationQueue.push(payload);
+    this.#publicationAdmissions++;
     if (!this.#publishing) {
       this.#publishing = true;
       try {
@@ -1385,7 +1387,7 @@ export class HarnessSessionManager {
             }
           }
         }
-      } finally {this.#publishing = false;}
+      } finally {this.#publishing = false; this.#publicationAdmissions = 0;}
     }
     return payload;
   }

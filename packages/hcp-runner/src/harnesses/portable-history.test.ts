@@ -68,3 +68,12 @@ test("unretained large fields report partial fidelity explicitly", () => {
   const item = history.turns[0]!.portable_items![0]!;
   assert.equal(item.type === "message" && item.body.storage, "unavailable");
 });
+
+test("retained value previews preserve Unicode character boundaries", () => {
+  const store = new BoundedHarnessContentStore();
+  const publish = (value: unknown) => store.publish({session_id: "session", provider_instance_id: "provider", provider_binding_hash: "hash", workspace_id: "workspace", cwd: "/workspace"}, value);
+  const item = portableHistoryItem({id: "answer", type: "agentMessage", text: "🙂".repeat(20_000)}, "codex", "fallback", publish)[0]!;
+  assert.ok(item.type === "message" && item.body.storage === "reference");
+  const preview = item.body.preview!;
+  assert.equal(Buffer.from(preview, "utf8").toString("utf8"), preview);
+});

@@ -70,6 +70,10 @@ Codex implements these hooks with its existing native history and fenced rollbac
 
 Full interactive parity also requires native ownership and interaction contracts; conversation controls do not imply those capabilities. Existing adapters need not implement optional hooks to remain usable for their supported session operations.
 
+Committed event subscriptions preserve FIFO order, including reentrant publication. A synchronous publication flush admits at most 128 events; an observer that exceeds this limit is detached through its error handler. Later publications remain usable. Counting the whole flush, rather than only the pending queue, prevents a one-event-at-a-time observer from monopolizing the runner indefinitely.
+
+Native approvals and questions expire after at most five minutes. A matching combined startup turn also respects its original `not_after` deadline. Follow-up turns have their own interaction lifetime and do not inherit the earlier startup deadline.
+
 ### Native work ownership
 
 Optional `native_work` is independent of root-turn completion. An adapter declares `nativeWork: true` and emits `native.work.updated` observations for tasks, agents or commands with a session-owned ID, immutable native reference, admitted origin turn and optional owned parent. The runner adds revisions and retains the authoritative inventory independently of bounded event replay. Background work also requires `sessionEvents: true`; cancellable work requires `cancelNativeWork`. A display extension alone never establishes ownership.

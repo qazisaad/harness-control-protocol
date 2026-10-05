@@ -8,16 +8,16 @@ const start: HcpSessionStartPayload = {session_id: "session", workspace_id: "wor
   driver_kind: "codex", cwd: "/tmp", model_selection: {model: "model"}, sandbox_mode: "workspace_write",
   approval_policy: "ask", continue_session: false, mcp_servers: []};
 const binding = {threadId: "native-thread", turnId: "native-turn", itemId: "item"};
-function fixture() {
+function fixture(payload = start, turnId = "turn") {
   const events: HarnessAdapterEvent[] = [];
   let published!: () => void;
   const ready = new Promise<void>(resolve => {published = resolve;});
-  const owner = new NativeInteractions(start, {session_id: "session", turn_id: "turn", input: "hi"},
+  const owner = new NativeInteractions(payload, {session_id: "session", turn_id: turnId, input: "hi"},
     {threadId: binding.threadId, turnId: () => binding.turnId}, event => {events.push(event); published();});
   const signal = new AbortController();
-  const approval = (): HcpApprovalResponsePayload => ({session_id: "session", turn_id: "turn", request_id: events[0]!.data.request_id as string,
+  const approval = (): HcpApprovalResponsePayload => ({session_id: "session", turn_id: turnId, request_id: events[0]!.data.request_id as string,
     actor_id: "actor", action_hash: events[0]!.data.action_hash as string, decision: "accept"});
-  const input = (value: unknown): HcpInputResponsePayload => ({session_id: "session", turn_id: "turn",
+  const input = (value: unknown): HcpInputResponsePayload => ({session_id: "session", turn_id: turnId,
     request_id: events[0]!.data.request_id as string, actor_id: "actor", value});
   return {owner, events, signal, ready, approval, input};
 }
@@ -40,6 +40,30 @@ for (const requestType of ["command", "file_change"] as const) {
     } finally {f.owner.close();}
   });
 }
+
+for (const kind of ["approval", "question"] as const) test(`follow-up ${kind} does not inherit an earlier first-turn deadline`, async () => {
+  const f = fixture({...start, first_turn: {turn_id: "initial", input: "first", not_after: "1970-01-01T00:00:00.000Z"}}, "follow-up");
+  try {
+    const pending = kind === "approval" ? f.owner.approval(binding, "command", f.signal.signal)
+      : f.owner.questions({...binding, questions: [{id: "q", header: "Choice", question: "Pick", options: [{label: "A", description: "First"}]}]}, f.signal.signal);
+    await f.ready;
+    assert.ok(Date.parse(f.events[0]!.data.expires_at as string) > Date.now());
+    if (kind === "approval") f.owner.respondApproval(f.approval());
+    else f.owner.respondInput(f.input({answers: {q: {answers: ["A"]}}}));
+    await pending;
+  } finally {f.owner.close();}
+});
+
+test("the original turn still honors its own deadline, including the Unix epoch", async () => {
+  const f = fixture({...start, first_turn: {turn_id: "turn", input: "first", not_after: "1970-01-01T00:00:00.000Z"}});
+  try {
+    const pending = f.owner.approval(binding, "command", f.signal.signal);
+    await f.ready;
+    assert.equal(Date.parse(f.events[0]!.data.expires_at as string), 0);
+    assert.throws(() => f.owner.respondApproval(f.approval()), /stale, invalid/);
+    await assert.rejects(pending, /expired/);
+  } finally {f.owner.close();}
+});
 
 test("native decisions cannot expand the provider's offered choices", async () => {
   const f = fixture();

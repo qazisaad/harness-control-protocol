@@ -43,6 +43,12 @@ export class NativeInteractions {
     return result;
   }
 
+  #expires(): number {
+    const first = this.start.first_turn;
+    const deadline = first?.turn_id === this.turn.turn_id ? Date.parse(first.not_after) : Infinity;
+    return Math.min(Date.now() + 5 * 60_000, Number.isFinite(deadline) ? deadline : Infinity);
+  }
+
   #wait<T>(signal: AbortSignal, pending: Omit<Approval, "settle" | "reject"> | Omit<Question, "settle" | "reject">,
     publish: () => void): Promise<T> {
     signal.throwIfAborted();
@@ -74,7 +80,7 @@ export class NativeInteractions {
           && (requestType !== "file_change" || this.start.sandbox_mode === "workspace_write"));
       const allowed = (["accept", "decline", "cancel"] as const).filter(decision => (!advertised || advertised.includes(decision)) && (decision !== "accept" || permitsAccept));
       if (!allowed.length) throw new HarnessAdapterError("native_decisions_unsupported", "Native provider offered no supported decision.");
-      const expires = Math.min(Date.now() + 5 * 60_000, Date.parse(this.start.first_turn?.not_after ?? "") || Infinity);
+      const expires = this.#expires();
       const decision = await this.#wait<HcpApprovalResponsePayload["decision"]>(signal,
         {kind: "approval", id, actionHash, expires, allowed}, () => this.emit({event_type: "approval.requested", turn_id: this.turn.turn_id,
           data: {request_id: id, session_id: this.start.session_id, turn_id: this.turn.turn_id, workspace_id: this.start.workspace_id,
@@ -102,7 +108,7 @@ export class NativeInteractions {
       }));
       const schema = z.object({answers: z.object(fields).strict()}).strict();
       const id = `native-${randomUUID()}`;
-      const expires = Math.min(Date.now() + 5 * 60_000, Date.parse(this.start.first_turn?.not_after ?? "") || Infinity);
+      const expires = this.#expires();
       return this.#wait(signal, {kind: "input", id, expires, schema}, () => this.emit({event_type: "user_input.requested", turn_id: this.turn.turn_id,
         data: {request_id: id, session_id: this.start.session_id, turn_id: this.turn.turn_id,
           prompt: questions.map(question => question.question).join("\n\n"), input_kind: "form", required: true,
