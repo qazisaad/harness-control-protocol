@@ -46,6 +46,8 @@ Use `configuration_inheritance` in a start payload to require which native sourc
 
 Optional start `instructions` accepts bounded `system` and `developer` strings, gated by `instruction_roles`. System instructions replace the native base prompt; developer instructions use the provider's native developer role. Omission preserves native defaults. A provider never flattens an unsupported role into user input. Instructions form part of the continuation binding, so resume must use the same values. Supply app-specific instructions here instead of adding product prompts to HCP adapters.
 
+`session_events` advertises an adapter's between-turn observation channel. These observations share the normal durable event sequence and replay; root-turn completion does not end their subscription. It does not by itself advertise child-agent ownership, pending work or control operations. Adapters receive a session-bound `emitSessionEvent` and content publisher at startup. That channel allows diagnostics and optional display extensions, and rejects root-turn completion or interaction requests. Local runner consumers can observe committed events with `HarnessSessionManager.subscribeEvents`; a failing listener is detached and can reconcile through replay. The WebSocket runner subscribes automatically.
+
 ```ts
 const read = await host.readConversation("session-1", {limit: 50});
 const fork = await host.forkConversation("session-1", {

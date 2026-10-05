@@ -53,6 +53,9 @@ try {
   assert.deepEqual(events.find(event => event.event_type === "session.configured").data.configuration_inheritance, start.configuration_inheritance);
   const steered = await peer.steerTurn("session", "turn", "steered"); assert.equal(steered.payload.turn_id, "turn");
   await until(() => events.some(event => event.turn_id === "turn" && event.event_type === "turn.completed"));
+  adapter.emitObservation("session", "between-turns");
+  await until(() => events.some(event => event.event_type === "extension.example.observation" && event.data.fields.phase === "between-turns"));
+  assert.equal(events.filter(event => event.turn_id === "turn" && event.event_type === "turn.completed").length, 1);
   const reference = events.find(event => event.event_type === "turn.completed").data.final_output.content_ref;
   const chunks = []; let offset = 0;
   while (true) {
@@ -76,7 +79,7 @@ try {
   await peer.sendTurn({session_id: "child", turn_id: "child-turn", input: "followup"});
   await until(() => events.some(event => event.turn_id === "child-turn" && event.event_type === "turn.completed"));
   await peer.stopSession({session_id: "child"}); await peer.retireConversation("child");
-  console.log("Public SDK controls, native adapter hooks, content chunks, mutation receipts and fork resume passed");
+  console.log("Public SDK controls, session observations, native adapter hooks, content chunks, mutation receipts and fork resume passed");
 } finally {
   await runner?.close(); for (const socket of server.clients) socket.terminate();
   await new Promise(resolve => server.close(resolve)); await rm(cwd, {recursive: true, force: true});

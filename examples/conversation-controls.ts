@@ -9,6 +9,8 @@ const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(t
 /** A deterministic provider for public-package conformance; no native CLI or consumer-specific IDs. */
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "example.controls";
+  readonly sessionEvents = true;
+  readonly observations = new Map<string, NonNullable<HarnessAdapterStartInput["emitSessionEvent"]>>();
   readonly instructionRoles = ["system"] as const;
   instructionsSeen: HarnessInstructions | undefined;
   readonly configurationInheritance = {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false};
@@ -20,6 +22,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       status: "ready" as const, models: [{id: "fixture", label: "Fixture", capabilities: {option_descriptors: []}}],
       execution_capabilities: {streaming: true, multi_turn: true, session_continuation: true, native_history: true,
         instruction_roles: [...this.instructionRoles],
+        session_events: true,
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
         manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
         approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
@@ -30,10 +33,15 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   }
   async startSession(input: HarnessAdapterStartInput) {
     this.instructionsSeen = input.payload.instructions;
+    this.observations.set(input.payload.session_id, input.emitSessionEvent!);
+    this.emitObservation(input.payload.session_id, "startup");
     const nativeId = input.nativeConversation?.native_thread_id ?? randomUUID();
     if (!input.nativeConversation) this.histories.set(nativeId, []);
     if (!this.histories.has(nativeId)) throw new HarnessAdapterError("history_unavailable", "Fixture history is unavailable.");
     return {adapter_session_id: nativeId, native_thread_id: nativeId};
+  }
+  emitObservation(sessionId: string, phase: string) {
+    this.observations.get(sessionId)!({event_type: "extension.example.observation", data: {summary: "Native observation", fields: {phase}}});
   }
   async sendTurn(input: HarnessAdapterTurnInput): Promise<HarnessAdapterEvent[]> {
     const nativeId = input.session.native_thread_id!;
@@ -79,5 +87,5 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       history: {history_hash: revision(current), turn_count: current.length, turns: current, truncated: false}};
   }
   async cancelTurn(): Promise<HarnessAdapterEvent[]> {return [];}
-  async stopSession(): Promise<HarnessAdapterEvent[]> {return [];}
+  async stopSession(input: Parameters<HarnessAdapter["stopSession"]>[0]): Promise<HarnessAdapterEvent[]> {this.observations.delete(input.sessionId); return [];}
 }

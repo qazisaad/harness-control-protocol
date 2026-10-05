@@ -243,6 +243,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  session_events?: boolean;
   instruction_roles?: Array<"system" | "developer">;
   configuration_inheritance?: HarnessConfigurationInheritance;
   streaming: boolean;
@@ -1084,6 +1085,7 @@ export const harnessModelSchema = z
 export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
+      session_events: z.boolean().optional(),
       instruction_roles: z.array(z.enum(["system", "developer"])).optional(),
       configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
       streaming: z.boolean(),

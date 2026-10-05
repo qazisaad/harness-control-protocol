@@ -55,6 +55,9 @@ export type HarnessAdapterMcpServer = {
 };
 
 export type HarnessAdapterStartInput = {
+  /** Session-owned observations may continue between turns; this is not an alternate root-turn control channel. */
+  emitSessionEvent?: (event: HarnessAdapterEvent) => void;
+  publishContent?: (value: unknown) => HarnessContentReference;
   payload: HcpSessionStartPayload;
   provider: ProviderInstanceConfig;
   nativeConversation?: NativeConversation;
@@ -119,6 +122,7 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  readonly sessionEvents?: true;
   readonly instructionRoles?: readonly ("system" | "developer")[];
   readonly configurationInheritance?: import("@harness-control/protocol").HarnessConfigurationInheritance;
   readonly driverKind: string;

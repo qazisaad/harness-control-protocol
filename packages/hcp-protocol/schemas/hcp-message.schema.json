@@ -1686,6 +1686,9 @@
                   "execution_capabilities": {
                     "type": "object",
                     "properties": {
+                      "session_events": {
+                        "type": "boolean"
+                      },
                       "instruction_roles": {
                         "type": "array",
                         "items": {

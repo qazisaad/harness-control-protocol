@@ -122,6 +122,8 @@ export class RunnerConnection {
   readonly #commandRecords = new Map<string, CommandRecord>();
   readonly #localActionRecords = new Map<string, LocalActionRecord>();
   readonly #localActionMismatchRecords = new Map<string, SettledLocalActionRecord>();
+  readonly #lastSentEvent = new Map<string, number>();
+  #unsubscribeEvents: (() => void) | undefined;
 
   constructor(options: RunnerConnectionOptions) {
     this.#config = options.config;
@@ -144,6 +146,8 @@ export class RunnerConnection {
 
   async connect(): Promise<void> {
     this.#closing = false;
+    this.#unsubscribeEvents ??= this.#harnessSessions.subscribeEvents(event => {if (this.#accepted) this.#sendEventIfConnected(event);},
+      error => this.#onLog(error instanceof Error ? error.message : "Session event publication failed."));
     await this.#openSocket();
   }
 
@@ -156,6 +160,7 @@ export class RunnerConnection {
     });
     this.#socket = socket;
     this.#accepted = false;
+    this.#lastSentEvent.clear();
 
     socket.on("message", (data: WebSocket.RawData) => {
       if (this.#socket !== socket) return;
@@ -195,6 +200,7 @@ export class RunnerConnection {
   async close(): Promise<void> {
     this.#closing = true;
     this.#accepted = false;
+    this.#unsubscribeEvents?.(); this.#unsubscribeEvents = undefined;
     await this.#accountUsage.close();
     this.#stopHeartbeat();
     this.#stopReconnect();
@@ -373,7 +379,7 @@ export class RunnerConnection {
       this.#send(createHcpEnvelope("host.replay.unavailable", unavailable));
     }
     for (const event of replay.events) {
-      this.#send(createHcpEnvelope("harness.event", event));
+      this.#sendEventIfConnected(event);
     }
   }
 
@@ -459,7 +465,7 @@ export class RunnerConnection {
       }
       if (result.conversationPayload) this.#send(createHcpEnvelope("harness.conversation.result", result.conversationPayload));
       for (const event of result.events) {
-        this.#send(createHcpEnvelope("harness.event", event));
+        this.#sendEventIfConnected(event);
       }
     } catch (error: unknown) {
       const nackPayload: HcpNackPayload = createNackPayload(commandId, toHcpError(error));
@@ -586,7 +592,7 @@ export class RunnerConnection {
             };
       this.#localActionMismatchRecords.set(mismatchKey, mismatchRecord);
       for (const event of mismatchOutcome.events) {
-        this.#send(createHcpEnvelope("harness.event", event));
+        this.#sendEventIfConnected(event);
       }
       this.#sendLocalActionRecord(mismatchRecord);
       return;
@@ -638,7 +644,7 @@ export class RunnerConnection {
     this.#stateStore.setLocalActionReceipt(requestId, persistedRecord);
     settleLocalAction!(record);
     for (const event of outcome.events) {
-      this.#send(createHcpEnvelope("harness.event", event));
+      this.#sendEventIfConnected(event);
     }
     this.#sendLocalActionRecord(record);
   }
@@ -712,7 +718,9 @@ export class RunnerConnection {
     if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
       return;
     }
+    if (event.sequence <= (this.#lastSentEvent.get(event.session_id) ?? 0)) return;
     this.#socket.send(JSON.stringify(createHcpEnvelope("harness.event", event)));
+    this.#lastSentEvent.set(event.session_id, event.sequence);
   }
 
   #sendNack(commandId: string, error: HcpError): void {

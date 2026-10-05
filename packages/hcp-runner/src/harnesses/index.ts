@@ -1,5 +1,5 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
-import { hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
+import { hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import { HarnessMcpReview } from "./mcp-review.js";
 import {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
 export {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
@@ -161,6 +161,9 @@ export class HarnessSessionManager {
   readonly #contentStore: HarnessContentStore;
   readonly #adapterRegistry: HarnessAdapterRegistry;
   readonly #sessions = new Map<string, HarnessSession>();
+  readonly #eventListeners = new Map<(event: HcpHarnessEventPayload) => void, ((error: unknown) => void) | undefined>();
+  readonly #publicationQueue: HcpHarnessEventPayload[] = [];
+  #publishing = false;
   readonly #mcpReviews = new Map<string, HarnessMcpReview>();
   readonly #mcpResumes = new Set<string>();
   #restoredMcpReviews = false;
@@ -204,6 +207,12 @@ export class HarnessSessionManager {
 
   activeSessionCount(): number {
     return this.#sessions.size;
+  }
+
+  /** Observes newly committed events in sequence order. Replay and durable consumption remain explicit. */
+  subscribeEvents(listener: (event: HcpHarnessEventPayload) => void, onError?: (error: unknown) => void): () => void {
+    this.#eventListeners.set(listener, onError);
+    return () => {this.#eventListeners.delete(listener);};
   }
 
   providerDriverStatuses(): Promise<ProviderDriverStatus[]> {
@@ -474,7 +483,7 @@ export class HarnessSessionManager {
       throw new HarnessSessionError("session_exists", `Session '${payload.session_id}' already exists.`);
     }
 
-    let prepared: {session: HarnessSession; discoveredTools: HarnessMcpToolDiscovery[]};
+    let prepared: {session: HarnessSession; discoveredTools: HarnessMcpToolDiscovery[]; activateEvents: () => HcpHarnessEventPayload[]};
     try {
       prepared = await this.#prepareSession(payload);
     } catch (error: unknown) {
@@ -512,6 +521,7 @@ export class HarnessSessionManager {
         local_capabilities: localCapabilityLease?.capabilities.map((capability) => capability.id) ?? [],
       }),
     ];
+    events.push(...prepared.activateEvents());
 
     if (localCapabilityLease) {
       events.push(
@@ -559,7 +569,7 @@ export class HarnessSessionManager {
     return events;
   }
 
-  async #prepareSession(payload: HcpSessionStartPayload): Promise<{session: HarnessSession; discoveredTools: HarnessMcpToolDiscovery[]}> {
+  async #prepareSession(payload: HcpSessionStartPayload): Promise<{session: HarnessSession; discoveredTools: HarnessMcpToolDiscovery[]; activateEvents: () => HcpHarnessEventPayload[]}> {
     const provider: ProviderInstanceConfig = this.#requireProvider(payload.provider_instance_id, payload.driver_kind);
     await this.#assertWorkspaceAllowed(payload.workspace_id, payload.cwd);
     payload = {...payload, cwd: await realpath(payload.cwd)};
@@ -575,6 +585,29 @@ export class HarnessSessionManager {
       throw new HarnessAdapterError("native_conversation_busy", "This native conversation already has an active session.");
     const mcpAttachments: HarnessMcpAttachmentResult = await this.#attachMcpServers(payload, provider);
     const adapterStartPayload: HcpSessionStartPayload = payload;
+    const eventProviderHash = nativeProviderHash(provider);
+    const bufferedEvents: HarnessAdapterEvent[] = [];
+    let eventsActive = false;
+    let eventsClosed = false;
+    let eventOwner: HarnessSession | undefined;
+    const emitSessionEvent = (event: HarnessAdapterEvent): void => {
+      if (eventsClosed || (eventsActive && this.#sessions.get(payload.session_id) !== eventOwner))
+        throw new HarnessAdapterError("native_session_event_closed", "The native event owner is no longer active.");
+      if (nativeProviderHash(this.#requireProvider(provider.id)) !== eventProviderHash)
+        throw new HarnessAdapterError("native_session_event_binding", "Native observations belong to the original provider configuration.");
+      if (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice"].includes(event.event_type)
+          && !event.event_type.startsWith("provider.") && !event.event_type.startsWith("extension."))
+        throw new HarnessAdapterError("native_session_event_unsupported", "Session observations cannot publish root turns or interaction requests.");
+      const validated = hcpHarnessEventPayloadSchema.parse({session_id: payload.session_id, sequence: 1,
+        event_type: event.event_type, created_at: new Date().toISOString(), data: event.data});
+      if (Buffer.byteLength(JSON.stringify(validated.data)) > 64 * 1024)
+        throw new HarnessAdapterError("native_session_event_limit", "Session observations require bounded data or a retained-content reference.");
+      event = {event_type: validated.event_type, data: structuredClone(event.data)};
+      if (!eventsActive) {
+        if (bufferedEvents.length >= 128) throw new HarnessAdapterError("native_session_event_limit", "Native startup observations exceeded their bounded buffer.");
+        bufferedEvents.push(structuredClone(event));
+      } else this.#event(payload.session_id, undefined, event.event_type, event.data);
+    };
 
     let adapterSession: HarnessAdapterSession;
     try {
@@ -596,6 +629,9 @@ export class HarnessSessionManager {
         payload: adapterStartPayload,
         provider,
         mcpServers: mcpAttachments.adapterAttachments,
+        ...(adapter.sessionEvents ? {emitSessionEvent} : {}),
+        publishContent: value => this.#contentStore.publish({session_id: payload.session_id, provider_instance_id: provider.id,
+          provider_binding_hash: eventProviderHash, workspace_id: payload.workspace_id, cwd: payload.cwd}, value),
         ...(retainedConversation ? {nativeConversation: structuredClone(retainedConversation)} : {}),
       });
       if (retainedConversation) {
@@ -605,6 +641,7 @@ export class HarnessSessionManager {
         if (retainedConversation.fresh) adapterSession.native_fresh = true;
       }
     } catch (error: unknown) {
+      eventsClosed = true;
       await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpAttachments.clients, "adapter_start_failed", error);
       throw new SessionStartCleanedError(error, "adapter_start_failed");
     }
@@ -625,7 +662,13 @@ export class HarnessSessionManager {
       mcpToolsets: mcpAttachments.toolsets,
       ...(payload.continuation_group_key ? {nativeBindingHash: nativeBindingHash(payload, provider, mcpAttachments.toolsets)} : {}),
     };
-    return {session, discoveredTools: mcpAttachments.discoveredTools};
+    return {session, discoveredTools: mcpAttachments.discoveredTools, activateEvents: () => {
+      eventOwner = session;
+      eventsActive = true;
+      const events = bufferedEvents.map(event => this.#event(payload.session_id, undefined, event.event_type, event.data));
+      bufferedEvents.length = 0;
+      return events;
+    }};
   }
 
   sendTurn(
@@ -692,7 +735,7 @@ export class HarnessSessionManager {
     if (this.#mcpResumes.has(sessionId)) throw new HarnessAdapterError("mcp_resume_pending", "The MCP operation is already resuming.");
     this.#mcpResumes.add(sessionId);
     try {
-      const {session} = await this.#prepareSession(retained.start);
+      const {session, activateEvents} = await this.#prepareSession(retained.start);
       let decided: PersistedMcpReview;
       try {decided = decide();} catch (error: unknown) {
         await cleanupAdapterSessionStartFailure(session.adapter, sessionId, session.mcpClients, "mcp_resume_failed", error);
@@ -701,6 +744,7 @@ export class HarnessSessionManager {
       this.#sessions.set(session.sessionId, session);
       this.#turnIdsBySession.set(session.sessionId, new Set([retained.turn.turn_id]));
       this.#mcpReviews.set(session.sessionId, owner);
+      for (const event of activateEvents()) onEvent(event);
       return {kind: "resumed", completion: this.#continueMcpReview(session, retained, decided, owner, onEvent)};
     } catch (error: unknown) {
       throw error instanceof SessionStartCleanedError ? error.originalError : error;
@@ -1175,13 +1219,15 @@ export class HarnessSessionManager {
     eventType: HcpHarnessEventPayload["event_type"],
     data: Record<string, unknown>,
   ): HcpHarnessEventPayload {
+    if (this.#publishing && this.#publicationQueue.length >= 128)
+      throw new HarnessSessionError("event_publication_backpressure", "Reentrant event observations exceeded their bounded publication queue.");
     const sequence: number = this.#stateStore.nextEventSequence(sessionId);
     const payload: HcpHarnessEventPayload = {
       session_id: sessionId,
       sequence,
       event_type: eventType,
       created_at: new Date().toISOString(),
-      data,
+      data: structuredClone(data),
     };
     if (turnId) {
       payload.turn_id = turnId;
@@ -1194,6 +1240,21 @@ export class HarnessSessionManager {
       this.#mcpReviews.delete(sessionId);
     } else {
       this.#stateStore.appendEvent(payload);
+    }
+    this.#publicationQueue.push(payload);
+    if (!this.#publishing) {
+      this.#publishing = true;
+      try {
+        while (this.#publicationQueue.length) {
+          const next = this.#publicationQueue.shift()!;
+          for (const [listener, onError] of [...this.#eventListeners]) {
+            try {listener(structuredClone(next));} catch (error) {
+              this.#eventListeners.delete(listener);
+              try {onError?.(error);} catch { /* Subscriber failure cannot undo a committed native observation. */ }
+            }
+          }
+        }
+      } finally {this.#publishing = false;}
     }
     return payload;
   }
