@@ -233,6 +233,7 @@ function fakeQuery(
   return ({ options }) => {
     inspect(options!);
     const stream = (async function* () {
+      yield {type: "system", subtype: "init", session_id: options!.resume ?? options!.sessionId} as SDKMessage;
       for (const message of messages) yield message as SDKMessage;
     })();
     return Object.assign(stream, { close() {} }) as Query;
@@ -269,7 +270,7 @@ for (const [label, result] of Object.entries({
         assert.deepEqual(options.settingSources, []);
         assert.equal(options.includePartialMessages, true);
         assert.equal(options.effort, "high");
-        assert.equal(options.persistSession, false);
+        assert.equal(options.persistSession, true);
       }),
     });
     const payload = start("claude", tmpdir());
@@ -306,7 +307,6 @@ for (const driver of ["codex", "claude"]) {
         : new ClaudeHarnessAdapter();
     for (const changes of [
       { continue_session: true },
-      ...(driver === "claude" ? [{ approval_policy: "ask" as const }] : []),
       {
         model_selection: {
           model: "test",
@@ -464,36 +464,35 @@ it("native probes advertise the same execution policies enforced at session star
     ];
     const status = await adapter.probe(selected);
     assert.equal(status.available, true);
-    assert.deepEqual(status.execution_capabilities?.approval_policies,
-      driver === "codex" ? ["ask", "auto_edits", "full_access"] : ["full_access"]);
+    assert.deepEqual(status.execution_capabilities?.approval_policies, ["ask", "auto_edits", "full_access"]);
     assert.deepEqual(
       status.execution_capabilities?.sandbox_modes,
       driver === "codex"
         ? ["read_only", "workspace_write", "danger_full_access"]
         : ["danger_full_access"],
     );
-    assert.equal(status.execution_capabilities?.session_continuation, driver === "codex");
+    assert.equal(status.execution_capabilities?.session_continuation, true);
   }
 });
 
-it("a second turn cannot silently start a fresh Claude conversation", async () => {
+it("a second Claude turn resumes the confirmed native conversation", async () => {
   let calls = 0;
+  const selections: Options[] = [];
   const adapter = new ClaudeHarnessAdapter({
-    queryFactory: fakeQuery([success], () => {
+    queryFactory: fakeQuery([success], options => {
+      selections.push(options);
       calls++;
     }),
   });
   const input = turn(start("claude", tmpdir()), provider("claude"));
   await adapter.sendTurn(input);
-  await assert.rejects(
-    adapter.sendTurn({
+  const second = await adapter.sendTurn({
       ...input,
       payload: { ...input.payload, turn_id: "second" },
-    }),
-    (error: unknown) =>
-      error instanceof HarnessAdapterError &&
-      error.code === "session_turn_limit",
-  );
-  assert.equal(calls, 1);
+    });
+  assert.equal(second.at(-1)?.event_type, "turn.completed");
+  assert.equal(calls, 2);
+  assert.equal(selections[1]?.resume, selections[0]?.sessionId);
+  assert.equal(selections[1]?.sessionId, undefined);
   await adapter.stopSession({ sessionId: "session" });
 });

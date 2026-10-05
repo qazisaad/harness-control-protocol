@@ -19,6 +19,34 @@ function ack(id: string): HcpMessage {
 }
 const stop = () => createCommand({ type: "harness.session.stop", payload: { session_id: "session-1", reason: "done" } });
 
+test("steering results must name the requested active turn", async () => {
+  const {peer, sent} = connected();
+  const waiting = peer.steerTurn("session", "turn", "new input");
+  const command = sent.at(-1)!;
+  let settled = false;
+  void waiting.then(() => {settled = true;});
+  const receipt = {command_id: command.id, session_id: "session", operation: "steer" as const, filesystem_undo: false as const};
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, turn_id: "another-turn"}));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, turn_id: "turn"}));
+  assert.equal((await waiting).payload.turn_id, "turn");
+});
+
+test("content results must name the requested object and byte offset", async () => {
+  const {peer, sent} = connected();
+  const contentId = "a".repeat(64);
+  const waiting = peer.readContent("session", contentId, 5, 10);
+  const command = sent.at(-1)!;
+  let settled = false;
+  void waiting.then(() => {settled = true;});
+  const receipt = {command_id: command.id, session_id: "session", operation: "content" as const, filesystem_undo: false as const,
+    content: {reference: {content_id: contentId, sha256: "b".repeat(64), byte_length: 6, format: "text" as const, expires_at: new Date(Date.now() + 60_000).toISOString()}, offset: 5, data_base64: "eA=="}};
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, content: {...receipt.content, offset: 0}}));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(createHcpEnvelope("harness.conversation.result", receipt));
+  assert.equal((await waiting).payload.content?.offset, 5);
+});
+
 test("public command boundary rejects wrong direction and mismatched payload", () => {
   assert.throws(() => parseCommand(fixture("host-hello")), /app-to-runner/);
   assert.throws(() => parseCommand({ ...stop(), payload: { prompt: "bad" } }));

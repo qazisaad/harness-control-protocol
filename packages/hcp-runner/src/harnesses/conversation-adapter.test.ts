@@ -91,6 +91,7 @@ for (const field of ["command_id", "session_id", "operation"] as const) test(`co
   try {
     await f.first.stopSession("session", "idle");
     f.setOperation(async input => ({command_id: input.commandId, session_id: input.request.session_id, operation: "read",
+      history: {history_hash: "a".repeat(64), turn_count: 0, truncated: false, turns: []},
       filesystem_undo: false, [field]: field === "operation" ? "rollback" : "another"}));
     await assert.rejects(f.first.conversationOperation("read", {session_id: "session", operation: {kind: "read"}}),
       (error: unknown) => error instanceof HarnessAdapterError && error.code === "native_history_binding");
@@ -112,5 +113,66 @@ test("an adapter may persist mutation evidence but cannot change conversation sc
     assert.equal(f.state.getNativeConversation("conversation")?.rollback?.phase, "pending");
     f.config.provider_instances[0]!.env = {ANOTHER_ACCOUNT: "true"};
     await assert.rejects(f.manager().conversationOperation("read", {session_id: "session", operation: {kind: "read"}}), /provider identity changed/);
+  } finally {await f.cleanup();}
+});
+
+test("generic forks persist independent bindings and duplicate commands cannot create another native fork", async () => {
+  const f = await fixture();
+  try {
+    await f.first.stopSession("session", "idle");
+    Object.assign(f.adapter, {conversationOperations: ["read", "fork"]});
+    let mutations = 0;
+    f.setOperation(async input => {
+      if (input.request.operation.kind !== "fork") throw new Error("expected fork");
+      input.beginMutation!(); mutations++;
+      return {command_id: input.commandId, session_id: input.request.session_id, operation: "fork", filesystem_undo: false,
+        fork: {session_id: input.request.operation.target_session_id, continuation_group_key: input.request.operation.continuation_group_key, native_reference: "forked-native"}};
+    });
+    const request = {session_id: "session", operation: {kind: "fork" as const, target_session_id: "fork-session", continuation_group_key: "fork-key", expected_history_hash: "a".repeat(64)}};
+    const result = await f.first.conversationOperation("fork-command", request);
+    assert.deepEqual(await f.manager().conversationOperation("fork-command", request), result);
+    assert.equal(mutations, 1);
+    assert.equal(f.state.getNativeConversation("conversation")?.native_thread_id, "native-conversation");
+    assert.equal(f.state.getNativeConversation("fork-key")?.native_thread_id, "forked-native");
+    await assert.rejects(f.first.conversationOperation("another-command", request), /fresh session/);
+  } finally {await f.cleanup();}
+});
+
+test("fork preconditions leave no mutation fence, but lost native outcomes are never repeated", async () => {
+  const f = await fixture();
+  try {
+    await f.first.stopSession("session", "idle");
+    Object.assign(f.adapter, {conversationOperations: ["fork"]});
+    const request = {session_id: "session", operation: {kind: "fork" as const, target_session_id: "fork-session", continuation_group_key: "fork-key", expected_history_hash: "a".repeat(64)}};
+    f.setOperation(async () => {throw new Error("stale history before dispatch");});
+    await assert.rejects(f.first.conversationOperation("stale", request), /stale history/);
+    assert.equal(f.state.getNativeConversation("conversation")?.fork, undefined);
+    let mutations = 0;
+    f.setOperation(async input => {input.beginMutation!(); mutations++; throw new Error("transport lost after dispatch");});
+    await assert.rejects(f.first.conversationOperation("lost", request), /transport lost/);
+    await assert.rejects(f.manager().conversationOperation("lost", request), /automatic repetition/);
+    await assert.rejects(f.manager().conversationOperation("new", request), /automatic repetition/);
+    assert.equal(mutations, 1);
+  } finally {await f.cleanup();}
+});
+
+test("content references are authorized by their session, workspace and original provider", async () => {
+  const f = await fixture();
+  try {
+    let reference: import("@harness-control/protocol").HarnessContentReference | undefined;
+    f.adapter.sendTurn = async input => {
+      reference = input.publishContent!("🙂retained output".repeat(10_000));
+      return [{event_type: "turn.completed", turn_id: input.payload.turn_id, data: {final_output: {final_text: "preview", content_ref: reference}}}];
+    };
+    await f.first.sendTurn({session_id: "session", turn_id: "content-turn", input: "get output"});
+    await f.first.stopSession("session", "idle");
+    const content = await f.first.conversationOperation("read-content", {session_id: "session",
+      operation: {kind: "content", content_id: reference!.content_id, offset: 0, limit: 64 * 1024}});
+    assert.equal(Buffer.from(content.content!.data_base64, "base64").length, 64 * 1024);
+    await assert.rejects(f.first.conversationOperation("wrong", {session_id: "another",
+      operation: {kind: "content", content_id: reference!.content_id, offset: 0, limit: 1}}), /another session/);
+    f.config.provider_instances[0]!.env = {ANOTHER_ACCOUNT: "true"};
+    await assert.rejects(f.first.conversationOperation("changed", {session_id: "session",
+      operation: {kind: "content", content_id: reference!.content_id, offset: 0, limit: 1}}), /original provider/);
   } finally {await f.cleanup();}
 });

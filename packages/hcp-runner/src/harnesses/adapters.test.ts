@@ -123,13 +123,10 @@ describe("OpenCodeHarnessAdapter", () => {
     for (const [change, code] of [
       [{sandbox_mode: "read_only"}, "sandbox_unsupported"],
       [{sandbox_mode: "workspace_write"}, "sandbox_unsupported"],
-      [{approval_policy: "ask"}, "approval_policy_unsupported"],
-      [{approval_policy: "auto_edits"}, "approval_policy_unsupported"],
-      [{continue_session: true}, "continuation_unsupported"],
+      [{continue_session: true}, "continuation_key_required"],
       [{model_selection: {model: "default"}}, "unsupported_model"],
       [{model_selection: {model: "anthropic/claude-sonnet-4", options: [{id: "effort", value: "high"}]}}, "unsupported_model_option"],
-      [{first_turn: {turn_id: "turn", input: "hi", not_after: new Date().toISOString(), mode: "plan"}}, "plan_mode_unsupported"],
-      [{first_turn: {turn_id: "turn", input: "hi", not_after: new Date().toISOString(), images: [{}]}}, "image_input_unsupported"],
+      [{first_turn: {turn_id: "turn", input: "hi", not_after: new Date().toISOString(), images: [{}]}}, "image_input_invalid"],
     ] as const) {
       await assert.rejects(adapter.startSession({payload: {...base, ...change} as HcpSessionStartPayload, provider: openCodeProvider()}),
         (error: unknown) => error instanceof HarnessAdapterError && error.code === code);
@@ -144,7 +141,7 @@ describe("OpenCodeHarnessAdapter", () => {
     const adapter = new OpenCodeHarnessAdapter({runtimeFactory: async () => runtime});
     const start = openCodeStartPayload(process.cwd()), provider = openCodeProvider();
     const session = await adapter.startSession({payload: start, provider});
-    for (const change of [{mode: "plan"}, {images: [{}]}, {model_selection: {model: "anthropic/claude", options: [{id: "effort", value: "high"}]}}]) {
+    for (const change of [{images: [{}]}, {model_selection: {model: "anthropic/claude", options: [{id: "effort", value: "high"}]}}]) {
       await assert.rejects(adapter.sendTurn({session, provider, startPayload: start,
         payload: {session_id: start.session_id, turn_id: "turn", input: "hi", ...change} as import("@harness-control/protocol").HcpTurnSendPayload}),
         (error: unknown) => error instanceof HarnessAdapterError);
@@ -155,7 +152,7 @@ describe("OpenCodeHarnessAdapter", () => {
 
   it("marks unsupported OpenCode versions unavailable and checks again before launch", async () => {
     const fixturePath = fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url));
-    for (const version of ["opencode 2.0.0", "unknown"]) {
+    for (const version of ["opencode 2.0.0", "opencode 1.2.3", "unknown"]) {
       const provider = {...openCodeProvider(), executable_path: process.execPath, launch_args: [fixturePath],
         env: {HCP_TEST_OPENCODE_VERSION: version}};
       const adapter = new OpenCodeHarnessAdapter();
@@ -186,12 +183,12 @@ describe("OpenCodeHarnessAdapter", () => {
     try {
       const status = await adapter.probe(selectedProvider);
       assert.equal(status.available, true);
-      assert.equal(status.version, "opencode 1.2.3-test");
+      assert.equal(status.version, "opencode 1.3.15-test");
       assert.deepEqual(status.execution_capabilities?.sandbox_modes, ["danger_full_access"]);
-      assert.deepEqual(status.execution_capabilities?.approval_policies, ["full_access"]);
-      assert.equal(status.execution_capabilities?.session_continuation, false);
+      assert.deepEqual(status.execution_capabilities?.approval_policies, ["ask", "auto_edits", "full_access"]);
+      assert.equal(status.execution_capabilities?.session_continuation, true);
       assert.deepEqual(status.models[0]?.capabilities.option_descriptors, []);
-      assert.equal(status.models[0]?.capabilities.image_input, false);
+      assert.equal(status.models[0]?.capabilities.image_input, true);
       const session = await adapter.startSession({ payload: selectedStartPayload, provider: selectedProvider });
       started = true;
       const streamed: HarnessAdapterEvent[] = [];
@@ -206,10 +203,10 @@ describe("OpenCodeHarnessAdapter", () => {
       });
       assert.deepEqual(
         streamed.map((event: HarnessAdapterEvent): string => event.event_type),
-        ["reasoning.delta", "content.delta"],
+        ["reasoning.delta", "content.delta", "turn.completed"],
       );
-      assert.equal(terminal[0]?.event_type, "turn.completed");
-      assert.deepEqual(terminal[0]?.data.final_output, { final_text: "hello" });
+      assert.deepEqual(terminal, []);
+      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello" });
     } finally {
       if (started) await adapter.stopSession({ sessionId: "session-1" });
       await workspace.cleanup();
@@ -253,10 +250,10 @@ describe("OpenCodeHarnessAdapter", () => {
 
       assert.deepEqual(
         streamed.map((event: HarnessAdapterEvent): string => event.event_type),
-        ["reasoning.delta", "content.delta"],
+        ["reasoning.delta", "content.delta", "turn.completed"],
       );
-      assert.equal(terminal[0]?.event_type, "turn.completed");
-      assert.deepEqual(terminal[0]?.data.final_output, { final_text: "hello" });
+      assert.deepEqual(terminal, []);
+      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello" });
       assert.deepEqual(runtimeCalls, ["anthropic/claude-sonnet-4:Say hello."]);
       await adapter.stopSession({ sessionId: "session-1" });
       assert.deepEqual(runtimeCalls, ["anthropic/claude-sonnet-4:Say hello.", "close"]);
@@ -344,8 +341,10 @@ describe("OpenCodeHarnessAdapter", () => {
       });
       await started;
       const cancellation = await adapter.cancelTurn({ sessionId: "session-1", turnId: "turn-cancel" });
-      assert.deepEqual(await turnCompletion, []);
-      assert.equal(cancellation[0]?.event_type, "turn.cancelled");
+      const events = await turnCompletion;
+      assert.deepEqual(cancellation, []);
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.event_type, "turn.cancelled");
       await adapter.stopSession({ sessionId: "session-1" });
     } finally {
       await workspace.cleanup();

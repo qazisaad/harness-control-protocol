@@ -44,10 +44,10 @@ export type CodexHarnessAdapterOptions = {
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "codex";
   readonly durableMcpContinuation = true;
-  readonly conversationOperations = ["read", "rollback"] as const;
+  readonly conversationOperations = ["read", "rollback", "fork"] as const;
 
   conversationOperation(input: HarnessAdapterConversationInput) {
-    return nativeConversationOperation(input.commandId, input.request, input.conversation, input.provider, input.save);
+    return nativeConversationOperation(input.commandId, input.request, input.conversation, input.provider, input.save, input.beginMutation, input.publishContent);
   }
   readonly #processSpawner: CliProcessSpawner;
   readonly #probeTimeoutMs: number;
@@ -190,6 +190,8 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     input: HarnessAdapterStartInput,
   ): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
+    if (input.payload.continue_session && !input.nativeConversation)
+      throw new HarnessAdapterError("native_continuation_binding", "Codex resume requires the runner-authorized retained binding.");
     return { adapter_session_id: input.payload.session_id };
   }
   async sendTurn(

@@ -1,7 +1,9 @@
 import { hcpAccountsReadPayloadSchema, hcpAccountsSnapshotPayloadSchema, type HcpAccountsReadPayload, type HcpAccountsSnapshotPayload } from "./accounts.js";
 export * from "./accounts.js";
 import { hcpConversationRequestPayloadSchema, hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "./conversation.js";
+import {harnessContentReferenceSchema, type HarnessContentReference} from "./content.js";
 export * from "./conversation.js";
+export * from "./content.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -246,7 +248,12 @@ export type HarnessExecutionCapabilities = {
   session_continuation: boolean;
   plan_mode?: boolean;
   native_history?: boolean;
+  history_pagination?: boolean;
   conversation_rollback?: boolean;
+  conversation_fork?: boolean;
+  active_steering?: boolean;
+  manual_compaction?: boolean;
+  content_retrieval?: boolean;
   sandbox_modes: Array<"read_only" | "workspace_write" | "danger_full_access">;
   approval_policies: Array<"ask" | "auto_edits" | "full_access">;
 };
@@ -433,6 +440,7 @@ export type HcpTurnSendPayload = {
   session_id: string;
   turn_id: string;
   input: string;
+  action?: "prompt" | "compact";
   mode?: "execute" | "plan";
   images?: HcpImageInput[];
   model_selection?: HarnessModelSelection;
@@ -814,6 +822,7 @@ export type HarnessUsageSnapshot = {
 };
 
 export type HarnessTurnFinalOutput = {
+  content_ref?: HarnessContentReference;
   final_text?: string;
   structured_output?: unknown;
   diff_summary?: string;
@@ -1060,7 +1069,12 @@ export const harnessProviderSnapshotSchema = z
       session_continuation: z.boolean(),
       plan_mode: z.boolean().optional(),
       native_history: z.boolean().optional(),
+      history_pagination: z.boolean().optional(),
       conversation_rollback: z.boolean().optional(),
+      conversation_fork: z.boolean().optional(),
+      active_steering: z.boolean().optional(),
+      manual_compaction: z.boolean().optional(),
+      content_retrieval: z.boolean().optional(),
       sandbox_modes: z.array(z.enum(["read_only", "workspace_write", "danger_full_access"])),
       approval_policies: z.array(z.enum(["ask", "auto_edits", "full_access"])),
     }).strict().optional(),
@@ -1347,11 +1361,15 @@ export const hcpTurnSendPayloadSchema = z
     session_id: nonEmptyStringSchema,
     turn_id: nonEmptyStringSchema,
     input: z.string(),
+    action: z.enum(["prompt", "compact"]).optional(),
     mode: z.enum(["execute", "plan"]).optional(),
     images: harnessImagesSchema.optional(),
     model_selection: harnessModelSelectionSchema.optional(),
   })
-  .strict();
+  .strict().superRefine((value, ctx) => {
+    if (value.action === "compact" && (value.input !== "" || value.images?.length || value.mode === "plan"))
+      ctx.addIssue({code: "custom", message: "Compaction accepts no prompt, images or Plan mode."});
+  });
 
 export const hcpTurnCancelPayloadSchema = z
   .object({
@@ -2175,6 +2193,7 @@ export const harnessUsageSnapshotSchema = z
 export const harnessTurnFinalOutputSchema = z
   .object({
     final_text: z.string().optional(),
+    content_ref: harnessContentReferenceSchema.optional(),
     structured_output: z.unknown().optional(),
     diff_summary: z.string().optional(),
     changed_files: z
@@ -2277,6 +2296,7 @@ const turnLifecycleEventDataSchema = z
     plan: z.unknown().optional(),
     delta: z.string().optional(),
     diff_summary: z.string().optional(),
+    content_ref: harnessContentReferenceSchema.optional(),
     error: hcpErrorSchema.optional(),
   })
   .strict();

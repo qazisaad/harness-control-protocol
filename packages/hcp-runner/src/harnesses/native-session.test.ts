@@ -39,7 +39,18 @@ createInterface({input:process.stdin}).on('line', line => {
   send({id:request.id,result:{turn:{id:turnId}}});
   if(turnId==='question') send({id:'question',method:'item/tool/requestUserInput',params:{...binding(),questions:[{id:'scope',header:'Scope',question:'Choose scope',options:[{label:'Small',description:'One file'}]}]}});
   else if(turnId==='approval' || turnId==='interrupt') send({id:'approval',method:'item/commandExecution/requestApproval',params:{...binding(),command:'echo done',cwd:process.cwd(),availableDecisions:['accept','decline','cancel']}});
-  else complete('remembered context');
+  else if(turnId!=='steer') complete('remembered context');
+ }
+ if(request.method==='turn/steer') {
+  if(request.params.expectedTurnId!==turnId || request.params.threadId!=='thread') throw new Error('wrong steer binding');
+  send({id:request.id,result:{turnId}});
+  complete(request.params.input[0].text);
+ }
+ if(request.method==='thread/compact/start') {
+  turnId='compact';
+  notify('turn/started',{threadId:'thread',turn:{id:turnId}});
+  send({id:request.id,result:{}});
+  notify('turn/completed',{threadId:'thread',turn:{id:turnId,status:'completed',error:null}});
  }
 });
 `;
@@ -117,4 +128,32 @@ test("interruption during native approval settles once; changed policy cannot re
     await manager.startSession(next); await manager.sendFirstTurn(next,()=>{}); await manager.stopSession(next.session_id,"Completed");
     assert.equal((await f.requests()).filter(request => request.method === "thread/start").length,1);
   } finally {for(const id of ["first","second","third"]) {if(manager.activeSessionCount()) await manager.stopSession(id,"cleanup");} await f.cleanup();}
+});
+
+test("native steering targets the exact live turn and compaction preserves its conversation", {timeout:10_000}, async () => {
+  const f = await fixture(), manager = f.manager();
+  try {
+    const start = f.payload("first", "steer", false);
+    await manager.startSession(start);
+    const events: HcpHarnessEventPayload[] = [];
+    const running = manager.sendFirstTurn(start, event => events.push(event));
+    // The fixture's request log supplies native readiness without relying on a wall-clock delay.
+    for (let attempts = 0; attempts < 100; attempts++) {
+      if (await f.requests().then(requests => requests.some(request => request.method === "turn/start")).catch(() => false)) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    await assert.rejects(manager.conversationOperation("wrong", {session_id: "first", operation: {kind: "steer", turn_id: "another", input: "wrong"}}), /exact active turn/);
+    const result = await manager.conversationOperation("steer-command", {session_id: "first", operation: {kind: "steer", turn_id: start.first_turn!.turn_id, input: "new direction"}});
+    assert.equal(result.turn_id, start.first_turn!.turn_id);
+    await running;
+    await assert.rejects(manager.conversationOperation("late", {session_id: "first", operation: {kind: "steer", turn_id: start.first_turn!.turn_id, input: "late"}}), /exact active turn/);
+    assert.equal(events.filter(event => event.event_type === "turn.completed").length, 1);
+    assert.ok(events.some(event => event.event_type === "turn.completed" && (event.data as {final_output?: {final_text?: string}}).final_output?.final_text === "new direction"));
+    const compact = await manager.sendTurn({session_id: "first", turn_id: "compact-hcp", action: "compact", input: ""});
+    assert.equal(compact.filter(event => event.event_type === "turn.completed").length, 1);
+    assert.equal((await f.requests()).filter(request => request.method === "thread/start").length, 1);
+    assert.equal((await f.requests()).filter(request => request.method === "thread/compact/start").length, 1);
+    const reducer = new HcpSessionEventReducer();
+    for (const event of [...events, ...compact]) {hcpHarnessEventPayloadSchema.parse(event); reducer.applyEvent(event);}
+  } finally {await manager.stopSession("first", "cleanup"); await f.cleanup();}
 });

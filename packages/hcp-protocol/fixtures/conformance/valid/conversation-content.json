@@ -1,0 +1,15 @@
+{
+  "id": "fixture-conversation-content",
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "operation": {
+      "kind": "content",
+      "content_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "offset": 0,
+      "limit": 65536
+    }
+  }
+}

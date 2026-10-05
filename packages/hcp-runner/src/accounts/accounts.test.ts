@@ -62,7 +62,9 @@ test("reader is opt-in, coalesces concurrent reads, caches original timestamps a
   const reader = new AccountUsageReader(config, { collectors: new Map([["codex", collector]]) });
   const [first, second] = await Promise.all([reader.read("a", {}), reader.read("b", {})]);
   assert.equal(calls, 1);
-  assert.deepEqual(first.providers, second.providers);
+  // Shared collector evidence retains its timestamp; opt-out notices belong to each read.
+  assert.deepEqual(first.providers[0], second.providers[0]);
+  assert.equal(second.providers[1]?.observation.status, "unavailable");
   assert.equal(first.providers[1]?.observation.status, "unavailable");
   assert.equal((await reader.read("c", {})).providers[0]?.observation.observed_at, first.providers[0]?.observation.observed_at);
   await assert.rejects(reader.read("bad", { provider_instance_ids: ["unknown"] }));

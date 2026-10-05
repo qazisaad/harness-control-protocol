@@ -2,12 +2,17 @@ import {
   query,
   type Options,
   type Query,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { HarnessAdapterError } from "../types.js";
 import { adapterMcpServers, assertCliMcpAttachmentProxied } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
 import { NativeProcess } from "./native-process.js";
+import { randomUUID } from "node:crypto";
+import { NativeInteractions } from "../../native-interactions.js";
+import { ClaudeInput } from "./claude-input.js";
+import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 
 const resultSchema = z.object({
   type: z.literal("result"),
@@ -37,6 +42,18 @@ export function createClaudeTurn(
   queryFactory: ClaudeQueryFactory = query,
 ): NativeTurn {
   return async (input, signal, emit) => {
+    const resume = input.session.native_fresh ? undefined : input.session.native_thread_id;
+    const nativeId = resume ?? (input.session.native_fresh ? input.session.native_thread_id! : randomUUID());
+    const channel = new ClaudeInput();
+    const userMessage = (text: string): SDKUserMessage => ({type: "user", session_id: nativeId, parent_tool_use_id: null,
+      message: {role: "user", content: text}});
+    const message = userMessage(input.payload.action === "compact" ? "/compact" : input.payload.input);
+    if (input.payload.images?.length) message.message.content = [{type: "text", text: input.payload.input},
+      ...input.payload.images.map(image => ({type: "image" as const, source: {type: "base64" as const,
+        media_type: image.mime_type, data: image.data_base64}}))];
+    channel.offer(message);
+    const interactions = new NativeInteractions(input.startPayload, input.payload, {threadId: nativeId, turnId: () => input.payload.turn_id}, emit);
+    let initialized = false;
     const selection =
       input.payload.model_selection ?? input.startPayload.model_selection;
     const effort = selectedEffort(selection, "claude") as Options["effort"];
@@ -57,7 +74,7 @@ export function createClaudeTurn(
     try {
       signal.throwIfAborted();
       stream = queryFactory({
-        prompt: input.payload.input,
+        prompt: channel,
         options: {
           pathToClaudeCodeExecutable:
             input.provider.executable_path ?? "claude",
@@ -73,16 +90,33 @@ export function createClaudeTurn(
           },
           systemPrompt: { type: "preset", preset: "claude_code" },
           settingSources: [],
-          persistSession: false,
+          persistSession: true,
+          ...(resume ? {resume} : {sessionId: nativeId}),
           includePartialMessages: true,
           strictMcpConfig: true,
           mcpServers,
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
+          permissionMode: input.payload.mode === "plan" ? "plan" : ({ask: "default", auto_edits: "acceptEdits", full_access: "bypassPermissions"} as const)[input.startPayload.approval_policy],
+          allowDangerouslySkipPermissions: input.startPayload.approval_policy === "full_access",
+          canUseTool: async (tool, arguments_, options) => {
+            if (!initialized) throw new HarnessAdapterError("native_request_binding", "Claude requested a tool before confirming its conversation.");
+            const binding = {threadId: nativeId, turnId: input.payload.turn_id, itemId: options.toolUseID};
+            const requestSignal = AbortSignal.any([signal, options.signal]);
+            if (tool === "AskUserQuestion") {
+              const parsed = z.object({questions: z.array(z.object({question: z.string(), header: z.string(),
+                options: z.array(z.object({label: z.string(), description: z.string()})), multiSelect: z.boolean().optional()})).min(1).max(16)}).parse(arguments_);
+              const reply = z.object({answers: z.record(z.string(), z.object({answers: z.array(z.string())}))}).parse(await interactions.questions({...binding,
+                questions: parsed.questions.map((question, index) => ({...question, id: `question-${index}`, isOther: true}))}, requestSignal));
+              if (!Object.keys(reply.answers).length) return {behavior: "deny", message: "The user cancelled the native question.", interrupt: true};
+              return {behavior: "allow", updatedInput: {...arguments_, answers: Object.fromEntries(parsed.questions.map((question, index) =>
+                [question.question, reply.answers[`question-${index}`]?.answers.join(", ") ?? ""]))}};
+            }
+            const requestType = tool === "Bash" ? "command" : tool === "Read" ? "file_read" : ["Write", "Edit", "NotebookEdit"].includes(tool) ? "file_change" : "other";
+            const answer = await interactions.approval({...binding, tool, arguments: z.record(z.string(), z.json()).parse(arguments_), availableDecisions: ["accept", "decline", "cancel"]}, requestType, requestSignal);
+            return answer.decision === "accept" ? {behavior: "allow", updatedInput: arguments_}
+              : {behavior: "deny", message: "The user declined the native action.", interrupt: answer.decision === "cancel"};
+          },
           disallowedTools: [
-            "AskUserQuestion",
-            "EnterPlanMode",
-            "ExitPlanMode",
+            ...(input.startPayload.approval_policy === "full_access" ? ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"] : []),
             "Agent",
             "Task",
           ],
@@ -100,8 +134,21 @@ export function createClaudeTurn(
         },
       });
       let result: z.infer<typeof resultSchema> | undefined;
+      let compacted = false;
       let streamed = false;
       for await (const message of stream) {
+        if ("session_id" in message && message.session_id !== nativeId)
+          throw new HarnessAdapterError("native_continuation_binding", "Claude returned another native conversation identity.");
+        if (message.type === "system" && message.subtype === "init") {
+          initialized = true;
+          input.session.native_thread_id = nativeId;
+          delete input.session.native_fresh;
+          input.persistNativeThread?.(nativeId);
+          input.registerNativeInteractions?.(interactions);
+          input.registerActiveTurnControls?.({async steer(text) {signal.throwIfAborted(); channel.offer(userMessage(text));}});
+          if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true}});
+        }
+        if (message.type === "system" && message.subtype === "compact_boundary") compacted = true;
         if (
           message.type === "stream_event" &&
           message.event.type === "content_block_delta"
@@ -109,15 +156,14 @@ export function createClaudeTurn(
           const delta = message.event.delta;
           if (delta.type === "text_delta" || delta.type === "thinking_delta") {
             if (delta.type === "text_delta") streamed = true;
-            emit({
+            for (const chunk of textChunks(delta.type === "text_delta" ? delta.text : delta.thinking)) emit({
               event_type:
                 delta.type === "text_delta"
                   ? "content.delta"
                   : "reasoning.delta",
               turn_id: input.payload.turn_id,
               data: {
-                delta:
-                  delta.type === "text_delta" ? delta.text : delta.thinking,
+                delta: chunk,
               },
             });
           }
@@ -131,6 +177,7 @@ export function createClaudeTurn(
                   item_id: block.id,
                   item_type: "tool_call",
                   summary: block.name,
+                  content: retainedContent({arguments: block.input}, input.publishContent),
                 },
               });
           }
@@ -147,10 +194,12 @@ export function createClaudeTurn(
                   item_id: block.tool_use_id,
                   item_type: "tool_call",
                   status: block.is_error ? "failed" : "completed",
+                  content: retainedContent(block.content ?? [], input.publishContent),
                 },
               });
           }
         } else if (message.type === "result") {
+          if (!initialized) throw new HarnessAdapterError("native_continuation_binding", "Claude ended without confirming its native conversation identity.");
           const parsed = resultSchema.safeParse(message);
           if (!parsed.success || result !== undefined)
             throw new HarnessAdapterError(
@@ -171,6 +220,9 @@ export function createClaudeTurn(
               "Claude ended with a provider error or execution limit.",
             );
           }
+          channel.close();
+          input.registerActiveTurnControls?.(undefined);
+          break;
         }
       }
       if (!result)
@@ -178,11 +230,13 @@ export function createClaudeTurn(
           "claude_missing_result",
           "Claude closed without a terminal result.",
         );
+      if (input.payload.action === "compact" && !compacted)
+        throw new HarnessAdapterError("native_compaction_unknown", "Claude did not confirm a native compaction boundary.");
       if (!streamed && result.result)
-        emit({
+        for (const delta of textChunks(result.result)) emit({
           event_type: "content.delta",
           turn_id: input.payload.turn_id,
-          data: { delta: result.result },
+          data: { delta },
         });
       let inputTokens = 0;
       let outputTokens = 0;
@@ -194,7 +248,7 @@ export function createClaudeTurn(
         outputTokens += usage.outputTokens;
       }
       return {
-        final_text: result.result,
+        ...retainedFinalText(result.result, input.publishContent),
         usage: {
           ...(result.modelUsage
             ? {
@@ -209,6 +263,10 @@ export function createClaudeTurn(
         },
       };
     } finally {
+      channel.close();
+      interactions.close();
+      input.registerNativeInteractions?.(undefined);
+      input.registerActiveTurnControls?.(undefined);
       signal.removeEventListener("abort", abort);
       stream?.close();
       if (processHandle) await processHandle.stop();

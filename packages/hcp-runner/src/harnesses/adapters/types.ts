@@ -6,8 +6,14 @@ import type { ProviderInstanceConfig } from "../../config/index.js";
 import type { ProviderDriverStatus } from "../../host/provider-registry.js";
 import type { NativeConversation } from "../../state/index.js";
 import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
+import type {HarnessContentReference} from "@harness-control/protocol";
 
-export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire">;
+export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content">;
+
+/** A live control belongs to exactly one running HCP turn, and expires with its runtime. */
+export type HarnessActiveTurnControls = {
+  steer(input: string): Promise<void>;
+};
 
 /** The manager authorizes the retained binding; the adapter owns native history mechanics. */
 export type HarnessAdapterConversationInput = {
@@ -15,6 +21,9 @@ export type HarnessAdapterConversationInput = {
   request: HcpConversationRequestPayload;
   conversation: NativeConversation;
   provider: ProviderInstanceConfig;
+  /** Persist the runner's mutation fence immediately before dispatching a native fork. */
+  beginMutation?: () => void;
+  publishContent?: (value: unknown) => HarnessContentReference;
   save: (conversation: NativeConversation) => void;
 };
 
@@ -27,6 +36,7 @@ export type HarnessAdapterEvent = {
 export type HarnessAdapterSession = {
   adapter_session_id: string;
   native_thread_id?: string;
+  native_fresh?: true;
 };
 
 export type HarnessNativeInteractions = {
@@ -47,6 +57,7 @@ export type HarnessAdapterMcpServer = {
 export type HarnessAdapterStartInput = {
   payload: HcpSessionStartPayload;
   provider: ProviderInstanceConfig;
+  nativeConversation?: NativeConversation;
   mcpServers?: HarnessAdapterMcpServer[];
 };
 
@@ -91,6 +102,8 @@ export type HarnessAdapterTurnInput = {
   reviewMcpTool?: HarnessMcpReviewer;
   mcpContinuation?: HarnessMcpContinuation;
   registerNativeInteractions?: (owner: HarnessNativeInteractions | undefined) => void;
+  registerActiveTurnControls?: (controls: HarnessActiveTurnControls | undefined) => void;
+  publishContent?: (value: unknown) => HarnessContentReference;
   persistNativeThread?: (threadId: string) => void;
   emitEvent?: (event: HarnessAdapterEvent) => void;
 };

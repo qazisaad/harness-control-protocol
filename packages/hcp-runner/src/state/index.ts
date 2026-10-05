@@ -68,7 +68,12 @@ type RunnerStateData = {
 
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
   updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
-  rollback: z.object({command_id: z.string(), source_hash: z.string(), target_hash: z.string(), phase: z.enum(["pending", "completed"])}).strict().optional()}).strict();
+  fresh: z.literal(true).optional(),
+  rollback: z.object({command_id: z.string(), source_hash: z.string(), target_hash: z.string(), phase: z.enum(["pending", "completed"]),
+    replacement_native_thread_id: z.string().optional(), native_fresh: z.literal(true).optional()}).strict().optional(),
+  fork: z.object({command_id: z.string(), target_key: z.string(), target_session_id: z.string(), phase: z.enum(["pending", "completed"]),
+    request_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    result: hcpConversationResultPayloadSchema.optional()}).strict().optional()}).strict();
 export type NativeConversation = z.infer<typeof nativeConversationSchema>;
 
 const persistedCommandReceiptSchema = z.discriminatedUnion("outcome", [
@@ -130,6 +135,7 @@ export type RunnerStateStoreOptions = {
 };
 
 export interface RunnerStateStore {
+  readonly contentDirectory?: string;
   getNativeConversation(key: string): NativeConversation | undefined;
   saveNativeConversation(key: string, conversation: NativeConversation): void;
   nativeConversationForSession(sessionId: string): {key: string; conversation: NativeConversation} | undefined;
@@ -181,7 +187,13 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     if (!key || key.length > 512) throw new Error("Invalid native conversation key.");
     const conversation = nativeConversationSchema.parse(input);
     const previous = this.data.nativeConversations[key];
-    if (previous && (previous.binding_hash !== conversation.binding_hash || previous.native_thread_id !== conversation.native_thread_id))
+    const provenReplacement = previous?.rollback?.phase === "completed" &&
+      previous.rollback.replacement_native_thread_id === conversation.native_thread_id &&
+      JSON.stringify(previous.rollback) === JSON.stringify(conversation.rollback) && previous.rollback.native_fresh === conversation.fresh;
+    if (previous && (previous.binding_hash !== conversation.binding_hash ||
+        previous.provider_binding_hash !== conversation.provider_binding_hash || previous.provider_instance_id !== conversation.provider_instance_id ||
+        previous.workspace_id !== conversation.workspace_id || previous.cwd !== conversation.cwd ||
+        (previous.native_thread_id !== conversation.native_thread_id && !provenReplacement)))
       throw new Error("Native conversation identity or execution scope changed.");
     if (!previous && Object.keys(this.data.nativeConversations).length >= 1024)
       throw new Error("Native conversation capacity exceeded; retire old runner conversations before starting another.");
@@ -406,10 +418,12 @@ export class MemoryRunnerStateStore extends BaseRunnerStateStore {
 
 export class JsonRunnerStateStore extends BaseRunnerStateStore {
   readonly #path: string;
+  readonly contentDirectory: string;
 
   constructor(path: string, options: RunnerStateStoreOptions = {}) {
     super(readRunnerState(path), options);
     this.#path = path;
+    this.contentDirectory = `${path}.content`;
   }
 
   persist(): void {

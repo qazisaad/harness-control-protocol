@@ -16,12 +16,17 @@ export function nativeExecutionCapabilities(
 ): HarnessExecutionCapabilities {
   return {
     streaming: true,
-    multi_turn: driver === "codex",
-    session_continuation: driver === "codex",
-    plan_mode: driver === "codex",
-    native_history: driver === "codex",
-    conversation_rollback: driver === "codex",
-    approval_policies: driver === "codex" ? ["ask", "auto_edits", "full_access"] : ["full_access"],
+    multi_turn: true,
+    session_continuation: true,
+    plan_mode: true,
+    native_history: true,
+    history_pagination: true,
+    conversation_rollback: true,
+    conversation_fork: true,
+    active_steering: true,
+    manual_compaction: true,
+    content_retrieval: true,
+    approval_policies: ["ask", "auto_edits", "full_access"],
     sandbox_modes:
       driver === "codex"
         ? ["read_only", "workspace_write", "danger_full_access"]
@@ -86,13 +91,17 @@ export class NativeTurns {
     execute: NativeTurn,
   ): Promise<HarnessAdapterEvent[]> {
     const { session_id: sessionId, turn_id: turnId } = input.payload;
+    if (input.payload.action === "compact" && !["codex", "claude", "opencode"].includes(this.driver))
+      throw new HarnessAdapterError("compaction_unsupported", "This provider profile does not implement manual compaction.");
+    if (input.payload.action === "compact" && (input.payload.input !== "" || input.payload.images?.length || input.payload.mode === "plan"))
+      throw new HarnessAdapterError("compaction_input_invalid", "Compaction accepts no prompt, images or Plan mode.");
     if (this.#active.has(sessionId)) {
       throw new HarnessAdapterError(
         `${this.driver}_turn_in_progress`,
         "The session already has an active turn.",
       );
     }
-    if (this.driver !== "codex" && this.#usedSessions.has(sessionId)) {
+    if (!["codex", "claude", "opencode"].includes(this.driver) && this.#usedSessions.has(sessionId)) {
       throw new HarnessAdapterError(
         "session_turn_limit",
         "This provider profile supports one turn per session; native multi-turn sessions are not implemented.",

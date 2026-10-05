@@ -1,10 +1,13 @@
-import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions } from "./adapters/types.js";
+import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
 import { hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import { HarnessMcpReview } from "./mcp-review.js";
+import {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
+export {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
 import type { McpInputReply } from "../mcp/input-required.js";
 import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import {isDeepStrictEqual} from "node:util";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import type {
@@ -117,6 +120,7 @@ export type HarnessSessionManagerOptions = {
   replayRetentionEventsPerSession?: number;
   stateStore?: RunnerStateStore;
   adapterRegistry?: HarnessAdapterRegistry;
+  contentStore?: HarnessContentStore;
 };
 
 export type HarnessReplayResult = {
@@ -144,6 +148,7 @@ const terminalTurnEvents = new Set(["turn.completed", "turn.failed", "turn.cance
 
 export class HarnessSessionManager {
   readonly #nativeInteractions = new Map<string, HarnessNativeInteractions>();
+  readonly #activeTurnControls = new Map<string, {turnId: string; controls: HarnessActiveTurnControls}>();
   readonly #config: RunnerConfig;
   readonly #hostId: string;
   readonly #localCapabilities: LocalCapabilityLeaseManager;
@@ -152,6 +157,7 @@ export class HarnessSessionManager {
   readonly #mcpClientFactory: HarnessMcpClientFactory;
   readonly #auditLogger: AuditLogger | undefined;
   readonly #stateStore: RunnerStateStore;
+  readonly #contentStore: HarnessContentStore;
   readonly #adapterRegistry: HarnessAdapterRegistry;
   readonly #sessions = new Map<string, HarnessSession>();
   readonly #mcpReviews = new Map<string, HarnessMcpReview>();
@@ -177,6 +183,7 @@ export class HarnessSessionManager {
           : { eventRetentionPerSession: resolvedOptions.replayRetentionEventsPerSession },
       );
     this.#adapterRegistry = resolvedOptions.adapterRegistry ?? createDefaultHarnessAdapterRegistry();
+    this.#contentStore = resolvedOptions.contentStore ?? new BoundedHarnessContentStore(this.#stateStore.contentDirectory);
   }
 
   #workspaceQueue: Promise<unknown> = Promise.resolve();
@@ -260,6 +267,24 @@ export class HarnessSessionManager {
 
   conversationOperation(commandId: string, request: HcpConversationRequestPayload): Promise<HcpConversationResultPayload> {
     return this.#serializeWorkspace(async () => {
+      if (request.operation.kind === "content") {
+        const scope = this.#contentStore.scope(request.session_id, request.operation.content_id);
+        await this.#assertWorkspaceAllowed(scope.workspace_id, scope.cwd);
+        if (nativeProviderHash(this.#requireProvider(scope.provider_instance_id)) !== scope.provider_binding_hash)
+          throw new HarnessAdapterError("content_binding_changed", "Retained output belongs to the original provider identity.");
+        return {command_id: commandId, session_id: request.session_id, operation: "content", filesystem_undo: false,
+          content: this.#contentStore.read(request.session_id, request.operation.content_id, request.operation.offset, request.operation.limit)};
+      }
+      if (request.operation.kind === "steer") {
+        const session = this.#sessions.get(request.session_id);
+        const active = this.#activeTurnControls.get(request.session_id);
+        if (!session || !active || active.turnId !== request.operation.turn_id || session.cancelRequested)
+          throw new HarnessAdapterError("active_turn_unavailable", "Steering requires the exact active turn with a live native control.");
+        await this.#assertWorkspaceAllowed(session.workspaceId, session.cwd);
+        this.#requireProvider(session.providerInstanceId, session.driverKind);
+        await active.controls.steer(request.operation.input);
+        return {command_id: commandId, session_id: request.session_id, operation: "steer", turn_id: request.operation.turn_id, filesystem_undo: false};
+      }
       const binding = this.#stateStore.nativeConversationForSession(request.session_id);
       if (!binding || [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === binding.key))
         throw new HarnessAdapterError("native_conversation_unavailable", "Read or change only an idle, retained native conversation.");
@@ -275,20 +300,67 @@ export class HarnessSessionManager {
       const adapter = this.#adapterRegistry.require(provider.driver_kind);
       if (!adapter.conversationOperation || !adapter.conversationOperations?.includes(request.operation.kind))
         throw new HarnessAdapterError("conversation_operation_unsupported", `Provider '${provider.driver_kind}' does not support '${request.operation.kind}'.`);
+      if (request.operation.kind === "fork") {
+        const prior = conversation.fork;
+        if (prior?.command_id === commandId && prior.phase === "completed" && prior.result) {
+          if (prior.request_hash !== createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(request.operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex"))
+            throw new HarnessAdapterError("command_conflict", "The original fork has different parameters.");
+          return prior.result;
+        }
+        if (prior?.phase === "pending")
+          throw new HarnessAdapterError("native_fork_unknown", "A prior native fork may have dispatched; automatic repetition is forbidden.");
+        if (request.operation.target_session_id === request.session_id || this.#stateStore.hasSessionEvents(request.operation.target_session_id) ||
+            this.#stateStore.nativeConversationForSession(request.operation.target_session_id) ||
+            this.#stateStore.getNativeConversation(request.operation.continuation_group_key))
+          throw new HarnessAdapterError("fork_destination_exists", "Fork requires a fresh session identity and conversation key.");
+      }
+      let forkStarted = false;
       const result = hcpConversationResultPayloadSchema.parse(await adapter.conversationOperation({
         commandId, request, conversation: structuredClone(conversation), provider,
+        publishContent: value => this.#contentStore.publish({session_id: request.session_id, provider_instance_id: provider.id,
+          provider_binding_hash: nativeProviderHash(provider), workspace_id: conversation.workspace_id, cwd: conversation.cwd}, value),
+        ...(request.operation.kind === "fork" ? {beginMutation: () => {
+          if (request.operation.kind !== "fork" || forkStarted)
+            throw new HarnessAdapterError("native_fork_unknown", "Native fork dispatch can be fenced only once.");
+          forkStarted = true;
+          this.#stateStore.saveNativeConversation(key, {...conversation, fork: {command_id: commandId,
+            request_hash: createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(request.operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex"),
+            target_key: request.operation.continuation_group_key, target_session_id: request.operation.target_session_id, phase: "pending"}});
+        }} : {}),
         save: updated => {
+          if (request.operation.kind === "fork") throw new HarnessAdapterError("native_history_binding", "Fork state is owned by the runner's mutation fence.");
           // Native mutation evidence cannot change the authorized conversation's identity or scope.
           const {rollback: _priorRollback, updated_at: _priorTime, ...original} = conversation;
           const {rollback: _nextRollback, updated_at: _nextTime, ...next} = updated;
-          if (Object.keys(original).length !== Object.keys(next).length ||
-              Object.entries(original).some(([field, value]) => value !== next[field as keyof typeof next]))
+          if (!isDeepStrictEqual(original, next))
             throw new HarnessAdapterError("native_history_binding", "An adapter cannot replace the retained conversation binding.");
           this.#stateStore.saveNativeConversation(key, updated);
         },
       }));
       if (result.command_id !== commandId || result.session_id !== request.session_id || result.operation !== request.operation.kind)
         throw new HarnessAdapterError("native_history_binding", "Conversation result targets another command, session, or operation.");
+      if (request.operation.kind === "rollback" && result.native_reference) {
+        const saved = this.#stateStore.getNativeConversation(key)!;
+        if (saved.rollback?.command_id !== commandId || saved.rollback.phase !== "completed" ||
+            saved.rollback.replacement_native_thread_id !== result.native_reference || saved.rollback.target_hash !== result.history?.history_hash ||
+            saved.rollback.native_fresh !== result.native_fresh)
+          throw new HarnessAdapterError("native_rollback_unknown", "A replacement conversation requires matching durable rollback evidence.");
+        const {fresh: _priorFresh, ...original} = saved;
+        this.#stateStore.saveNativeConversation(key, {...original, native_thread_id: result.native_reference,
+          ...(result.native_fresh ? {fresh: true} : {}), updated_at: new Date().toISOString()});
+      }
+      if (request.operation.kind === "fork") {
+        const target = result.fork;
+        if (!forkStarted || !target || target.session_id !== request.operation.target_session_id || target.continuation_group_key !== request.operation.continuation_group_key ||
+            target.native_reference === conversation.native_thread_id)
+          throw new HarnessAdapterError("native_history_binding", "Native fork did not confirm an independent destination.");
+        const {rollback: _rollback, fork: _fork, ...bindingFields} = conversation;
+        this.#stateStore.saveNativeConversation(target.continuation_group_key, {...bindingFields, ...(result.native_fresh ? {fresh: true} : {}), native_thread_id: target.native_reference,
+          last_session_id: target.session_id, updated_at: new Date().toISOString()});
+        this.#stateStore.saveNativeConversation(key, {...conversation, fork: {command_id: commandId, target_key: target.continuation_group_key,
+          request_hash: createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(request.operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex"),
+          target_session_id: target.session_id, phase: "completed", result}});
+      }
       return result;
     });
   }
@@ -504,19 +576,28 @@ export class HarnessSessionManager {
       if (!adapter.durableMcpContinuation && mcpAttachments.toolsets.some(set => set.tools.some(tool => tool.review_policy))) {
         throw new HarnessAdapterError("mcp_review_unavailable", "This adapter does not support durable MCP review.");
       }
-      adapterSession = await adapter.startSession({
-        payload: adapterStartPayload,
-        provider,
-        mcpServers: mcpAttachments.adapterAttachments,
-      });
+      let retainedConversation: import("../state/index.js").NativeConversation | undefined;
       if (payload.continue_session) {
         const conversation = this.#stateStore.getNativeConversation(payload.continuation_group_key!);
         if (!conversation || conversation.binding_hash !== nativeBindingHash(payload, provider, mcpAttachments.toolsets))
           throw new HarnessAdapterError("native_continuation_binding", "Native conversation is missing or its workspace, provider, tools, or policy changed.");
         if (conversation.rollback?.phase === "pending") throw new HarnessAdapterError("native_rollback_unknown", "The previous rollback needs reconciliation; starting another turn is unsafe.");
-        adapterSession.native_thread_id = conversation.native_thread_id;
+        if (conversation.fork?.phase === "pending") throw new HarnessAdapterError("native_fork_unknown", "A previous fork has an unknown outcome; reconcile it before resuming.");
+        retainedConversation = conversation;
       } else if (payload.continuation_group_key && this.#stateStore.getNativeConversation(payload.continuation_group_key)) {
         throw new HarnessAdapterError("native_continuation_exists", "An existing native conversation requires explicit continuation.");
+      }
+      adapterSession = await adapter.startSession({
+        payload: adapterStartPayload,
+        provider,
+        mcpServers: mcpAttachments.adapterAttachments,
+        ...(retainedConversation ? {nativeConversation: structuredClone(retainedConversation)} : {}),
+      });
+      if (retainedConversation) {
+        if (adapterSession.native_thread_id && adapterSession.native_thread_id !== retainedConversation.native_thread_id)
+          throw new HarnessAdapterError("native_continuation_binding", "The adapter resumed another native conversation.");
+        adapterSession.native_thread_id = retainedConversation.native_thread_id;
+        if (retainedConversation.fresh) adapterSession.native_fresh = true;
       }
     } catch (error: unknown) {
       await cleanupAdapterSessionStartFailure(adapter, payload.session_id, mcpAttachments.clients, "adapter_start_failed", error);
@@ -773,14 +854,27 @@ export class HarnessSessionManager {
         if (owner) this.#nativeInteractions.set(payload.session_id, owner);
         else this.#nativeInteractions.delete(payload.session_id);
       },
+      registerActiveTurnControls: controls => {
+        if (controls) this.#activeTurnControls.set(payload.session_id, {turnId: payload.turn_id, controls});
+        else if (this.#activeTurnControls.get(payload.session_id)?.turnId === payload.turn_id)
+          this.#activeTurnControls.delete(payload.session_id);
+      },
+      publishContent: value => this.#contentStore.publish({session_id: session.sessionId, provider_instance_id: session.providerInstanceId,
+        provider_binding_hash: nativeProviderHash(this.#requireProvider(session.providerInstanceId, session.driverKind)), workspace_id: session.workspaceId, cwd: session.cwd}, value),
       ...(session.startPayload.continuation_group_key ? {persistNativeThread: (threadId: string) => {
+        const previous = this.#stateStore.getNativeConversation(session.startPayload.continuation_group_key!);
         this.#stateStore.saveNativeConversation(session.startPayload.continuation_group_key!, {
+          ...(previous?.rollback ? {rollback: previous.rollback} : {}),
+          ...(previous?.fork ? {fork: previous.fork} : {}),
           native_thread_id: threadId, binding_hash: session.nativeBindingHash!, updated_at: new Date().toISOString(),
           last_session_id: session.sessionId, provider_instance_id: session.providerInstanceId, workspace_id: session.workspaceId, cwd: session.cwd,
           provider_binding_hash: nativeProviderHash(this.#requireProvider(session.providerInstanceId, session.driverKind)),
         });
       }} : {}),
       emitEvent: emitAdapterEvent,
+    }).finally(() => {
+      if (this.#activeTurnControls.get(payload.session_id)?.turnId === payload.turn_id)
+        this.#activeTurnControls.delete(payload.session_id);
     });
     for (const adapterEvent of adapterEvents) {
       emitAdapterEvent(adapterEvent);
@@ -1273,10 +1367,12 @@ async function cleanupAdapterSessionStartFailure(
 
 function nativeProviderHash(provider: ProviderInstanceConfig): string {
   return createHash("sha256").update(JSON.stringify({id: provider.id, driver: provider.driver_kind,
+    ...(provider.launch_args.length ? {launch_args: provider.launch_args} : {}),
     executable: provider.executable_path ?? provider.driver_kind, home: provider.home, env: Object.fromEntries(Object.entries(provider.env).sort(([a], [b]) => a.localeCompare(b)))})).digest("hex");
 }
 function nativeBindingHash(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig, toolsets: HarnessMcpToolset[]): string {
   const scope = {provider: {id: provider.id, driver: provider.driver_kind, executable: provider.executable_path ?? provider.driver_kind,
+    ...(provider.launch_args.length ? {launch_args: provider.launch_args} : {}),
     home: provider.home, env: provider.env}, workspace: {id: payload.workspace_id, cwd: payload.cwd},
     sandbox: payload.sandbox_mode, approval: payload.approval_policy,
     attachments: payload.mcp_servers.map(attachment => ({name: attachment.name, transport: attachment.transport,
@@ -1295,6 +1391,7 @@ export {
   type HarnessAdapter,
   type HarnessAdapterCancelInput,
   type HarnessAdapterConversationInput,
+  type HarnessActiveTurnControls,
   type HarnessConversationOperation,
   type HarnessAdapterEvent,
   type HarnessAdapterMcpServer,

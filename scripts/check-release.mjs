@@ -40,20 +40,12 @@ try {
   `], consumer);
   run(process.execPath, ["--input-type=module", "-e", "await import('@harness-control/runner/accounts'); await import('@harness-control/runner'); await import('@harness-control/runner/pairing'); await import('@harness-control/protocol/json-schema'); await import('@harness-control/protocol/conformance'); console.log('Public exports imported without CLI side effects')"], consumer);
   copyFileSync(join(root, "examples/custom-harness.ts"), join(consumer, "custom-harness.ts"));
-  writeFileSync(join(consumer, "conversation-controls.ts"), `
-    import type {HarnessAdapter, HarnessAdapterConversationInput, HarnessConversationOperation} from '@harness-control/runner/harnesses';
-    const operations: readonly HarnessConversationOperation[] = ['read'];
-    export const controls: Pick<HarnessAdapter, 'conversationOperations' | 'conversationOperation'> = {
-      conversationOperations: operations,
-      async conversationOperation(input: HarnessAdapterConversationInput) {
-        return {command_id: input.commandId, session_id: input.request.session_id,
-          operation: input.request.operation.kind, filesystem_undo: false};
-      }
-    };
-  `);
+  copyFileSync(join(root, "examples/conversation-controls.ts"), join(consumer, "conversation-controls.ts"));
   run(join(consumer, "node_modules/.bin/tsc"), ["--strict", "--skipLibCheck", "--module", "NodeNext", "--target", "ES2022", "custom-harness.ts", "conversation-controls.ts"], consumer);
   copyFileSync(join(root, "examples/public-sdk.mjs"), join(consumer, "example.mjs"));
   run(process.execPath, ["example.mjs"], consumer);
+  copyFileSync(join(root, "examples/conversation-controls-consumer.mjs"), join(consumer, "conversation-controls-consumer.mjs"));
+  run(process.execPath, ["conversation-controls-consumer.mjs"], consumer);
   copyFileSync(join(root, "examples/mcp-review-consumer.mjs"), join(consumer, "mcp-review-consumer.mjs"));
   run(process.execPath, ["mcp-review-consumer.mjs"], consumer);
   copyFileSync(join(root, "examples/startup-cleanup-consumer.mjs"), join(consumer, "startup-cleanup-consumer.mjs"));

@@ -3,6 +3,7 @@ export {
   type HarnessAdapter,
   type HarnessAdapterCancelInput,
   type HarnessAdapterConversationInput,
+  type HarnessActiveTurnControls,
   type HarnessConversationOperation,
   type HarnessAdapterEvent,
   type HarnessAdapterMcpServer,

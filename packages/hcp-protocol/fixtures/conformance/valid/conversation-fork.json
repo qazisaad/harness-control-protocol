@@ -1,0 +1,16 @@
+{
+  "id": "fixture-conversation-fork",
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "operation": {
+      "kind": "fork",
+      "target_session_id": "child",
+      "continuation_group_key": "child-key",
+      "expected_history_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "last_turn_id": "turn-1"
+    }
+  }
+}

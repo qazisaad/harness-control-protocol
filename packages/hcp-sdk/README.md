@@ -38,6 +38,26 @@ const acknowledgement = await host.send(command);
 
 Session commands resolve to an ACK. Snapshot, workspace, and local-action commands resolve to their matching result. Local/workspace errors are typed result messages; NACKs throw `HcpCommandRejectedError`. Disconnect, timeout, or aborting a wait throws `HcpOutcomeUnknownError` and never retries or cancels remote work. Send an explicit cancel command when appropriate.
 
+## Conversation controls
+
+Capabilities advertise `native_history`, `history_pagination`, `conversation_fork`, `conversation_rollback`, `active_steering`, `manual_compaction` and `content_retrieval` independently. Omitted fields mean unknown support. A live execution session and a retained native conversation have distinct lifetimes.
+
+```ts
+const read = await host.readConversation("session-1", {limit: 50});
+const fork = await host.forkConversation("session-1", {
+  target_session_id: "fork-session", continuation_group_key: "fork-conversation",
+  expected_history_hash: read.payload.history!.history_hash,
+});
+const steered = await host.steerTurn("active-session", "active-turn", "Additional input");
+await host.compactConversation("active-session", "compact-turn");
+```
+
+Read/fork/rollback require an idle retained conversation; steering requires the exact active turn. Reads return an opaque revision-bound `next_cursor` when more history is available. Fork and rollback reject stale history. `retireConversation` removes the runner association without deleting native files. Rollback never restores files; consuming apps coordinate their own checkpoints. A native replacement can change its diagnostic native reference.
+
+Conversation calls resolve to their matching `harness.conversation.result`, including steering turn IDs, fork destinations and content IDs/offsets. Compaction is a turn action: its ACK confirms acceptance; a terminal event confirms the outcome. Use durable command IDs and reconcile unknown mutations before retrying.
+
+Large output/history fields can include `content_ref`. Call `readContent(sessionId, reference.content_id, byteOffset, byteLimit)` with at most 64 KiB per chunk. Decode `data_base64` to bytes and concatenate before UTF-8 decoding; `next_offset` identifies the next chunk. References remain session/provider/workspace scoped and can expire or be evicted. See the [independent consumer](../../examples/conversation-controls-consumer.mjs).
+
 Use a new `HcpHostConnection` for each physical socket. Pass only your durably committed resume cursor to `accept`. `events` uses the canonical protocol reducer; gap/conflict results and `host.replay.unavailable` require application recovery. Retaining an event in memory does not acknowledge durable consumption. The app owns event retention and can supply a restored reducer to the constructor.
 
 For transactional or non-WebSocket code, import `createCommand` and `parseCommand` without constructing a connection. This is the API used by P2A's Convex integration.

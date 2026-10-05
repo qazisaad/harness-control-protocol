@@ -1,0 +1,17 @@
+{
+  "id": "fixture-conversation-fork-result",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "command_id": "fork",
+    "operation": "fork",
+    "filesystem_undo": false,
+    "fork": {
+      "session_id": "child",
+      "continuation_group_key": "child-key",
+      "native_reference": "native-child"
+    }
+  }
+}

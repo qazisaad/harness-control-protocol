@@ -182,6 +182,16 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     if (hasMessageTypeConst(messageSchema, "harness.event")) {
       return createHarnessEventMessageSchemas(messageSchema);
     }
+    if (hasMessageTypeConst(messageSchema, "harness.conversation.result")) {
+      const payload = getObjectProperty(messageSchema, "payload", "conversation result");
+      payload.allOf = [["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"]]
+        .map(([operation, field]) => ({if: {properties: {operation: {const: operation}}, required: ["operation"]}, then: {required: [field]}}));
+    }
+    if (hasMessageTypeConst(messageSchema, "harness.turn.send")) {
+      const payload = getObjectProperty(messageSchema, "payload", "turn send");
+      payload.allOf = [{if: {properties: {action: {const: "compact"}}, required: ["action"]},
+        then: {properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}}}}];
+    }
     return [messageSchema];
   });
 

@@ -19,9 +19,20 @@ const historyFile = process.env.HCP_TEST_HISTORY, callsFile = process.env.HCP_TE
 createInterface({input: process.stdin}).on('line', line => {
   const request = JSON.parse(line); if (request.id === undefined) return;
   appendFileSync(callsFile, JSON.stringify(request)+'\\n');
-  const thread = JSON.parse(readFileSync(historyFile)); let result = {};
+  const thread = JSON.parse(readFileSync(request.params?.threadId === 'forked-thread' ? historyFile+'.fork' : historyFile)); let result = {};
   if (request.method === 'config/read') result = {config: {mcp_servers: {private: {}}, plugins: {private: {}}}};
   if (request.method === 'thread/read' || request.method === 'thread/resume') result = {thread};
+  if (request.method === 'thread/turns/list') {
+    const offset = Number(request.params.cursor ?? 0), ordered = [...thread.turns].reverse();
+    const size = Math.min(2, request.params.limit);
+    result = {data: ordered.slice(offset, offset+size), nextCursor: offset+size < ordered.length ? String(offset+size) : null};
+  }
+  if (request.method === 'thread/fork') {
+    const end = request.params.lastTurnId ? thread.turns.findIndex(turn => turn.id === request.params.lastTurnId)+1 : thread.turns.length;
+    const forked = {...thread, id: 'forked-thread', turns: thread.turns.slice(0, end)};
+    writeFileSync(historyFile+'.fork', JSON.stringify(forked));
+    result = {thread: forked.historyMode === 'paginated' ? {...forked, turns: []} : forked};
+  }
   if (request.method === 'thread/rollback' || request.method === 'thread/revert') {
     const retained = request.method === 'thread/rollback' ? thread.turns.length-request.params.numTurns : thread.turns.findIndex(turn => turn.id === request.params.beforeTurnId);
     thread.turns = thread.turns.slice(0, retained); writeFileSync(historyFile, JSON.stringify(thread));
@@ -35,11 +46,22 @@ createInterface({input: process.stdin}).on('line', line => {
   const save = (next: NativeConversation) => {state = next;};
   try {
     const read = await nativeConversationOperation("read", {session_id: "session", operation: {kind: "read"}}, state, provider, save);
+    const page = await nativeConversationOperation("page", {session_id: "session", operation: {kind: "read", limit: 1}}, state, provider, save);
+    assert.equal(page.history!.turns[0]?.id, "turn-3");
+    const older = await nativeConversationOperation("older", {session_id: "session", operation: {kind: "read", limit: 1, cursor: page.history!.next_cursor!}}, state, provider, save);
+    assert.equal(older.history!.turns[0]?.id, "turn-2");
     const request = {session_id: "session", operation: {kind: "rollback" as const, num_turns: 1, expected_history_hash: read.history!.history_hash}};
     await assert.rejects(nativeConversationOperation("stale", {...request, operation: {...request.operation, expected_history_hash: "0".repeat(64)}}, state, provider, save), /changed/);
     assert.equal(state.rollback, undefined);
+    let fences = 0;
+    const fork = await nativeConversationOperation("fork", {session_id: "session", operation: {kind: "fork", target_session_id: "fork-session",
+      continuation_group_key: "fork-key", expected_history_hash: read.history!.history_hash, last_turn_id: "turn-2"}}, state, provider, save, () => {fences++;});
+    assert.equal(fences, 1);
+    assert.equal(fork.fork?.native_reference, "forked-thread");
+    assert.equal(JSON.parse(await readFile(historyFile, "utf8")).turns.length, 3);
     const result = await nativeConversationOperation("rollback-one", request, state, provider, save);
     assert.equal(result.history!.turn_count, 2); assert.equal(result.filesystem_undo, false);
+    await assert.rejects(nativeConversationOperation("stale-page", {session_id: "session", operation: {kind: "read", cursor: page.history!.next_cursor!}}, state, provider, save), /restart pagination/);
     const duplicate = await nativeConversationOperation("rollback-one", request, state, provider, save);
     assert.deepEqual(duplicate, result);
     const calls = (await readFile(callsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line));

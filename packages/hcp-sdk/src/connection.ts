@@ -150,6 +150,12 @@ export class HcpHostConnection {
       if (pending?.command.type !== "harness.conversation.request"
         || pending.command.payload.session_id !== message.payload.session_id
         || pending.command.payload.operation.kind !== message.payload.operation) return;
+      const operation = pending.command.payload.operation;
+      if (operation.kind === "steer" && operation.turn_id !== message.payload.turn_id) return;
+      if (operation.kind === "content" && (operation.content_id !== message.payload.content?.reference.content_id
+        || operation.offset !== message.payload.content?.offset)) return;
+      if (operation.kind === "fork" && (operation.target_session_id !== message.payload.fork?.session_id
+        || operation.continuation_group_key !== message.payload.fork?.continuation_group_key)) return;
     } else if (message.type === "host.accounts.snapshot") {
       pending = this.#pending.get(message.payload.request_id);
       if (pending?.command.type !== "host.accounts.read") return;
@@ -185,6 +191,29 @@ export class HcpHostConnection {
   }
   conversation(payload: Payload<"harness.conversation.request">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "harness.conversation.request", payload }, command), wait);
+  }
+  readConversation(sessionId: string, page: {cursor?: string; limit?: number} = {}, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "read", ...page}}, command, wait);
+  }
+  forkConversation(sessionId: string, fork: Omit<Extract<Payload<"harness.conversation.request">["operation"], {kind: "fork"}>, "kind">,
+    command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "fork", ...fork}}, command, wait);
+  }
+  rollbackConversation(sessionId: string, rollback: Omit<Extract<Payload<"harness.conversation.request">["operation"], {kind: "rollback"}>, "kind">,
+    command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "rollback", ...rollback}}, command, wait);
+  }
+  retireConversation(sessionId: string, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "retire"}}, command, wait);
+  }
+  steerTurn(sessionId: string, turnId: string, input: string, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "steer", turn_id: turnId, input}}, command, wait);
+  }
+  compactConversation(sessionId: string, turnId: string, command?: CommandOptions, wait?: WaitOptions) {
+    return this.sendTurn({session_id: sessionId, turn_id: turnId, action: "compact", input: ""}, command, wait);
+  }
+  readContent(sessionId: string, contentId: string, offset = 0, limit = 64 * 1024, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "content", content_id: contentId, offset, limit}}, command, wait);
   }
   respondToApproval(payload: Payload<"harness.approval.respond">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "harness.approval.respond", payload }, command), wait);

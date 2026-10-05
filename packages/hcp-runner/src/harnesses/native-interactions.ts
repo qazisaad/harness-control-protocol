@@ -14,8 +14,9 @@ type Question = {kind: "input"; id: string; expires: number; schema: z.ZodType;
 const bindingSchema = z.object({threadId: z.string().min(1), turnId: z.string().min(1), itemId: z.string().min(1)});
 const questionSchema = bindingSchema.extend({questions: z.array(z.object({
   id: z.string().min(1), header: z.string(), question: z.string(), isOther: z.boolean().optional(), isSecret: z.boolean().optional(),
+  multiSelect: z.boolean().optional(),
   options: z.array(z.object({label: z.string(), description: z.string()})).nullish(),
-})).min(1).max(3)});
+})).min(1).max(16)});
 
 /** Owns native requests only; an MCP decision cannot resolve one of these requests. */
 export class NativeInteractions {
@@ -57,7 +58,7 @@ export class NativeInteractions {
     });
   }
 
-  approval(params: unknown, requestType: "command" | "file_change", signal: AbortSignal): Promise<{decision: string}> {
+  approval(params: unknown, requestType: "command" | "file_read" | "file_change" | "other", signal: AbortSignal): Promise<{decision: string}> {
     return this.#serialize(async () => {
       const binding = this.#bind(params);
       const action = JSON.stringify({kind: "native_operation", operation: requestType, details: z.record(z.string(), z.json()).parse(params)});
@@ -77,7 +78,7 @@ export class NativeInteractions {
       const decision = await this.#wait<HcpApprovalResponsePayload["decision"]>(signal,
         {kind: "approval", id, actionHash, expires, allowed}, () => this.emit({event_type: "approval.requested", turn_id: this.turn.turn_id,
           data: {request_id: id, session_id: this.start.session_id, turn_id: this.turn.turn_id, workspace_id: this.start.workspace_id,
-            provider_instance_id: this.start.provider_instance_id, driver_kind: "codex", request_type: requestType,
+            provider_instance_id: this.start.provider_instance_id, driver_kind: this.start.driver_kind, request_type: requestType,
             risk_class: "high", action, action_hash: actionHash, allowed_decisions: allowed,
             expires_at: new Date(expires).toISOString(), display: {title: requestType === "command" ? "Approve native command" : "Approve native file change", detail: `Native item ${binding.itemId}`}}}));
       return {decision};
@@ -95,7 +96,8 @@ export class NativeInteractions {
       const fields = Object.fromEntries(questions.map(question => {
         const choices = question.options?.map(option => option.label);
         const answer = choices?.length && !question.isOther ? z.enum(choices as [string, ...string[]]) : z.string().min(1).max(8192);
-        return [question.id, z.object({answers: z.array(answer).min(1).max(1)}).strict().describe(question.question)];
+        return [question.id, z.object({answers: z.array(answer).min(1).max(question.multiSelect ? 16 : 1)
+          .refine(answers => new Set(answers).size === answers.length, "Selections cannot repeat.")}).strict().describe(question.question)];
       }));
       const schema = z.object({answers: z.object(fields).strict()}).strict();
       const id = `native-${randomUUID()}`;

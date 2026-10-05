@@ -37,6 +37,16 @@
                     "kind": {
                       "type": "string",
                       "const": "read"
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
                     }
                   },
                   "required": [
@@ -65,6 +75,98 @@
                     "kind",
                     "num_turns",
                     "expected_history_hash"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "steer"
+                    },
+                    "turn_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "input": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 131072
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "turn_id",
+                    "input"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "fork"
+                    },
+                    "target_session_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "continuation_group_key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "expected_history_hash": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "last_turn_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "target_session_id",
+                    "continuation_group_key",
+                    "expected_history_hash"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "content"
+                    },
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "offset": {
+                      "default": 0,
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "limit": {
+                      "default": 65536,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65536
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "content_id",
+                    "offset",
+                    "limit"
                   ],
                   "additionalProperties": false
                 },
@@ -143,12 +245,113 @@
               "enum": [
                 "read",
                 "rollback",
-                "retire"
+                "retire",
+                "steer",
+                "fork",
+                "content"
               ]
             },
             "filesystem_undo": {
               "type": "boolean",
               "const": false
+            },
+            "content": {
+              "type": "object",
+              "properties": {
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 8388608
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "content_id",
+                    "sha256",
+                    "byte_length",
+                    "format",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                },
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "data_base64": {
+                  "type": "string",
+                  "maxLength": 131072
+                },
+                "next_offset": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "reference",
+                "offset",
+                "data_base64"
+              ],
+              "additionalProperties": false
+            },
+            "native_reference": {
+              "type": "string",
+              "minLength": 1
+            },
+            "native_fresh": {
+              "type": "boolean",
+              "const": true
+            },
+            "turn_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "fork": {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "continuation_group_key": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "native_reference": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "session_id",
+                "continuation_group_key",
+                "native_reference"
+              ],
+              "additionalProperties": false
             },
             "history": {
               "type": "object",
@@ -164,6 +367,11 @@
                 },
                 "truncated": {
                   "type": "boolean"
+                },
+                "next_cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
                 },
                 "turns": {
                   "maxItems": 100,
@@ -214,7 +422,94 @@
             "operation",
             "filesystem_undo"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "read"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "history"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "rollback"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "history"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "fork"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "fork"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "steer"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "turn_id"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "content"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "content"
+                ]
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -1406,7 +1701,22 @@
                       "native_history": {
                         "type": "boolean"
                       },
+                      "history_pagination": {
+                        "type": "boolean"
+                      },
                       "conversation_rollback": {
+                        "type": "boolean"
+                      },
+                      "conversation_fork": {
+                        "type": "boolean"
+                      },
+                      "active_steering": {
+                        "type": "boolean"
+                      },
+                      "manual_compaction": {
+                        "type": "boolean"
+                      },
+                      "content_retrieval": {
                         "type": "boolean"
                       },
                       "sandbox_modes": {
@@ -2913,6 +3223,13 @@
             "input": {
               "type": "string"
             },
+            "action": {
+              "type": "string",
+              "enum": [
+                "prompt",
+                "compact"
+              ]
+            },
             "mode": {
               "type": "string",
               "enum": [
@@ -2999,7 +3316,34 @@
             "turn_id",
             "input"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "compact"
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "input": {
+                    "const": ""
+                  },
+                  "mode": {
+                    "const": "execute"
+                  },
+                  "images": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -11094,6 +11438,44 @@
                 "diff_summary": {
                   "type": "string"
                 },
+                "content_ref": {
+                  "type": "object",
+                  "properties": {
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 8388608
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "content_id",
+                    "sha256",
+                    "byte_length",
+                    "format",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                },
                 "error": {
                   "type": "object",
                   "properties": {
@@ -11232,6 +11614,44 @@
                   "properties": {
                     "final_text": {
                       "type": "string"
+                    },
+                    "content_ref": {
+                      "type": "object",
+                      "properties": {
+                        "content_id": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "byte_length": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 8388608
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        }
+                      },
+                      "required": [
+                        "content_id",
+                        "sha256",
+                        "byte_length",
+                        "format",
+                        "expires_at"
+                      ],
+                      "additionalProperties": false
                     },
                     "structured_output": {},
                     "diff_summary": {
@@ -11473,6 +11893,44 @@
                     "final_text": {
                       "type": "string"
                     },
+                    "content_ref": {
+                      "type": "object",
+                      "properties": {
+                        "content_id": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "byte_length": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 8388608
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        }
+                      },
+                      "required": [
+                        "content_id",
+                        "sha256",
+                        "byte_length",
+                        "format",
+                        "expires_at"
+                      ],
+                      "additionalProperties": false
+                    },
                     "structured_output": {},
                     "diff_summary": {
                       "type": "string"
@@ -11713,6 +12171,44 @@
                     "final_text": {
                       "type": "string"
                     },
+                    "content_ref": {
+                      "type": "object",
+                      "properties": {
+                        "content_id": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "byte_length": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 8388608
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        }
+                      },
+                      "required": [
+                        "content_id",
+                        "sha256",
+                        "byte_length",
+                        "format",
+                        "expires_at"
+                      ],
+                      "additionalProperties": false
+                    },
                     "structured_output": {},
                     "diff_summary": {
                       "type": "string"
@@ -11952,6 +12448,44 @@
                   "properties": {
                     "final_text": {
                       "type": "string"
+                    },
+                    "content_ref": {
+                      "type": "object",
+                      "properties": {
+                        "content_id": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "byte_length": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 8388608
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "text",
+                            "json"
+                          ]
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        }
+                      },
+                      "required": [
+                        "content_id",
+                        "sha256",
+                        "byte_length",
+                        "format",
+                        "expires_at"
+                      ],
+                      "additionalProperties": false
                     },
                     "structured_output": {},
                     "diff_summary": {
@@ -12250,6 +12784,44 @@
                 "diff_summary": {
                   "type": "string"
                 },
+                "content_ref": {
+                  "type": "object",
+                  "properties": {
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 8388608
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "content_id",
+                    "sha256",
+                    "byte_length",
+                    "format",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                },
                 "error": {
                   "type": "object",
                   "properties": {
@@ -12445,6 +13017,44 @@
                 },
                 "diff_summary": {
                   "type": "string"
+                },
+                "content_ref": {
+                  "type": "object",
+                  "properties": {
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 8388608
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "content_id",
+                    "sha256",
+                    "byte_length",
+                    "format",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
                 },
                 "error": {
                   "type": "object",
@@ -12642,6 +13252,44 @@
                 "diff_summary": {
                   "type": "string"
                 },
+                "content_ref": {
+                  "type": "object",
+                  "properties": {
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 8388608
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "content_id",
+                    "sha256",
+                    "byte_length",
+                    "format",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
+                },
                 "error": {
                   "type": "object",
                   "properties": {
@@ -12837,6 +13485,44 @@
                 },
                 "diff_summary": {
                   "type": "string"
+                },
+                "content_ref": {
+                  "type": "object",
+                  "properties": {
+                    "content_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 8388608
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "content_id",
+                    "sha256",
+                    "byte_length",
+                    "format",
+                    "expires_at"
+                  ],
+                  "additionalProperties": false
                 },
                 "error": {
                   "type": "object",

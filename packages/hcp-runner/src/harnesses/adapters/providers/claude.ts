@@ -9,6 +9,7 @@ import {
   type HarnessAdapterEvent,
   type HarnessAdapterCancelInput,
   type HarnessAdapterStopInput,
+  type HarnessAdapterConversationInput,
 } from "../types.js";
 import {
   type CliProcessSpawner,
@@ -33,21 +34,26 @@ import {
   validateNativeStart,
 } from "./native-turn.js";
 import { createClaudeTurn, type ClaudeQueryFactory } from "./claude-runtime.js";
+import {claudeConversation, type ClaudeSessionHelper} from "./claude-conversation.js";
 export type ClaudeHarnessAdapterOptions = {
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
   turnTimeoutMs?: number;
   processKillGraceMs?: number;
   queryFactory?: ClaudeQueryFactory;
+  sessionHelper?: ClaudeSessionHelper;
 };
 export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly driverKind = "claude";
+  readonly conversationOperations = ["read", "rollback", "fork"] as const;
+  readonly #sessionHelper: ClaudeSessionHelper | undefined;
   readonly #processSpawner: CliProcessSpawner;
   readonly #probeTimeoutMs: number;
   readonly #processKillGraceMs: number;
   readonly #turns: NativeTurns;
   readonly #execute: ReturnType<typeof createClaudeTurn>;
   constructor(options: ClaudeHarnessAdapterOptions = {}) {
+    this.#sessionHelper = options.sessionHelper;
     this.#processSpawner = options.processSpawner ?? spawnProviderCliProcess;
     this.#probeTimeoutMs = options.probeTimeoutMs ?? 5_000;
     this.#processKillGraceMs = options.processKillGraceMs ?? 1_000;
@@ -147,6 +153,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       };
     }
 
+    const modelCapabilities = {image_input: true};
     return {
       provider_instance_id: provider.id,
       driver_kind: "claude",
@@ -158,13 +165,14 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       authStatus: "authenticated",
       models:
         provider.models.length > 0
-          ? normalizeProviderModels(provider.models)
+          ? normalizeProviderModels(provider.models).map(model => ({...model, capabilities: {...model.capabilities, ...modelCapabilities}}))
           : [
               {
                 id: "sonnet",
                 label: "Claude Sonnet",
                 is_default: true,
                 capabilities: {
+                  image_input: true,
                   option_descriptors: [
                     {
                       id: "effort",
@@ -180,12 +188,12 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
               {
                 id: "opus",
                 label: "Claude Opus",
-                capabilities: { option_descriptors: [] },
+                capabilities: { option_descriptors: [], image_input: true },
               },
               {
                 id: "haiku",
                 label: "Claude Haiku",
-                capabilities: { option_descriptors: [] },
+                capabilities: { option_descriptors: [], image_input: true },
               },
             ],
     };
@@ -194,10 +202,15 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     validateNativeStart(input, "claude");
   }
+  async conversationOperation(input: HarnessAdapterConversationInput) {
+    return claudeConversation(input, this.#sessionHelper);
+  }
   async startSession(
     input: HarnessAdapterStartInput,
   ): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
+    if (input.payload.continue_session && !input.nativeConversation)
+      throw new HarnessAdapterError("native_continuation_binding", "Claude resume requires the runner-authorized retained binding.");
     for (const attachment of adapterMcpServers(input.mcpServers, input.payload))
       assertCliMcpAttachmentProxied(attachment, "Claude", "claude");
     return { adapter_session_id: input.payload.session_id };
