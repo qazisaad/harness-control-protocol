@@ -1,7 +1,10 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 
-import { Server, createMcpHandler, type McpHttpHandler, type CallToolResult, type Tool } from "@modelcontextprotocol/server";
-import { toNodeHandler, type NodeMcpRequestHandler } from "@modelcontextprotocol/node";
+import { Server, createMcpHandler, isLegacyRequest, isInitializeRequest, isSpecType, type InputRequiredResult, type McpHttpHandler, type CallToolResult, type Tool } from "@modelcontextprotocol/server";
+import { toNodeHandler, toWebRequest, NodeStreamableHTTPServerTransport, type NodeMcpRequestHandler } from "@modelcontextprotocol/node";
+import {randomUUID} from "node:crypto";
+import {McpInputRequiredError} from "./input-required.js";
+import {McpProxyInputs} from "./proxy-inputs.js";
 import type { HarnessAdapterMcpServer } from "../harnesses/adapters.js";
 import { MCP_REVIEW_META_KEY } from "./McpAttachmentClient.js";
 import type { McpAttachmentClient, McpToolCallArguments, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
@@ -23,6 +26,9 @@ export class McpProxyServer {
   #httpServer: HttpServer | undefined;
   #mcpHandler: McpHttpHandler | undefined;
   #adapterAttachment: HarnessAdapterMcpServer | undefined;
+  readonly #inputs = new McpProxyInputs();
+  readonly #legacyConnections = new Map<string, NodeStreamableHTTPServerTransport>();
+  readonly #legacyServers = new Set<Server>();
 
   constructor(options: McpProxyServerOptions) {
     this.#attachment = options.attachment;
@@ -41,7 +47,7 @@ export class McpProxyServer {
     }
 
     await this.#upstream.connect();
-    const mcpHandler = createMcpHandler(() => createProxySdkServer(this.#attachment.name, this.#upstream));
+    const mcpHandler = createMcpHandler(() => createProxySdkServer(this.#attachment.name, this.#upstream, this.#inputs, "modern"), {legacy: "reject"});
     const nodeHandler = toNodeHandler(mcpHandler);
     const httpServer: HttpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
       this.#handleRequest(request, response, nodeHandler).catch((error: unknown) => {
@@ -96,6 +102,11 @@ export class McpProxyServer {
     this.#adapterAttachment = undefined;
 
     const errors: string[] = [];
+    this.#inputs.close();
+    for (const server of this.#legacyServers) {
+      try {await server.close();} catch {errors.push("MCP legacy caller closure failed.");}
+    }
+    this.#legacyConnections.clear(); this.#legacyServers.clear();
     const mcpHandler = this.#mcpHandler;
     this.#mcpHandler = undefined;
     if (mcpHandler) {
@@ -129,6 +140,32 @@ export class McpProxyServer {
     }
 
     const parsedBody: unknown = request.method === "POST" ? await readJsonBody(request) : undefined;
+    const nativeRequest = {
+      headers: request.headers,
+      ...(request.method === undefined ? {} : {method: request.method}),
+      ...(request.url === undefined ? {} : {url: request.url}),
+      [Symbol.asyncIterator]: () => request[Symbol.asyncIterator](),
+    };
+    if (await isLegacyRequest(await toWebRequest(nativeRequest, parsedBody), parsedBody)) {
+      const id = request.headers["mcp-session-id"];
+      let transport = typeof id === "string" ? this.#legacyConnections.get(id) : undefined;
+      if (!transport && id === undefined && request.method === "POST" && isInitializeRequest(parsedBody)) {
+        if (this.#legacyServers.size >= 32) throw new Error("MCP proxy caller ownership reached its bounded capacity.");
+        const scope = randomUUID();
+        const server = createProxySdkServer(this.#attachment.name, this.#upstream, this.#inputs, scope);
+        transport = new NodeStreamableHTTPServerTransport({sessionIdGenerator: () => scope,
+          onsessioninitialized: sessionId => {this.#legacyConnections.set(sessionId, transport!);}});
+        this.#legacyServers.add(server);
+        server.onclose = () => {
+          this.#legacyConnections.delete(scope); this.#legacyServers.delete(server); this.#inputs.closeScope(scope);
+        };
+        try {await server.connect(transport);}
+        catch (failure) {this.#legacyServers.delete(server); await server.close(); throw failure;}
+      }
+      if (!transport) {writeJsonRpcError(response, 404, "mcp_proxy_caller_unavailable", "The native MCP caller is unavailable."); return;}
+      await transport.handleRequest(request, response, parsedBody);
+      return;
+    }
     await handler({
       headers: request.headers,
       ...(request.method === undefined ? {} : {method: request.method}),
@@ -138,7 +175,7 @@ export class McpProxyServer {
   }
 }
 
-function createProxySdkServer(attachmentName: string, upstream: McpProxyUpstream): Server {
+function createProxySdkServer(attachmentName: string, upstream: McpProxyUpstream, inputs: McpProxyInputs, scope: string): Server {
   const server = new Server(
     { name: `hcp-mcp-proxy-${attachmentName}`, version: "0.0.0" },
     {
@@ -155,15 +192,27 @@ function createProxySdkServer(attachmentName: string, upstream: McpProxyUpstream
     };
   });
 
-  server.setRequestHandler("tools/call", async (request): Promise<CallToolResult> => {
+  server.setRequestHandler("tools/call", async (request, ctx): Promise<CallToolResult | InputRequiredResult> => {
     const tools = await upstream.listTools();
     const tool = tools.find(tool => tool.name === request.params.name);
     if (!tool) throw new Error("The requested MCP tool is no longer advertised.");
-    const result: McpToolCallResult = await upstream.callTool(
-      request.params.name,
-      request.params.arguments ?? {},
-    );
-    return server.projectCallToolResult(toSdkToolCallResult(result), tool.output_schema);
+    const args = request.params.arguments ?? {};
+    const continuation = inputs.consume(scope, request.params.name, args, ctx.mcpReq.requestState(), ctx.mcpReq.inputResponses);
+    try {
+      const result: McpToolCallResult = await upstream.callTool(request.params.name, args, undefined, continuation);
+      return server.projectCallToolResult(toSdkToolCallResult(result), tool.output_schema);
+    } catch (failure) {
+      if (!(failure instanceof McpInputRequiredError)) throw failure;
+      const inputRequests: NonNullable<InputRequiredResult["inputRequests"]> = {};
+      for (const [id, input] of Object.entries(failure.pending.inputRequests ?? {})) {
+        if (!isSpecType.ElicitRequest(input) && !isSpecType.CreateMessageRequest(input) && !isSpecType.ListRootsRequest(input))
+          throw new Error("MCP input cannot be represented by this native protocol bridge.");
+        inputRequests[id] = input;
+      }
+      const requestState = inputs.retain(scope, request.params.name, args, failure.pending);
+      return {resultType: "input_required", inputRequests, requestState,
+        ...(failure.pending._meta ? {_meta: failure.pending._meta} : {})};
+    }
   });
 
   return server;

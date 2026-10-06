@@ -10,6 +10,7 @@ import {CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest} from
 import {HarnessSessionManager} from "@harness-control/runner/harnesses";
 import {RunnerConfigSchema} from "@harness-control/runner/config";
 import {JsonRunnerStateStore} from "@harness-control/runner/state";
+import {McpProxyServer, McpInputRequiredError, parseMcpPendingInput} from "@harness-control/runner/mcp";
 
 if (process.env.HCP_NATIVE_LIVE !== "1") throw new Error("Set HCP_NATIVE_LIVE=1 for authenticated native acceptance.");
 const cwd = await mkdtemp(join(tmpdir(), "hcp-live-claude-elicitation-"));
@@ -53,8 +54,28 @@ const http = createServer(async (request, response) => {
     await transport.handleRequest(request, response, body);
   } catch {if (!response.headersSent) response.writeHead(500); response.end();}
 });
-await new Promise(resolve => http.listen(0, "127.0.0.1", resolve));
-const url = `http://127.0.0.1:${http.address().port}/mcp`;
+let proxy, url;
+if (process.env.HCP_LIVE_MCP_PROXY === "1") {
+  proxy = new McpProxyServer({attachment: {name: "selected"}, upstream: {
+    async connect() {}, async close() {},
+    async listTools() {return [{name: tool.name, description: tool.description, input_schema: tool.inputSchema}];},
+    async callTool(name, args, _grant, continuation) {
+      assert.equal(name, tool.name); const scenario = args.scenario;
+      assert.ok(["accept", "cancel", "lost"].includes(scenario));
+      if (!continuation) throw new McpInputRequiredError(parseMcpPendingInput({requestState: scenario, inputRequests: {
+        question: {method: "elicitation/create", params: {mode: "form", message: `Safe local acceptance question: ${scenario}`,
+          requestedSchema: {type: "object", properties: {answer: {type: "string", minLength: 1, maxLength: 128}}, required: ["answer"]}}}}}));
+      assert.equal(continuation.pending.requestState, scenario);
+      const reply = continuation.responses.question; nativeReplies.push({scenario, action: reply.action});
+      const value = reply.action === "accept" ? reply.content.answer : "cancelled";
+      return {is_error: false, content: [{type: "text", text: value}], structured_content: {answer: value}};
+    },
+  }});
+  await proxy.connect(); url = proxy.adapterAttachment.url;
+} else {
+  await new Promise(resolve => http.listen(0, "127.0.0.1", resolve));
+  url = `http://127.0.0.1:${http.address().port}/mcp`;
+}
 const config = RunnerConfigSchema.parse({runner_id: "elicitation-acceptance", control_plane_url: "ws://localhost:1",
   workspaces: [{id: "workspace", path: cwd}], provider_instances: [{id: "claude", driver_kind: "claude"}]});
 // An explicit local fixture connector exercises native MCP and HCP callback routing without external service effects.
@@ -120,6 +141,7 @@ try {
   try {await manager.stopSession("session", "cleanup");} catch (error) {if (error?.code !== "session_not_found") throw error;}
   unsubscribe();
   for (const server of servers) await server.close();
-  http.closeAllConnections(); await new Promise(resolve => http.close(resolve));
+  await proxy?.close();
+  if (http.listening) {http.closeAllConnections(); await new Promise(resolve => http.close(resolve));}
 }
-console.log(JSON.stringify({driver: "claude", passed, cwd}));
+console.log(JSON.stringify({driver: "claude", proxy: !!proxy, passed, cwd}));

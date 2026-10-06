@@ -48,6 +48,8 @@ try {
   run(process.execPath, ["conversation-controls-consumer.mjs"], consumer);
   copyFileSync(join(root, "examples/mcp-review-consumer.mjs"), join(consumer, "mcp-review-consumer.mjs"));
   run(process.execPath, ["mcp-review-consumer.mjs"], consumer);
+  copyFileSync(join(root, "examples/mcp-proxy-consumer.mjs"), join(consumer, "mcp-proxy-consumer.mjs"));
+  run(process.execPath, ["mcp-proxy-consumer.mjs"], consumer);
   copyFileSync(join(root, "examples/startup-cleanup-consumer.mjs"), join(consumer, "startup-cleanup-consumer.mjs"));
   run(process.execPath, ["startup-cleanup-consumer.mjs"], consumer);
   writeFileSync(join(output, "manifest.json"), JSON.stringify({ packages: manifests }, null, 2) + "\n");

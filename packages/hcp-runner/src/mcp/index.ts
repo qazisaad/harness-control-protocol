@@ -13,5 +13,7 @@ export {
 export { McpProxyServer, type McpProxyServerOptions, type McpProxyUpstream } from "./McpProxyServer.js";
 export { McpStdioProfileClient, type McpStdioProfileClientOptions } from "./McpStdioProfileClient.js";
 export { redactHeaders, redactValue } from "./redaction.js";
+export {McpInputRequiredError, parseMcpPendingInput, mcpInputReplySchema, mcpInputResponseParams,
+  type McpPendingInput, type McpInputReply} from "./input-required.js";
 
 export { MCP_REVIEW_META_KEY, mcpReviewActionSchema, mcpReviewGrantSchema, mcpReviewPolicySchema, mcpReviewActionBytes, hashMcpReviewAction, type McpReviewAction, type McpReviewGrant, type McpReviewPolicy } from "@harness-control/protocol";

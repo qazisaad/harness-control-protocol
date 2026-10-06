@@ -5,14 +5,65 @@ import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Client as ModernClient, StreamableHTTPClientTransport as ModernTransport } from "@modelcontextprotocol/client";
-import type { ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
+import {ElicitRequestSchema, type ListToolsResult} from "@modelcontextprotocol/sdk/types.js";
 import type { StreamableHttpMcpServerAttachment } from "@harness-control/protocol";
 import type { HarnessAdapterMcpServer } from "../harnesses/adapters.js";
 
 import { McpProxyServer, type McpProxyUpstream } from "./McpProxyServer.js";
 import type { McpToolCallArguments, McpToolCallResult, McpToolDescriptor } from "./McpAttachmentClient.js";
+import {McpInputRequiredError, parseMcpPendingInput} from "./input-required.js";
 
 describe("McpProxyServer", () => {
+  it("closing a proxy loses an unanswered native form without submitting an upstream cancellation", async () => {
+    let resumed = 0, asked!: () => void;
+    const question = new Promise<void>(resolve => {asked = resolve;});
+    const upstream: McpProxyUpstream = {
+      async connect() {}, async close() {}, async listTools() {return [{name: "ask", input_schema: {type: "object"}}];},
+      async callTool(_name, _args, _grant, continuation) {
+        if (continuation) {resumed++; assert.fail("Lost form dispatched an upstream response");}
+        throw new McpInputRequiredError(parseMcpPendingInput({requestState: "private-state", inputRequests: {question: {
+          method: "elicitation/create", params: {message: "Wait", requestedSchema: {type: "object", properties: {}}}}}}));
+      },
+    };
+    const proxy = new McpProxyServer({attachment: attachment(), upstream}); await proxy.connect();
+    const client = new Client({name: "native-loss-test", version: "1"}, {capabilities: {elicitation: {form: {}}}});
+    client.setRequestHandler(ElicitRequestSchema, async () => {asked(); return await new Promise<never>(() => {});});
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(requireAdapterUrl(proxy))) as Parameters<Client["connect"]>[0]);
+      const running = client.callTool({name: "ask", arguments: {}}).then(result => result, () => undefined);
+      await question; await proxy.close(); await client.close(); await running;
+      assert.equal(resumed, 0);
+    } finally {await client.close(); await proxy.close();}
+  });
+  for (const action of ["accept", "cancel"] as const) it(`bridges upstream input-required to an actual native MCP form (${action})`, async () => {
+    let calls = 0, replies = 0, observed = 0;
+    const pending = parseMcpPendingInput({requestState: "upstream-private-state", inputRequests: {question: {
+      method: "elicitation/create", params: {message: "Continue?", requestedSchema: {type: "object", properties: {
+        answer: {type: "string"}}, required: ["answer"]}}}}});
+    const upstream: McpProxyUpstream = {
+      async connect() {}, async close() {}, async listTools() {return [{name: "ask", input_schema: {type: "object"}}];},
+      async callTool(_name, _args, _grant, continuation) {
+        calls++;
+        if (!continuation) throw new McpInputRequiredError(pending);
+        assert.equal(continuation.pending.requestState, "upstream-private-state"); replies++;
+        const result = continuation.responses.question;
+        assert.ok(result && "action" in result); assert.equal(result.action, action);
+        return {is_error: false, content: [{type: "text", text: action === "accept" ? "accepted" : "cancelled"}]};
+      },
+    };
+    const proxy = new McpProxyServer({attachment: attachment(), upstream}); await proxy.connect();
+    const client = new Client({name: "native-form-test", version: "1"}, {capabilities: {elicitation: {form: {}}}});
+    client.setRequestHandler(ElicitRequestSchema, async request => {
+      assert.equal(request.params.message, "Continue?"); observed++;
+      return {action, ...(action === "accept" ? {content: {answer: "yes"}} : {})};
+    });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(requireAdapterUrl(proxy))) as Parameters<Client["connect"]>[0]);
+      const result = await client.callTool({name: "ask", arguments: {}});
+      assert.deepEqual(result.content, [{type: "text", text: action === "accept" ? "accepted" : "cancelled"}]);
+      assert.equal(calls, 2); assert.equal(replies, 1); assert.equal(observed, 1);
+    } finally {await client.close(); await proxy.close();}
+  });
   for (const mode of ["auto", "legacy"] as const) {
     it(`preserves every structured result type through ${mode} wire projection`, async () => {
       const values = [null, false, 0, "", [1, "two"], {ok: true}];
