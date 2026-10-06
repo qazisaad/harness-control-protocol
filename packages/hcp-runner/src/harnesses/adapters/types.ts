@@ -144,6 +144,9 @@ export type HarnessAdapter = {
   /** Read-only, revision-checked native history can coexist with this adapter's live session owner. */
   readonly liveHistoryRead?: true;
   readonly nativeWork?: true;
+  /** native_mcp_detach_busy is a pre-dispatch refusal; other failures retain unknown outcome. */
+  detachNativeMcpServers?(input: {sessionId: string; names: readonly string[]; signal: AbortSignal}): Promise<{
+    source: "native"; detached: string[]; remaining: string[]}>;
   submitNativeFeedback?(input: {sessionId: string; nativeThreadId: string; provider: ProviderInstanceConfig;
     startPayload: HcpSessionStartPayload; request: import("@harness-control/protocol").HarnessNativeFeedbackOperation;
     signal: AbortSignal}): Promise<{feedback_id: string}>;

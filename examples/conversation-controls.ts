@@ -18,7 +18,16 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const,
     empty_conversation: true, idle_configuration_transition: true,
     native_feedback: {owner: "live_conversation" as const, classifications: ["bug"], diagnostics: true},
-    account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const}];
+    account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const, mcp_detach: "idle_session" as const}];
+  readonly mcpNames = new Map<string, Set<string>>();
+  nativeMcpDetaches = 0;
+  async detachNativeMcpServers(input: Parameters<NonNullable<HarnessAdapter["detachNativeMcpServers"]>>[0]) {
+    const names = this.mcpNames.get(input.sessionId);
+    if (!names || input.names.some(name => !names.has(name))) throw new HarnessAdapterError("native_mcp_detach_busy", "Fixture has no matching native MCP owner.");
+    this.nativeMcpDetaches++;
+    for (const name of input.names) names.delete(name);
+    return {source: "native" as const, detached: [...input.names], remaining: [...names]};
+  }
   readonly requests = new Map<string, {id: string; turnId?: string}>();
   inputsReceived = 0;
   nativeCancellations = 0;
@@ -58,6 +67,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       throw new HarnessAdapterError("unsupported_configuration", "Use the advertised fixture profile.");
   }
   async startSession(input: HarnessAdapterStartInput) {
+    this.mcpNames.set(input.payload.session_id, new Set(input.payload.mcp_servers.map(server => server.name)));
     this.instructionsSeen = input.payload.instructions;
     this.observations.set(input.payload.session_id, input.emitSessionEvent!);
     input.registerSessionInteractions!({

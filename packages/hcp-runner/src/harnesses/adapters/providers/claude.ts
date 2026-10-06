@@ -253,6 +253,11 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     if (!runtime || input.startPayload.execution_profile !== "interactive") throw new HarnessAdapterError("native_work_unsupported", "Native task control requires the interactive Claude profile.");
     await runtime.cancel(input.work.work_id, input.signal);
   }
+  async detachNativeMcpServers(input: Parameters<NonNullable<HarnessAdapter["detachNativeMcpServers"]>>[0]) {
+    const runtime = this.#persistent.get(input.sessionId);
+    if (!runtime) throw new HarnessAdapterError("native_mcp_detach_busy", "MCP removal requires the live interactive Claude owner.");
+    return runtime.detachMcp(input.names, input.signal);
+  }
   async readNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]) {
     const runtime = this.#persistent.get(input.sessionId);
     if (!runtime || input.startPayload.execution_profile !== "interactive")

@@ -319,6 +319,8 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   /** Uncorrelated native output is owned by the session, never an invented app turn. */
   native_async_output: z.literal("session").optional(),
   native_retry_observations: z.literal("session").optional(),
+  /** Removal from the current idle owner; a later owner has its own explicit selection. */
+  mcp_detach: z.literal("idle_session").optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;

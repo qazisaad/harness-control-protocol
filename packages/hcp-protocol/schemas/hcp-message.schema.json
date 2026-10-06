@@ -5648,6 +5648,10 @@
                               "type": "string",
                               "const": "session"
                             },
+                            "mcp_detach": {
+                              "type": "string",
+                              "const": "idle_session"
+                            },
                             "root_interrupt_effect": {
                               "type": "string",
                               "enum": [

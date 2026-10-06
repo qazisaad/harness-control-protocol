@@ -18,6 +18,7 @@ import {selectedEffort} from "./native-turn.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {claudeRateLimitObservation} from "./claude-rate-limits.js";
+import {detachClaudeMcp, initializeClaudeMcp} from "./claude-mcp-controls.js";
 
 type Root = {input: HarnessAdapterTurnInput; emit: (event: HarnessAdapterEvent) => void; ids: Set<string>;
   interactions: NativeInteractions; lifetime: AbortController; context: HarnessContextUsage; nativeModel?: string; streamed: boolean; compacted: boolean;
@@ -55,6 +56,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #selection: HarnessAdapterTurnInput["startPayload"]["model_selection"] | undefined;
   #mode: "execute" | "plan" | undefined;
   #policyProof: {mode: NonNullable<Options["permissionMode"]>; resolve: () => void; reject: (failure: unknown) => void} | undefined;
+  #mcpConfigurations: NonNullable<Options["mcpServers"]> = {};
+  #mcpReady = false;
 
   constructor(readonly start: HarnessAdapterStartInput, readonly factory: ClaudeQueryFactory = query) {
     this.nativeId = start.nativeConversation?.native_thread_id ?? randomUUID();
@@ -64,6 +67,19 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     start.registerSessionInteractions(this);
   }
   owns(id: string): boolean {return this.#sessionInputs.owns(id) || [...this.#roots].some(root => root.interactions.owns(id));}
+  async detachMcp(names: readonly string[], signal: AbortSignal): Promise<{source: "native"; detached: string[]; remaining: string[]}> {
+    if (!this.#initialized || !this.#stream || this.#lost || this.#stopping || this.#active || this.#pending().length
+      || this.#background.size || this.#unconfirmedWork || this.#sessionInputs.outstanding || [...this.#roots].some(root => root.interactions.outstanding))
+      throw error("native_mcp_detach_busy", "MCP removal requires an initialized idle native owner without outstanding work or callbacks.");
+    signal.throwIfAborted();
+    try {
+      const remaining = await bounded(detachClaudeMcp(this.#stream, this.#mcpConfigurations, names));
+      signal.throwIfAborted();
+      if (this.#lost || this.#stopping) throw error("native_mcp_detach_unknown", "The native owner was lost during MCP removal.");
+      this.#mcpConfigurations = remaining;
+      return {source: "native", detached: [...names], remaining: Object.keys(remaining)};
+    } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
+  }
   async confirmIdlePolicy(): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback> {
     if (!this.start.nativeConversation || this.start.nativeConversation.fresh || this.#stream || this.#lost)
       throw error("native_configuration_transition_unsupported", "Idle policy confirmation requires the retained native conversation and a fresh execution owner.");
@@ -214,8 +230,17 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       const message = this.#message(root, input.payload.action === "compact" ? "/compact" : input.payload.input);
       if (input.payload.images?.length) message.message.content = [{type: "text", text: input.payload.input}, ...input.payload.images.map(image => ({type: "image" as const,
         source: {type: "base64" as const, media_type: image.mime_type, data: image.data_base64}}))];
+      if (!this.#stream) try {
+        this.#open();
+        if (!this.#mcpReady) {
+          await bounded(this.#stream!.initializationResult());
+          await bounded(initializeClaudeMcp(this.#stream!, this.#mcpConfigurations));
+          signal.throwIfAborted();
+          if (this.#lost || this.#stopping) throw error("native_mcp_detach_unknown", "Native ownership was lost during MCP registration.");
+          this.#mcpReady = true;
+        }
+      } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
       this.#channel.offer(message);
-      if (!this.#stream) try {this.#open();} catch (failure) {this.#lose("runtime_error", failure); throw failure;}
       if (this.#initialized) {
         input.session.native_thread_id = this.nativeId; input.persistNativeThread?.(this.nativeId);
         this.#controls(root, signal);
@@ -246,6 +271,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     for (const attachment of adapterMcpServers(this.start.mcpServers, this.start.payload)) {
       assertCliMcpAttachmentProxied(attachment, "Claude", "claude"); mcpServers[attachment.name] = {type: "http", url: attachment.url};
     }
+    this.#mcpConfigurations = mcpServers;
+    this.#mcpReady = Object.keys(mcpServers).length === 0;
     const effort = selectedEffort(this.#selection!, "claude") as Options["effort"];
     this.#stream = this.factory({prompt: this.#channel, options: {
       pathToClaudeCodeExecutable: this.start.provider.executable_path ?? "claude", cwd: this.start.payload.cwd,
@@ -256,11 +283,13 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       // This owner exposes stopTask through HCP work cancellation. Without this declaration,
       // native interrupt also kills independent background tasks on an open input stream.
       perTaskStopAffordance: true,
-      includePartialMessages: true, strictMcpConfig: true, mcpServers, permissionMode: this.#permissionMode(this.#mode!),
+      // CLI-flag MCP servers are not removed by setMcpServers. Register selected
+      // servers through the dynamic control, with readback, before offering input.
+      includePartialMessages: true, strictMcpConfig: true, mcpServers: {}, permissionMode: this.#permissionMode(this.#mode!),
       allowDangerouslySkipPermissions: this.start.payload.approval_policy === "full_access",
       onElicitation: claudeElicitation(() => {
         if (!this.#initialized || this.#lost) return undefined;
-        return {threadId: this.nativeId, interactions: this.#sessionInputs, signal: this.#sessionLifetime.signal, serverNames: Object.keys(mcpServers)};
+        return {threadId: this.nativeId, interactions: this.#sessionInputs, signal: this.#sessionLifetime.signal, serverNames: Object.keys(this.#mcpConfigurations)};
       }),
       canUseTool: claudePermissions(options => {
         if (!this.#initialized || this.#lost) return undefined;
@@ -303,11 +332,11 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     if (z.object({type: z.literal("system"), subtype: z.literal("session_title_changed")}).safeParse(message).success) return;
     if (message.type === "system" && message.subtype === "init") {
       const init = z.object({cwd: z.string(), permissionMode: z.string(), mcp_servers: z.array(z.object({name: z.string(), status: z.string()})), plugins: z.array(z.unknown())}).parse(message);
-      const expected = adapterMcpServers(this.start.mcpServers, this.start.payload).map(server => server.name).sort();
+      const expected = (this.#mcpReady ? Object.keys(this.#mcpConfigurations) : []).sort();
       if (await realpath(init.cwd) !== await realpath(this.start.payload.cwd) || init.permissionMode !== this.#permissionMode(this.#mode!)) throw error("policy_mismatch", "Claude did not confirm the requested workspace and permissions.");
       if (hasInheritedClaudePlugins(init.plugins) || init.mcp_servers.some(server => server.status !== "connected") || JSON.stringify(init.mcp_servers.map(server => server.name).sort()) !== JSON.stringify(expected)) throw error("mcp_scope_mismatch", "Claude did not confirm the exact native MCP and plugin inventory.");
       this.#initialized = true;
-      if (this.#active) {this.#active.input.session.native_thread_id = this.nativeId; this.#active.input.persistNativeThread?.(this.nativeId);
+      if (this.#active && this.#mcpReady) {this.#active.input.session.native_thread_id = this.nativeId; this.#active.input.persistNativeThread?.(this.nativeId);
         this.#controls(this.#active, this.#active.lifetime.signal);}
       return;
     }

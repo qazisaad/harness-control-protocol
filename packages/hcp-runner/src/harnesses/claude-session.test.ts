@@ -27,7 +27,7 @@ async function until(predicate: () => boolean) {
   for (let n = 0; n < 500; n++) {if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 2));}
   throw new Error("Native fixture did not reach the expected observation.");
 }
-async function fixture(sessionHelper?: ClaudeSessionHelper) {
+async function fixture(sessionHelper?: ClaudeSessionHelper, withMcp = false) {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-claude-persistent-"));
   const options: Options[] = [];
   const prompts: SDKUserMessage[] = [];
@@ -40,6 +40,8 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
   let completeOnStop = false;
   let failOpen = false, factoryCalls = 0;
   let confirmCompact = true;
+  const detachedControls: string[][] = [], closedClients: string[] = [];
+  let failDetach = false, failRegistration = false;
   let effectiveEffort: string | null = "medium";
   const emit = (message: Record<string, unknown>) => output.offer({session_id: nativeId, ...message});
   const assistant = (uuid: string, blocks: unknown[] = []) => emit({type: "assistant", user_message_uuid: uuid, parent_tool_use_id: null,
@@ -51,6 +53,7 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
     factoryCalls++;
     if (failOpen) throw new Error("Native query initialization failed");
     options.push(value!); nativeId = value!.resume ?? value!.sessionId!;
+    let mcpConfigurations = {...value!.mcpServers};
     void (async () => {
       let initialized = false;
       for await (const message of prompt as AsyncIterable<SDKUserMessage>) {
@@ -59,7 +62,7 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
         emit({type: "command_lifecycle", command_uuid: message.uuid, state: "started"});
         if (!initialized) emit({type: "system", subtype: "session_title_changed", title: "Restored conversation"});
         if (!initialized) {initialized = true; emit({type: "system", subtype: "init", cwd: value!.cwd, permissionMode: value!.permissionMode,
-          mcp_servers: [], plugins: []});}
+          mcp_servers: Object.keys(mcpConfigurations).map(name => ({name, status: "connected"})), plugins: []});}
         const text = message.message.content as string;
         if (text === "spawn" || text === "spawn-wait") {
           assistant(message.uuid!, [{type: "tool_use", id: "launch", name: "Agent", input: {prompt: "work", run_in_background: true}}]);
@@ -74,6 +77,14 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
     return Object.assign(stream, {
       close() {closes++; output.close();},
       async setModel(model: string) {controls.push(`model:${model}`);},
+      async initializationResult() {return {};},
+      async mcpServerStatus() {return Object.entries(mcpConfigurations).map(([name, config]) => ({name, config, status: "connected"}));},
+      async setMcpServers(next: NonNullable<Options["mcpServers"]>) {
+        const added = Object.keys(next).filter(name => !Object.hasOwn(mcpConfigurations, name));
+        const removed = Object.keys(mcpConfigurations).filter(name => !Object.hasOwn(next, name));
+        if (removed.length) detachedControls.push(removed); mcpConfigurations = {...next};
+        return {added: failRegistration ? [] : added, removed: failDetach ? [] : removed, errors: {}};
+      },
       async setPermissionMode(mode: string) {controls.push(`mode:${mode}`);},
       async applyFlagSettings(settings: {effortLevel: string | null}) {controls.push(`effort:${settings.effortLevel}`); effectiveEffort = settings.effortLevel;},
       async getSettings() {controls.push("settings:read"); return {applied: {model: "claude-sonnet", effort: effectiveEffort ?? "high"},
@@ -86,12 +97,18 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
     provider_instances: [{id: "provider", driver_kind: "claude"}]});
   const state = new JsonRunnerStateStore(join(cwd, "state.json"));
   const adapter = new ClaudeHarnessAdapter({queryFactory: factory, ...(sessionHelper ? {sessionHelper} : {})});
-  const manager = new HarnessSessionManager(config, {stateStore: state, adapterRegistry: new HarnessAdapterRegistry([adapter])});
+  const manager = new HarnessSessionManager(config, {stateStore: state, adapterRegistry: new HarnessAdapterRegistry([adapter]),
+    mcpClientFactory: ({attachment}) => ({async connect() {}, async listTools() {return [];},
+      adapterAttachment: {name: attachment.name, transport: "streamable_http", url: attachment.url, headers: {}},
+      async close() {closedClients.push(attachment.name);}})});
   const events: HcpHarnessEventPayload[] = [];
   manager.subscribeEvents(event => {hcpHarnessEventPayloadSchema.parse(event); events.push(event);});
   const start: HcpSessionStartPayload = {session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "claude",
     execution_profile: "interactive", model_selection: {model: "sonnet"}, approval_policy: "ask", sandbox_mode: "danger_full_access", continue_session: false,
     continuation_group_key: "conversation", mcp_servers: []};
+  if (withMcp) start.mcp_servers = ["first", "second"].map(name => ({name, transport: "streamable_http" as const,
+    url: `http://localhost/${name}`, headers: {}, lease_id: `fixture-${name}`,
+    proof_of_possession: {scheme: "runner_signed_request" as const, key_id: "fixture", required_headers: ["x-hcp-session-id"]}}));
   await manager.startSession(start);
   const read = async () => {
     const receipt = await manager.conversationOperation("read", {session_id: "session", operation: {kind: "work", action: "read"}});
@@ -101,10 +118,70 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
   const send = (id: string, input: string) => manager.sendTurn({session_id: "session", turn_id: id, input});
   const cleanup = async () => {completeOnStop = true; try {await manager.stopSession("session", "cleanup");} catch {} await rm(cwd, {recursive: true, force: true});};
   return {cwd, config, adapter, manager, options, prompts, controls, events, start, state, emit, send, read, assistant, result,
+    detachedControls, closedClients, failNativeDetach: () => {failDetach = true;}, failNativeRegistration: () => {failRegistration = true;},
     noEcho: () => {echo = false;}, failFactory: () => {failOpen = true;}, get factoryCalls() {return factoryCalls;},
     omitCompactConfirmation: () => {confirmCompact = false;},
     closeNative: () => output.close(), get closes() {return closes;}, cleanup};
 }
+
+test("Claude idle MCP detach confirms removal, closes only its owned client and retains the conversation", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    await f.send("first", "ordinary");
+    await assert.rejects(f.manager.detachToolServers({session_id: "session", names: ["foreign"]}), {code: "native_mcp_detach_binding"});
+    const events = await f.manager.detachToolServers({session_id: "session", names: ["first"]});
+    assert.equal(events.at(-1)?.event_type, "mcp.status.updated");
+    assert.deepEqual(f.detachedControls, [["first"]]); assert.deepEqual(f.closedClients, ["first"]);
+    assert.equal((await f.send("second", "usable")).at(-1)?.event_type, "turn.completed"); assert.equal(f.factoryCalls, 1);
+    await f.manager.detachToolServers({session_id: "session", names: ["first"]}); assert.equal(f.detachedControls.length, 1);
+    await f.manager.detachToolServers({session_id: "session", names: ["second"]});
+    assert.deepEqual(f.detachedControls, [["first"], ["second"]]); assert.deepEqual(f.closedClients, ["first", "second"]);
+    await f.manager.stopSession("session", "detach-test"); assert.equal(f.closedClients.length, 2);
+  } finally {await f.cleanup();}
+});
+
+test("Claude detach before native initialization refuses without fencing its first usable root", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    await assert.rejects(f.manager.detachToolServers({session_id: "session", names: ["first"]}), {code: "native_mcp_detach_busy"});
+    assert.equal(f.detachedControls.length, 0);
+    assert.equal((await f.send("first", "usable")).at(-1)?.event_type, "turn.completed");
+  } finally {await f.cleanup();}
+});
+
+test("unconfirmed Claude dynamic MCP registration cannot admit a model prompt or automatically retry startup", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    f.failNativeRegistration();
+    assert.equal((await f.send("first", "never-admitted")).at(-1)?.event_type, "turn.failed");
+    assert.equal(f.prompts.length, 0); assert.equal(f.factoryCalls, 1);
+    assert.equal((await f.send("second", "never-retried")).at(-1)?.event_type, "turn.failed");
+    assert.equal(f.prompts.length, 0); assert.equal(f.factoryCalls, 1);
+  } finally {await f.cleanup();}
+});
+
+test("Claude missing MCP removal proof fences follow-up without claiming detach or retrying native effects", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    await f.send("first", "ordinary"); f.failNativeDetach();
+    await assert.rejects(f.manager.detachToolServers({session_id: "session", names: ["first"]}), {code: "native_mcp_detach_unknown"});
+    await assert.rejects(f.manager.detachToolServers({session_id: "session", names: ["first"]}), {code: "native_mcp_detach_unknown"});
+    assert.throws(() => f.send("second", "refused"), {code: "native_mcp_detach_unknown"});
+    assert.equal(f.detachedControls.length, 1); assert.equal(f.closedClients.length, 0);
+    assert.equal(f.events.some(event => event.event_type === "mcp.status.updated" && (event.data as {status?: string}).status === "detached"), false);
+  } finally {await f.cleanup();}
+});
+
+test("Claude MCP detach refuses active roots and background work before native removal", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    const running = f.send("first", "wait"); await until(() => f.prompts.length === 1);
+    await assert.rejects(f.manager.detachToolServers({session_id: "session", names: ["first"]}), {code: "native_mcp_detach_busy"});
+    f.result(f.prompts[0]!); await running; await f.send("second", "spawn");
+    await assert.rejects(f.manager.detachToolServers({session_id: "session", names: ["first"]}), {code: "native_mcp_detach_busy"});
+    assert.equal(f.detachedControls.length, 0); assert.equal(f.closedClients.length, 0);
+  } finally {await f.cleanup();}
+});
 
 test("Claude retry observations preserve native evidence without adopting the current root", async () => {
   const f = await fixture();

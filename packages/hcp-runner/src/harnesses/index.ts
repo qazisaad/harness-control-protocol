@@ -16,6 +16,7 @@ import type { McpInputReply } from "../mcp/input-required.js";
 import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import {isDeepStrictEqual} from "node:util";
+import {z} from "zod";
 import { isAbsolute, relative, resolve } from "node:path";
 import {validateConfigurationInheritance, validateInstructionRoles} from "./adapters/providers/shared.js";
 
@@ -32,6 +33,7 @@ import type {
   LocalActionRequestPayload,
   LocalCapabilityLease,
   McpServerAttachment,
+  ToolServersDetachPayload,
   StreamableHttpMcpServerAttachment,
 } from "@harness-control/protocol";
 
@@ -90,6 +92,9 @@ export type HarnessSession = {
   mcpClients: HarnessMcpClient[];
   mcpServers: HarnessAdapterMcpServer[];
   mcpToolsets: HarnessMcpToolset[];
+  mcpDetachState?: "pending" | "unknown";
+  detachedMcpNames?: Set<string>;
+  mcpClientsByName?: Map<string, HarnessMcpClient>;
   nativeBindingHash?: string;
 };
 
@@ -1094,6 +1099,74 @@ export class HarnessSessionManager {
     }};
   }
 
+  detachToolServers(payload: ToolServersDetachPayload): Promise<HcpHarnessEventPayload[]> {
+    return this.#serializeWorkspace(async () => {
+      const session = this.#sessions.get(payload.session_id);
+      if (!session) throw new HarnessSessionError("session_not_found", "MCP removal requires the active session owner.");
+      const profile = session.adapter.executionProfiles?.find(profile => profile.id === session.startPayload.execution_profile);
+      if (profile?.mcp_detach !== "idle_session" || !session.adapter.detachNativeMcpServers)
+        throw new HarnessAdapterError("native_mcp_detach_unsupported", "This execution owner does not advertise native MCP removal.");
+      if (session.mcpDetachState) throw new HarnessAdapterError("native_mcp_detach_unknown", "An earlier MCP removal has an unresolved outcome.");
+      const configured = session.startPayload.mcp_servers.map(server => server.name);
+      if (!payload.names.length || payload.names.length > 128 || new Set(payload.names).size !== payload.names.length
+        || payload.names.some(name => !configured.includes(name)))
+        throw new HarnessAdapterError("native_mcp_detach_binding", "MCP removal requires distinct selected server names.");
+      const work = this.#stateStore.nativeWorkState(payload.session_id);
+      if (this.#runningTurns.has(payload.session_id) || this.#stateStore.getMcpReview(payload.session_id)
+        || work?.closure_unconfirmed || session.nativeWorkClosureUnconfirmed || session.nativeWorkOwnerAvailable === false
+        || Object.values(work?.items ?? {}).some(item => !isNativeWorkTerminal(item.status)))
+        throw new HarnessAdapterError("native_mcp_detach_busy", "MCP removal requires an idle session without outstanding work or reviews.");
+      const names = payload.names.filter(name => !session.detachedMcpNames?.has(name));
+      if (!names.length) return [];
+      const provider = this.#requireProvider(session.providerInstanceId, session.driverKind);
+      if (nativeProviderHash(provider) !== session.inputFileScope.provider_binding_hash)
+        throw new HarnessAdapterError("native_provider_binding", "The native MCP owner provider configuration changed.");
+      if (!session.mcpClientsByName) {
+        if (session.mcpClients.length !== configured.length) throw new HarnessAdapterError("native_mcp_detach_binding", "Selected MCP client ownership is incomplete.");
+        session.mcpClientsByName = new Map(configured.map((name, index) => [name, session.mcpClients[index]!]));
+      }
+      session.mcpDetachState = "pending";
+      let dispatched = false;
+      const events: HcpHarnessEventPayload[] = [], cancellation = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const bounded = async <T>(operation: Promise<T>): Promise<T> => {
+        try {return await Promise.race([operation, new Promise<never>((_, reject) => {timer = setTimeout(() => {
+          cancellation.abort(); reject(new HarnessAdapterError("native_mcp_detach_unknown", "MCP removal did not settle within its deadline."));
+        }, 30_000);})]);} finally {if (timer) clearTimeout(timer);}
+      };
+      try {
+        await this.#assertWorkspaceAllowed(session.workspaceId, session.cwd);
+        for (const name of names) events.push(this.#event(payload.session_id, undefined, "mcp.status.updated", {attachment: name, status: "detaching"}));
+        dispatched = true;
+        const result = z.object({source: z.literal("native"), detached: z.array(z.string()).max(128), remaining: z.array(z.string()).max(128)}).strict()
+          .parse(await bounded(session.adapter.detachNativeMcpServers({sessionId: session.sessionId, names, signal: cancellation.signal})));
+        const remaining = configured.filter(name => !session.detachedMcpNames?.has(name) && !names.includes(name));
+        const same = (left: string[], right: string[]) => isDeepStrictEqual([...left].sort(), [...right].sort());
+        if (this.#sessions.get(session.sessionId) !== session || this.#sessions.get(session.sessionId)?.nativeWorkOwnerAvailable === false
+          || !same(result.detached, names) || !same(result.remaining, remaining))
+          throw new HarnessAdapterError("native_mcp_detach_unknown", "Native MCP removal did not confirm the complete owned inventory.");
+        // Authorization descriptors stay bound; effective dispatch is revoked for this owner.
+        session.mcpToolsets = session.mcpToolsets.map(toolset => names.includes(toolset.name) ? {...toolset,
+          callTool: async () => {throw new HarnessAdapterError("mcp_server_detached", "This native session's MCP server is detached.");}} : toolset);
+        for (const name of names) {
+          const client = session.mcpClientsByName.get(name)!;
+          await bounded(client.close());
+          session.mcpClients = session.mcpClients.filter(value => value !== client); session.mcpClientsByName.delete(name);
+          (session.detachedMcpNames ??= new Set()).add(name);
+          events.push(this.#event(payload.session_id, undefined, "mcp.status.updated", {attachment: name, status: "detached"}));
+        }
+        delete session.mcpDetachState; return events;
+      } catch (failure) {
+        cancellation.abort();
+        const busy = failure instanceof HarnessAdapterError && failure.code === "native_mcp_detach_busy";
+        if (!dispatched || busy) delete session.mcpDetachState;
+        else session.mcpDetachState = "unknown";
+        for (const name of names) try {this.#event(payload.session_id, undefined, "mcp.status.updated", {attachment: name, status: busy ? "detach_refused" : "detach_unknown"});} catch {}
+        throw failure;
+      }
+    });
+  }
+
   sendTurn(
     payload: HcpTurnSendPayload,
     onEvent?: (event: HcpHarnessEventPayload) => void,
@@ -1102,6 +1175,7 @@ export class HarnessSessionManager {
     if (!session) {
       throw new HarnessSessionError("session_not_found", `Session '${payload.session_id}' is not active.`);
     }
+    if (session.mcpDetachState) throw new HarnessAdapterError("native_mcp_detach_unknown", "New prompts require confirmed MCP configuration and cleanup.");
 
     const turnIds: Set<string> = this.#turnIdsBySession.get(payload.session_id) ?? new Set<string>();
     if (this.#runningTurns.has(payload.session_id))

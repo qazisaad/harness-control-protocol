@@ -242,7 +242,7 @@ describe("RunnerConnection", () => {
       await connection.connect();
       for (const command of commands) assert.equal((await waitForNack(server.messages, command.id)).payload.error.code,
         command.type === "harness.approval.respond" ? "mcp_review_unavailable"
-          : command.type === "harness.input.respond" ? "mcp_input_unavailable" : "unsupported_command");
+          : command.type === "harness.input.respond" ? "mcp_input_unavailable" : "session_not_found");
       assert.equal(server.messages.some(message => message.type === "hcp.command.ack"), false);
     } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
   });

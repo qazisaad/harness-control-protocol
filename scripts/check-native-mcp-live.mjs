@@ -60,11 +60,24 @@ for (const driver of (process.env.HCP_LIVE_PROVIDERS ?? "codex,claude,opencode")
       const native = state.getNativeConversation("mcp-conversation").native_thread_id;
       if (phase === "first") nativeReference = native;
       else {assert.equal(native, nativeReference); passed.push("same-conversation-resumed");}
+      if (driver === "claude" && phase === "first" && process.env.HCP_LIVE_DETACH === "1") {
+        stage = "idle-native-detach";
+        await manager.detachToolServers({session_id: active, names: ["selected"]});
+        assert.equal(closures, 1);
+        assert.ok(events.some(event => event.session_id === active && event.event_type === "mcp.status.updated" && event.data.attachment === "selected" && event.data.status === "detached"));
+        passed.push("native-detach-readback", "detached-proxy-closed");
+        await manager.detachToolServers({session_id: active, names: ["selected"]}); assert.equal(closures, 1); passed.push("duplicate-idle-detach");
+        stage = "detached-followup";
+        await manager.sendTurn({session_id: active, turn_id: "detached-followup", input: "Reply STILL_USABLE only. Do not use tools."});
+        assert.equal(events.findLast(event => event.session_id === active && event.turn_id === "detached-followup" && ["turn.completed", "turn.failed"].includes(event.event_type))?.event_type, "turn.completed");
+        assert.equal(calls, before + 1); passed.push("followup-with-detached-tools");
+      }
       await manager.stopSession(active, "mcp-acceptance-unload");
       assert.equal(closures, phase === "first" ? 1 : 2); passed.push(`${phase}-owned-proxy-detach`);
     }
     console.log(JSON.stringify({driver, cwd, passed}));
-  } catch (error) {console.log(JSON.stringify({driver, cwd, passed, stage, calls, failed: true, code: error?.code ?? "acceptance_failure"})); process.exitCode = 1;}
+  } catch (error) {console.log(JSON.stringify({driver, cwd, passed, stage, calls, failed: true, code: error?.code ?? "acceptance_failure",
+    ...(driver === "claude" && ["inventory_before", "removal_receipt", "registration_receipt", "inventory_after"].includes(error?.native_stage) ? {native_stage: error.native_stage} : {})})); process.exitCode = 1;}
   finally {unsubscribe(); try {await manager.stopSession(active, "mcp-acceptance-cleanup");} catch {process.exitCode = 1;}
     for (const proxy of proxies) try {await proxy.close();} catch {process.exitCode = 1;}}
 }

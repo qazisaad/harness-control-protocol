@@ -18,7 +18,7 @@ export function nativeExecutionCapabilities(
     ...(driver === "claude" ? {execution_profiles: [
       {id: "isolated" as const, runtime_lifetime: "turn" as const, native_work: false, session_events: false},
       {id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, root_interrupt_effect: "root_only" as const, native_work_history: "live_owner" as const, idle_configuration_transition: true,
-        account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const},
+        account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const, mcp_detach: "idle_session" as const},
     ]} : {}),
     instruction_roles: driver === "codex" ? ["system", "developer"] : ["system"],
     configuration_inheritance: driver === "codex" ? {mcp_servers: false, plugins: false} :

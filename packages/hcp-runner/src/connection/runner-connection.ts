@@ -330,9 +330,7 @@ export class RunnerConnection {
         });
         return;
       case "tool_servers.detach":
-        await this.#handleCommand(envelope, () => {
-          throw new HarnessAdapterError("unsupported_command", `${envelope.type} is not implemented by this runner.`);
-        });
+        await this.#handleCommand(envelope, message => this.#harnessSessions.detachToolServers(message.payload));
         return;
       case "local.action.request":
         await this.#handleLocalAction(envelope);
