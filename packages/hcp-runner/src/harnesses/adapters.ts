@@ -11,6 +11,10 @@ export {
   type HarnessAdapterStartInput,
   type HarnessAdapterStopInput,
   type HarnessAdapterTurnInput,
+  type HarnessMcpDispatch,
+  type HarnessMcpReviewer,
+  type HarnessMcpReviewRequest,
+  type HarnessMcpToolset,
 } from "./adapters/types.js";
 export { HarnessAdapterRegistry, createDefaultHarnessAdapterRegistry } from "./adapters/registry.js";
 export {

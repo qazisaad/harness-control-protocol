@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { HarnessAdapterError, type HarnessMcpToolset, type HarnessMcpReviewer } from "../types.js";
+import { HarnessAdapterError, type HarnessMcpToolset, type HarnessMcpReviewer, type HarnessMcpDispatch } from "../types.js";
 import type { McpToolCallResult, McpReviewPolicy, McpReviewGrant } from "../../../mcp/McpAttachmentClient.js";
 
 const callSchema = z.object({
@@ -52,7 +52,8 @@ export class NativeMcpBridge {
     tools: Array<{type: "function"; name: string; description: string; inputSchema: Record<string, unknown>}>;
   }>;
 
-  constructor(toolsets: readonly HarnessMcpToolset[], private readonly reviewer?: HarnessMcpReviewer) {
+  constructor(toolsets: readonly HarnessMcpToolset[], private readonly reviewer?: HarnessMcpReviewer,
+    private readonly dispatch?: HarnessMcpDispatch) {
     this.definitions = toolsets.map(toolset => {
       const name = nativeMcpNamespace(toolset.name);
       if (this.#toolsets.has(name) || new Set(toolset.tools.map(tool => tool.name)).size !== toolset.tools.length) {
@@ -81,7 +82,7 @@ export class NativeMcpBridge {
       throw new HarnessAdapterError("mcp_call_identity_invalid", "Native MCP call identity was repeated or the turn limit was exceeded.");
     }
     this.#calls.add(call.callId);
-    const operation = this.#tail.then(async () => {
+    const execute = async () => {
       signal.throwIfAborted();
       const policy = toolset.policies.get(call.tool);
       const value = policy?.kind === "argument" ? call.arguments[policy.argument] : undefined;
@@ -103,7 +104,8 @@ export class NativeMcpBridge {
       if (grant && !this.reviewer?.invoke) await this.reviewer!.complete(grant, result);
       signal.throwIfAborted();
       return nativeMcpResult(result);
-    });
+    };
+    const operation = this.#tail.then(() => this.dispatch ? this.dispatch(execute, signal) : execute());
     this.#tail = operation.then(() => undefined, () => undefined);
     return operation;
   }

@@ -8,12 +8,12 @@ const start: HcpSessionStartPayload = {session_id: "session", workspace_id: "wor
   driver_kind: "codex", cwd: "/tmp", model_selection: {model: "model"}, sandbox_mode: "workspace_write",
   approval_policy: "ask", continue_session: false, mcp_servers: []};
 const binding = {threadId: "native-thread", turnId: "native-turn", itemId: "item"};
-function fixture(payload = start, turnId = "turn") {
+function fixture(payload = start, turnId = "turn", nativeWorkId?: string) {
   const events: HarnessAdapterEvent[] = [];
   let published!: () => void;
   const ready = new Promise<void>(resolve => {published = resolve;});
   const owner = new NativeInteractions(payload, {session_id: "session", turn_id: turnId, input: "hi"},
-    {threadId: binding.threadId, turnId: () => binding.turnId}, event => {events.push(event); published();});
+    {threadId: binding.threadId, turnId: () => binding.turnId}, event => {events.push(event); published();}, nativeWorkId);
   const signal = new AbortController();
   const approval = (): HcpApprovalResponsePayload => ({session_id: "session", turn_id: turnId, request_id: events[0]!.data.request_id as string,
     actor_id: "actor", action_hash: events[0]!.data.action_hash as string, decision: "accept"});
@@ -111,4 +111,28 @@ test("other conversations and unsupported secret questions fail before publicati
   await assert.rejects(f.owner.questions({...binding, questions: [{id: "key", header: "Key", question: "Secret?", isSecret: true}]}, f.signal.signal), /encrypted response/);
   assert.deepEqual(f.events, []);
   f.owner.close();
+});
+
+test("native work callbacks retain their work identity and earlier admitted root", async () => {
+  const f = fixture(start,"original-root","owned-child");
+  try {
+    const response = f.owner.approval(binding,"command",f.signal.signal); await f.ready;
+    assert.equal(f.events[0]!.turn_id,"original-root"); assert.equal(f.events[0]!.data.native_work_id,"owned-child");
+    assert.throws(()=>f.owner.respondApproval({...f.approval(),turn_id:"newer-root"}),/another active session or turn/);
+    f.owner.respondApproval(f.approval()); await response;
+    assert.equal(f.events[1]!.data.native_work_id,"owned-child");
+  } finally {f.owner.close();}
+});
+
+test("lost native work callbacks keep provenance without becoming session-scoped input", async () => {
+  const f = fixture(start,"original-root","owned-child");
+  const response = f.owner.questions({...binding,questions:[{id:"color",header:"Color",question:"Which color?",options:[{label:"Green",description:"Test"}]}]},f.signal.signal);
+  const rejected = assert.rejects(response,/turn ended/); await f.ready;
+  f.owner.close(); await rejected;
+  assert.equal(f.events[0]!.data.native_work_id,"owned-child");
+  const lost = f.events.filter(event=>event.event_type==="native.request.lost")[0]!;
+  assert.equal(lost.turn_id,"original-root"); assert.equal(lost.data.native_work_id,"owned-child");
+  assert.equal(lost.data.request_scope,undefined);
+  assert.throws(()=>new NativeInteractions(start,{session_id:"session",request_scope:"session"},
+    {threadId:binding.threadId,turnId:()=>undefined},()=>{},"owned-child"),/admitted root origin/);
 });

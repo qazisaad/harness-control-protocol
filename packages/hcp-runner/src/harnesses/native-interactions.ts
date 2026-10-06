@@ -28,7 +28,11 @@ export class NativeInteractions {
   #queue: Promise<unknown> = Promise.resolve();
   readonly #resolved = new Map<string, string>();
   constructor(readonly start: HcpSessionStartPayload, readonly turn: HcpTurnSendPayload | {session_id: string; request_scope: "session"; turn_id?: never},
-    readonly native: {threadId: string; turnId: () => string | undefined}, readonly emit: (event: HarnessAdapterEvent) => void) {}
+    readonly native: {threadId: string; turnId: () => string | undefined}, readonly emit: (event: HarnessAdapterEvent) => void,
+    readonly nativeWorkId?: string) {
+    if (nativeWorkId !== undefined && (!turn.turn_id || !nativeWorkId || nativeWorkId.length > 512))
+      throw new HarnessAdapterError("native_work_request_scope", "Native work input requires an admitted root origin and bounded work identity.");
+  }
 
   #bind(params: unknown) {
     const value = bindingSchema.parse(params);
@@ -52,7 +56,9 @@ export class NativeInteractions {
     const deadline = first && first.turn_id === this.turn.turn_id ? Date.parse(first.not_after) : Infinity;
     return Math.min(Date.now() + 5 * 60_000, Number.isFinite(deadline) ? deadline : Infinity);
   }
-  #origin(): {turn_id: string} | {request_scope: "session"} {return this.turn.turn_id ? {turn_id: this.turn.turn_id} : {request_scope: "session"};}
+  #origin(): {turn_id: string; native_work_id?: string} | {request_scope: "session"} {
+    return this.turn.turn_id ? {turn_id: this.turn.turn_id, ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {})} : {request_scope: "session"};
+  }
 
   #wait<T>(signal: AbortSignal, pending: Omit<Approval, "settle" | "reject"> | Omit<Question, "settle" | "reject">,
     publish: () => void): Promise<T> {
@@ -98,6 +104,7 @@ export class NativeInteractions {
         {kind: "approval", id, actionHash, expires, allowed}, () => this.emit({event_type: "approval.requested", ...(this.turn.turn_id ? {turn_id: this.turn.turn_id} : {}),
           data: {request_id: id, session_id: this.start.session_id, ...(this.turn.turn_id ? {turn_id: this.turn.turn_id} : {}), workspace_id: this.start.workspace_id,
             provider_instance_id: this.start.provider_instance_id, driver_kind: this.start.driver_kind, request_type: requestType,
+            ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {}),
             risk_class: "high", action, action_hash: actionHash, allowed_decisions: allowed,
             expires_at: new Date(expires).toISOString(), display: {title: {command: "Approve native command", file_read: "Approve native file read",
               file_change: "Approve native file change", permissions: "Approve native permissions", other: "Approve native action"}[requestType], detail: `Native item ${binding.itemId}`}}}));
@@ -125,6 +132,7 @@ export class NativeInteractions {
       const expires = this.#expires();
       return this.#wait(signal, {kind: "input", id, expires, schema}, () => this.emit({event_type: "user_input.requested", ...(this.turn.turn_id ? {turn_id: this.turn.turn_id} : {}),
         data: {request_id: id, session_id: this.start.session_id, ...(this.turn.turn_id ? {turn_id: this.turn.turn_id} : {}),
+          ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {}),
           prompt: questions.map(question => question.question).join("\n\n"), input_kind: "form", required: true,
           form_schema: z.toJSONSchema(schema), expires_at: new Date(expires).toISOString(), redaction: "none"}}));
     });
@@ -154,7 +162,8 @@ export class NativeInteractions {
     if (!request || request.kind !== "approval" || request.id !== response.request_id || request.actionHash !== response.action_hash
         || !request.allowed.includes(response.decision) || request.expires <= Date.now())
       throw new HarnessAdapterError("native_response_binding", "Native approval response is stale, invalid, or targets another request.");
-    this.emit({event_type: "approval.resolved", ...(this.turn.turn_id ? {turn_id: this.turn.turn_id} : {}), data: {...response, resolved_at: new Date().toISOString()}});
+    this.emit({event_type: "approval.resolved", ...(this.turn.turn_id ? {turn_id: this.turn.turn_id} : {}), data: {...response,
+      ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {}), resolved_at: new Date().toISOString()}});
     this.#remember(request.id, fingerprint);
     request.settle(response.decision);
   }

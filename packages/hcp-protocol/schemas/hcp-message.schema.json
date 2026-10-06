@@ -19770,6 +19770,11 @@
             "data": {
               "type": "object",
               "properties": {
+                "native_work_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
                 "request_id": {
                   "type": "string",
                   "minLength": 1
@@ -19967,6 +19972,11 @@
             "data": {
               "type": "object",
               "properties": {
+                "native_work_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
                 "request_id": {
                   "type": "string",
                   "minLength": 1
@@ -20186,6 +20196,11 @@
                     "request_scope": {
                       "type": "string",
                       "const": "turn"
+                    },
+                    "native_work_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
                     }
                   },
                   "required": [
@@ -20476,6 +20491,11 @@
                     "request_scope": {
                       "type": "string",
                       "const": "turn"
+                    },
+                    "native_work_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
                     }
                   },
                   "required": [
@@ -20981,6 +21001,11 @@
                     "request_scope": {
                       "type": "string",
                       "const": "turn"
+                    },
+                    "native_work_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
                     }
                   },
                   "required": [
@@ -21271,6 +21296,11 @@
                     "request_scope": {
                       "type": "string",
                       "const": "turn"
+                    },
+                    "native_work_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
                     }
                   },
                   "required": [
@@ -24185,6 +24215,11 @@
                         "approval",
                         "input"
                       ]
+                    },
+                    "native_work_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
                     }
                   },
                   "required": [

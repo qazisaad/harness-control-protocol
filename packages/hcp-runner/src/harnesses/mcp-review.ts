@@ -36,9 +36,14 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
   readonly #interruption = new AbortController();
 
   constructor(private readonly store: RunnerStateStore, private readonly start: HcpSessionStartPayload,
-    private readonly turn: HcpTurnSendPayload, private readonly publish: (event: HcpHarnessEventPayload) => void) {}
+    private readonly turn: HcpTurnSendPayload, private readonly publish: (event: HcpHarnessEventPayload) => void,
+    readonly nativeWorkId?: string) {
+    if (nativeWorkId !== undefined && (!nativeWorkId || nativeWorkId.length > 512))
+      throw new HarnessAdapterError("native_work_request_scope", "Native work review requires a bounded work identity.");
+  }
 
   async request(request: HarnessMcpReviewRequest, signal: AbortSignal): Promise<McpReviewGrant | null> {
+    signal = AbortSignal.any([signal, this.#interruption.signal]);
     signal.throwIfAborted();
     const review = this.#newOperation(request, {phase: "waiting"});
     const expiry = Date.parse(review.expires_at);
@@ -79,7 +84,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     const action = JSON.stringify({kind: "mcp_tool", attachment_name: request.attachment_name,
       tool_name: request.tool_name, arguments: request.arguments});
     const actionBytes = mcpReviewActionBytes(action);
-    return {start: this.start, turn: this.turn,
+    return {start: this.start, turn: this.turn, ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {}),
       native_thread_id: request.native_thread_id, native_turn_id: request.native_turn_id, native_call_id: request.native_call_id,
       request_id: randomUUID(), action_json: action, action_hash: createHash("sha256").update(actionBytes).digest("hex"),
       expires_at: new Date(Math.min(expiry, Date.now() + 300000)).toISOString(), outcome};
@@ -89,6 +94,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
 
   #decision(response: HcpApprovalResponsePayload): PersistedMcpReview {
     const review = this.store.getMcpReview(this.start.session_id);
+    if (review && review.native_work_id !== this.nativeWorkId)
+      throw new HarnessAdapterError("mcp_review_binding_invalid", "Approval belongs to another native work owner.");
     if (review?.outcome.phase === "review_waiting" || review?.outcome.phase === "review_resuming") {
       const outcome = review.outcome;
       if (response.session_id !== this.start.session_id || response.turn_id !== this.turn.turn_id ||
@@ -157,7 +164,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
 
   async complete(grant: McpReviewGrant, result: McpToolCallResult): Promise<void> {
     const review = this.store.getMcpReview(this.start.session_id);
-    if (!review || review.request_id !== grant.request_id || review.action_json !== grant.action_json || review.outcome.phase !== "dispatching") {
+    if (!review || review.native_work_id !== this.nativeWorkId || review.request_id !== grant.request_id || review.action_json !== grant.action_json || review.outcome.phase !== "dispatching") {
       throw new HarnessAdapterError("mcp_review_result_mismatch", "Tool result has another reviewed operation binding.");
     }
     this.store.saveMcpReview({...review, outcome: {phase: "completed", actor_id: review.outcome.actor_id, result_json: JSON.stringify(result)}});
@@ -174,7 +181,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
         throw new HarnessAdapterError("mcp_input_replay_denied", "The MCP operation already has retained state.");
       }
       if (reply || grant) {
-        if (!retained || retained.native_call_id !== request.native_call_id || retained.native_thread_id !== request.native_thread_id ||
+        if (!retained || retained.native_work_id !== this.nativeWorkId || retained.native_call_id !== request.native_call_id || retained.native_thread_id !== request.native_thread_id ||
             retained.native_turn_id !== request.native_turn_id || Date.parse(
               retained.outcome.phase === "review_resuming" && retained.outcome.decision === "decline"
                 ? declineExpiresAt(retained) : operationExpiresAt(retained)) <= Date.now() ||
@@ -297,7 +304,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     reply: McpInputReply;
   } {
     const record = this.store.getMcpReview(this.start.session_id);
-    if (!record || response.session_id !== this.start.session_id || response.turn_id !== this.turn.turn_id ||
+    if (!record || record.native_work_id !== this.nativeWorkId || response.session_id !== this.start.session_id || response.turn_id !== this.turn.turn_id ||
         Date.parse(operationExpiresAt(record)) <= Date.now() ||
         (record.outcome.phase !== "input_waiting" && record.outcome.phase !== "input_resuming") ||
         record.outcome.input_request_id !== response.request_id) {
@@ -334,6 +341,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
 
   #event(type: "approval.requested" | "approval.resolved" | "input.requested" | "input.resolved", data: Record<string, unknown>): HcpHarnessEventPayload {
     return {session_id: this.start.session_id, turn_id: this.turn.turn_id,
-      sequence: this.store.nextEventSequence(this.start.session_id), event_type: type, created_at: new Date().toISOString(), data};
+      sequence: this.store.nextEventSequence(this.start.session_id), event_type: type, created_at: new Date().toISOString(),
+      data: {...data, ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {})}};
   }
 }

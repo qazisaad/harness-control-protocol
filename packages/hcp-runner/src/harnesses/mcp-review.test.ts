@@ -11,7 +11,7 @@ import { McpAttachmentClient, MCP_REVIEW_META_KEY, type McpReviewGrant } from ".
 import { NativeMcpBridge, nativeMcpNamespace } from "./adapters/providers/native-mcp.js";
 import type { HarnessMcpToolset } from "./adapters/types.js";
 
-function setup(publish?: (event: HcpHarnessEventPayload) => void) {
+function setup(publish?: (event: HcpHarnessEventPayload) => void, nativeWorkId?: string) {
   const store = new MemoryRunnerStateStore();
   const events: HcpHarnessEventPayload[] = [];
   const start: HcpSessionStartPayload = {session_id: "session", workspace_id: "workspace", provider_instance_id: "codex", driver_kind: "codex",
@@ -20,7 +20,7 @@ function setup(publish?: (event: HcpHarnessEventPayload) => void) {
       url: "https://example.com/mcp", lease_id: "lease", expires_at: new Date(Date.now() + 60000).toISOString(),
       headers: {Authorization: "Bearer private"}, proof_of_possession: {scheme: "runner_signed_request", key_id: "key",
         required_headers: ["x-hcp-proof-signature", "x-hcp-proof-nonce"]}}]};
-  const owner = new HarnessMcpReview(store, start, {session_id: "session", turn_id: "turn", input: "Read"}, event => {events.push(event); publish?.(event);});
+  const owner = new HarnessMcpReview(store, start, {session_id: "session", turn_id: "turn", input: "Read"}, event => {events.push(event); publish?.(event);}, nativeWorkId);
   const request = {attachment_name: "selected", tool_name: "lookup", arguments: {query: "value"},
     native_thread_id: "native-thread", native_turn_id: "native-turn", native_call_id: "native-call"};
   return {store, owner, request, events, start};
@@ -58,6 +58,30 @@ test("native process loss retains a waiting review without authorizing a call", 
   controller.abort();
   await assert.rejects(waiting, /interrupted/);
   assert.equal(store.getMcpReview("session")?.outcome.phase, "waiting");
+});
+
+test("native work MCP review cannot be answered or completed by its parent root reviewer", async () => {
+  const f = setup(undefined,"owned-child");
+  const pending = f.owner.request(f.request,new AbortController().signal);
+  const record = f.store.getMcpReview("session")!;
+  const root = new HarnessMcpReview(f.store,f.start,{session_id:"session",turn_id:"turn",input:"Read"},()=>{});
+  const reply = {session_id:"session",turn_id:"turn",request_id:record.request_id,action_hash:record.action_hash,decision:"accept" as const,actor_id:"actor"};
+  assert.equal(record.native_work_id,"owned-child"); assert.equal((f.events[0]!.data as Record<string,unknown>).native_work_id,"owned-child");
+  assert.throws(()=>root.decide(reply),/another native work owner/);
+  f.owner.decide(reply); const grant = await pending;
+  assert.ok(grant); await assert.rejects(root.complete(grant,{is_error:false}),/another reviewed operation/);
+  await f.owner.complete(grant,{is_error:false});
+  assert.equal(f.store.getMcpReview("session")?.native_work_id,"owned-child");
+  assert.equal((f.events[1]!.data as Record<string,unknown>).native_work_id,"owned-child");
+});
+
+test("interrupting one MCP review owner rejects its pending request without accepting it", async () => {
+  const f = setup(undefined,"owned-child");
+  const pending = f.owner.request(f.request,new AbortController().signal);
+  const rejected = assert.rejects(pending,/interrupted/);
+  f.owner.interrupt(); await rejected;
+  assert.equal(f.store.getMcpReview("session")?.outcome.phase,"waiting");
+  assert.equal(f.store.getMcpReview("session")?.native_work_id,"owned-child");
 });
 
 for (const reviewed of [false, true]) for (const decision of ["accept", "decline"] as const) {

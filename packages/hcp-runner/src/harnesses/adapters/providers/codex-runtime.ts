@@ -127,7 +127,7 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         attachments.some(attachment => !toolsets.some(toolset => toolset.name === attachment.name))) {
       throw new HarnessAdapterError("mcp_bridge_missing", "Codex requires the authorized runner tool bridge for every selected MCP attachment.");
     }
-    const bridge = new NativeMcpBridge(toolsets, input.reviewMcpTool);
+    const bridge = new NativeMcpBridge(toolsets, input.reviewMcpTool, input.dispatchMcp);
     const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
     const approvalPolicy = {ask: "untrusted", auto_edits: "on-request", full_access: "never"}[input.startPayload.approval_policy];
     const resumeThread = input.mcpContinuation?.native_thread_id ?? input.session.native_thread_id;

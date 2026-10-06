@@ -88,6 +88,9 @@ export type HarnessMcpReviewer = {
     grant?: McpReviewGrant, continuation?: McpInputReply): Promise<McpToolCallResult>;
 };
 
+/** Holds the session dispatch slot through the complete approval/invocation/input lifecycle. */
+export type HarnessMcpDispatch = <T>(operation: () => Promise<T>, signal: AbortSignal) => Promise<T>;
+
 export type HarnessMcpContinuation = {
   native_thread_id: string;
   request_id: string;
@@ -105,6 +108,9 @@ export type HarnessAdapterTurnInput = {
   mcpServers?: HarnessAdapterMcpServer[];
   mcpToolsets?: readonly HarnessMcpToolset[];
   reviewMcpTool?: HarnessMcpReviewer;
+  /** Retained child callbacks must use their confirmed work owner, independently of the current root. */
+  reviewNativeWorkMcp?: (workId: string) => HarnessMcpReviewer;
+  dispatchMcp?: HarnessMcpDispatch;
   mcpContinuation?: HarnessMcpContinuation;
   registerNativeInteractions?: (owner: HarnessNativeInteractions | undefined) => void;
   registerActiveTurnControls?: (controls: HarnessActiveTurnControls | undefined) => void;

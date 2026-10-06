@@ -2469,6 +2469,7 @@ const mcpStatusEventDataSchema = z
 
 const approvalRequestedEventDataSchema = z
   .object({
+    native_work_id: z.string().min(1).max(512).optional(),
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
     turn_id: nonEmptyStringSchema,
@@ -2492,6 +2493,7 @@ const approvalRequestedEventDataSchema = z
 
 const approvalResolvedEventDataSchema = z
   .object({
+    native_work_id: z.string().min(1).max(512).optional(),
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
     turn_id: nonEmptyStringSchema,
@@ -2526,7 +2528,7 @@ const inputRequestedFieldsSchema = z
   })
   .strict();
 const inputRequestedEventDataSchema = z.union([
-  inputRequestedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional()}),
+  inputRequestedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), native_work_id: z.string().min(1).max(512).optional()}),
   inputRequestedFieldsSchema.extend({request_scope: z.literal("session")}),
 ]);
 
@@ -2541,7 +2543,7 @@ const inputResolvedFieldsSchema = z
   })
   .strict();
 const inputResolvedEventDataSchema = z.union([
-  inputResolvedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional()}),
+  inputResolvedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), native_work_id: z.string().min(1).max(512).optional()}),
   inputResolvedFieldsSchema.extend({request_scope: z.literal("session")}),
 ]);
 
@@ -2714,7 +2716,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
     const fields = z.object({request_id: nonEmptyStringSchema, session_id: nonEmptyStringSchema,
       reason: z.enum(["interrupted", "expired", "owner_closed"]), lost_at: timestampSchema}).strict();
     return z.union([
-      fields.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), request_kind: z.enum(["approval", "input"])}),
+      fields.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), request_kind: z.enum(["approval", "input"]), native_work_id: z.string().min(1).max(512).optional()}),
       fields.extend({request_scope: z.literal("session"), request_kind: z.literal("input")}),
     ]);
   }

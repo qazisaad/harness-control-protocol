@@ -5,6 +5,7 @@ import {harnessNativeWorkObservationSchema, harnessNativeWorkRecordSchema, isNat
 import type {NativeWorkState} from "../state/index.js";
 import {nativeWorkPage} from "./native-work-page.js";
 import { HarnessMcpReview } from "./mcp-review.js";
+import {HarnessMcpDispatchQueue} from "./mcp-dispatch.js";
 import {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
 export {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
@@ -175,6 +176,9 @@ export class HarnessSessionManager {
   #publishing = false;
   #publicationAdmissions = 0;
   readonly #mcpReviews = new Map<string, HarnessMcpReview>();
+  readonly #mcpWorkReviews = new Map<string, Map<string, HarnessMcpReview>>();
+  readonly #runningTurns = new Map<string, string>();
+  readonly #mcpDispatch = new Map<string, HarnessMcpDispatchQueue>();
   readonly #mcpResumes = new Set<string>();
   #restoredMcpReviews = false;
   readonly #turnIdsBySession = new Map<string, Set<string>>();
@@ -729,6 +733,15 @@ export class HarnessSessionManager {
       const interaction = ["approval.requested", "approval.resolved", "user_input.requested", "user_input.resolved", "native.request.lost"].includes(event.event_type);
       const sessionInput = interaction && event.data.request_scope === "session"
         && ["user_input.requested", "user_input.resolved", "native.request.lost"].includes(event.event_type);
+      if (interaction && event.data.native_work_id !== undefined) {
+        const workId = event.data.native_work_id;
+        const state = this.#stateStore.nativeWorkState(payload.session_id);
+        const work = typeof workId === "string" ? state?.items[workId] ?? state?.retired[workId] : undefined;
+        if (!work || !adapter.nativeWork || work.origin_turn_id !== event.turn_id
+          || ["approval.requested", "user_input.requested"].includes(event.event_type)
+            && (isNativeWorkTerminal(work.status) || eventOwner?.nativeWorkOwnerAvailable === false))
+          throw new HarnessAdapterError("native_work_request_binding", "Native work callbacks require their confirmed live work and original root origin.");
+      }
       if (interaction && ((sessionInput ? event.turn_id !== undefined || event.data.turn_id !== undefined :
           !event.turn_id || !this.#turnIdsBySession.get(payload.session_id)?.has(event.turn_id) || event.data.turn_id !== event.turn_id)
           || event.data.session_id !== payload.session_id
@@ -864,6 +877,8 @@ export class HarnessSessionManager {
     }
 
     const turnIds: Set<string> = this.#turnIdsBySession.get(payload.session_id) ?? new Set<string>();
+    if (this.#runningTurns.has(payload.session_id))
+      throw new HarnessSessionError("turn_in_progress", "This session already has an admitted root turn.");
     if (turnIds.has(payload.turn_id)) {
       throw new HarnessSessionError(
         "turn_exists",
@@ -881,9 +896,12 @@ export class HarnessSessionManager {
   > {
     const native = [this.#nativeInteractions.get(response.session_id), this.#sessionInteractions.get(response.session_id)].find(owner => owner?.owns(response.request_id));
     if (native?.owns(response.request_id)) {native.respondApproval(response); return {kind: "live"};}
-    const live = this.#mcpReviews.get(response.session_id);
+    const retainedOwner = this.#stateStore.getMcpReview(response.session_id);
+    const live = retainedOwner?.native_work_id ? this.#mcpWorkReviews.get(response.session_id)?.get(retainedOwner.native_work_id)
+      : this.#mcpReviews.get(response.session_id);
     if (live) {live.decide(response); return {kind: "live"};}
     const retained = this.#stateStore.getMcpReview(response.session_id);
+    if (retained?.native_work_id) throw new HarnessAdapterError("native_work_callback_lost", "No live native work MCP owner exists; callbacks cannot be resumed through a root turn.");
     if (!retained || retained.turn.turn_id !== response.turn_id) {
       throw new HarnessAdapterError("mcp_review_unavailable", "No durable MCP review belongs to this turn.");
     }
@@ -898,9 +916,12 @@ export class HarnessSessionManager {
     const native = [this.#nativeInteractions.get(response.session_id), this.#sessionInteractions.get(response.session_id)].find(owner => owner?.owns(response.request_id));
     if (native?.owns(response.request_id)) {native.respondInput(response); return {kind: "live"};}
     if (response.request_scope === "session") throw new HarnessAdapterError("native_input_unavailable", "No live native session input owner exists; callbacks cannot be replayed.");
-    const live = this.#mcpReviews.get(response.session_id);
+    const retainedOwner = this.#stateStore.getMcpReview(response.session_id);
+    const live = retainedOwner?.native_work_id ? this.#mcpWorkReviews.get(response.session_id)?.get(retainedOwner.native_work_id)
+      : this.#mcpReviews.get(response.session_id);
     if (live) {live.respondToInput(response); return {kind: "live"};}
     const retained = this.#stateStore.getMcpReview(response.session_id);
+    if (retained?.native_work_id) throw new HarnessAdapterError("native_work_callback_lost", "No live native work MCP owner exists; callbacks cannot be resumed through a root turn.");
     if (!retained || retained.turn.turn_id !== response.turn_id || retained.outcome.phase !== "input_waiting") {
       throw new HarnessAdapterError("mcp_input_unavailable", "No waiting MCP input belongs to this turn; dispatched input is not replayed.");
     }
@@ -941,6 +962,19 @@ export class HarnessSessionManager {
     this.#restoredMcpReviews = true;
 
     for (const review of this.#stateStore.pendingMcpReviews()) {
+      if (review.native_work_id) {
+        if (this.#mcpWorkReviews.get(review.start.session_id)?.has(review.native_work_id)) continue;
+        const phase = review.outcome;
+        const input = phase.phase === "input_waiting" || phase.phase === "input_resuming";
+        const requestId = "input_request_id" in phase ? phase.input_request_id : review.request_id;
+        const lost = this.#event(review.start.session_id, review.turn.turn_id, "native.request.lost", {
+          request_id: requestId, session_id: review.start.session_id, turn_id: review.turn.turn_id,
+          native_work_id: review.native_work_id, request_kind: input ? "input" : "approval", reason: "owner_closed", lost_at: new Date().toISOString(),
+        });
+        onEvent(lost);
+        // Preserve the receipt, including possible dispatched effects. Never recreate a child callback or replay its root.
+        continue;
+      }
       const last = this.#lastSavedEvent(review.start.session_id);
       if (this.#stateStore.hasSessionExit(review.start.session_id)) {
         this.#stateStore.clearMcpReview(review.start.session_id, review.request_id);
@@ -1031,6 +1065,9 @@ export class HarnessSessionManager {
     onEvent: ((event: HcpHarnessEventPayload) => void) | undefined,
     continuation?: HarnessMcpContinuation,
   ): Promise<HcpHarnessEventPayload[]> {
+    if (this.#runningTurns.has(payload.session_id)) throw new HarnessSessionError("turn_in_progress", "This session already has an admitted root turn.");
+    this.#runningTurns.set(payload.session_id, payload.turn_id);
+    try {
     await Promise.resolve();
     const events: HcpHarnessEventPayload[] = [];
     if (!continuation) {
@@ -1074,6 +1111,17 @@ export class HarnessSessionManager {
       if (onEvent) onEvent(event); else events.push(event);
     }) : undefined;
     if (reviewer) this.#mcpReviews.set(payload.session_id, reviewer);
+    let dispatch = this.#mcpDispatch.get(payload.session_id);
+    if (!dispatch) {
+      dispatch = new HarnessMcpDispatchQueue(() => {
+        if (this.#sessions.get(payload.session_id) !== session || session.nativeWorkOwnerAvailable === false)
+          throw new HarnessAdapterError("mcp_dispatch_owner_lost", "The MCP session owner is unavailable.");
+        const retained = this.#stateStore.getMcpReview(payload.session_id);
+        if (retained && !["completed", "expiry_completed", "declined"].includes(retained.outcome.phase))
+          throw new HarnessAdapterError("mcp_review_pending", "A retained MCP operation has an unresolved outcome; dispatch is fenced.");
+      });
+      this.#mcpDispatch.set(payload.session_id, dispatch);
+    }
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.sendTurn({
       payload,
       session: session.adapterSession,
@@ -1081,7 +1129,24 @@ export class HarnessSessionManager {
       provider: this.#requireProvider(session.providerInstanceId, session.driverKind),
       mcpServers: session.mcpServers,
       mcpToolsets: session.mcpToolsets,
+      dispatchMcp: dispatch.dispatch,
       ...(reviewer ? {reviewMcpTool: reviewer} : {}),
+      ...(session.adapter.nativeWork && session.adapter.durableMcpContinuation ? {reviewNativeWorkMcp: (workId: string) => {
+        const work = this.#stateStore.nativeWorkState(payload.session_id)?.items[workId];
+        if (this.#sessions.get(payload.session_id) !== session || session.nativeWorkOwnerAvailable === false
+          || !this.#liveNativeWork.get(payload.session_id)?.has(workId) || !work || isNativeWorkTerminal(work.status)
+          || work.origin_turn_id !== payload.turn_id)
+          throw new HarnessAdapterError("native_work_request_binding", "Native work MCP review requires its confirmed live work and original root.");
+        let owners = this.#mcpWorkReviews.get(payload.session_id);
+        if (!owners) {owners = new Map(); this.#mcpWorkReviews.set(payload.session_id, owners);}
+        let owner = owners.get(workId);
+        if (!owner) {
+          if (owners.size >= 128) throw new HarnessAdapterError("native_work_request_limit", "Native work MCP review exceeded its bounded ownership registry.");
+          owner = new HarnessMcpReview(this.#stateStore, session.startPayload, payload, event => this.#publishPersistedEvent(event), workId);
+          owners.set(workId, owner);
+        }
+        return owner;
+      }} : {}),
       ...(continuation ? {mcpContinuation: continuation} : {}),
       registerNativeInteractions: owner => {
         if (owner) this.#nativeInteractions.set(payload.session_id, owner);
@@ -1126,6 +1191,9 @@ export class HarnessSessionManager {
       },
     });
     return events;
+    } finally {
+      if (this.#runningTurns.get(payload.session_id) === payload.turn_id) this.#runningTurns.delete(payload.session_id);
+    }
   }
 
   recordTurnFailure(sessionId: string, turnId: string, error: unknown): HcpHarnessEventPayload {
@@ -1155,9 +1223,15 @@ export class HarnessSessionManager {
       throw new HarnessSessionError("session_not_found", `Session '${sessionId}' is not active.`);
     }
 
+    const retained = this.#stateStore.getMcpReview(sessionId);
+    if (this.#runningTurns.get(sessionId) !== turnId &&
+        !(this.#mcpResumes.has(sessionId) && retained?.turn.turn_id === turnId && !retained.native_work_id)) return [];
     session.cancelRequested = true;
-    this.#mcpReviews.get(sessionId)?.interrupt();
+    const rootReview = this.#mcpReviews.get(sessionId);
+    const graceful = session.adapter.nativeWork && session.startPayload.execution_profile === "interactive";
+    if (!graceful) rootReview?.interrupt();
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.cancelTurn({ sessionId, turnId });
+    rootReview?.interrupt();
     const last = this.#lastSavedEvent(sessionId);
     if (adapterEvents.length === 0 && this.#mcpReviews.has(sessionId) &&
         (!last || !terminalTurnEvents.has(last.event_type))) {
@@ -1184,7 +1258,9 @@ export class HarnessSessionManager {
     }
 
     session.cancelRequested = true;
-    this.#mcpReviews.get(sessionId)?.interrupt();
+    const rootReview = this.#mcpReviews.get(sessionId);
+    const graceful = session.adapter.nativeWork && session.startPayload.execution_profile === "interactive";
+    if (!graceful) rootReview?.interrupt();
     const events: HcpHarnessEventPayload[] = [];
     const first = session.startPayload.first_turn;
     if (first && !this.#turnIdsBySession.get(sessionId)?.has(first.turn_id)
@@ -1196,6 +1272,7 @@ export class HarnessSessionManager {
     session.nativeWorkOwnerAvailable = false;
     session.nativeWorkCancellation?.abort();
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.stopSession({ sessionId, ...(reason ? { reason } : {}) });
+    rootReview?.interrupt();
     events.push(
       ...adapterEvents.map((event: HarnessAdapterEvent): HcpHarnessEventPayload =>
         this.#event(sessionId, event.turn_id, event.event_type, event.data),
@@ -1227,6 +1304,9 @@ export class HarnessSessionManager {
     this.#sessionInteractions.delete(sessionId);
     this.#liveNativeWork.delete(sessionId);
     this.#mcpReviews.delete(sessionId);
+    for (const owner of this.#mcpWorkReviews.get(sessionId)?.values() ?? []) owner.interrupt();
+    this.#mcpWorkReviews.delete(sessionId);
+    this.#mcpDispatch.delete(sessionId);
     const review = this.#stateStore.getMcpReview(sessionId);
     if (review) this.#stateStore.clearMcpReview(sessionId, review.request_id);
     this.#turnIdsBySession.delete(sessionId);
@@ -1422,6 +1502,8 @@ export class HarnessSessionManager {
       owner.nativeWorkCancellation?.abort();
       this.#sessionInteractions.delete(sessionId);
       this.#nativeInteractions.delete(sessionId);
+      for (const review of this.#mcpWorkReviews.get(sessionId)?.values() ?? []) review.interrupt();
+      this.#mcpWorkReviews.delete(sessionId);
       if (data.closure_unconfirmed === true) {
         owner.nativeWorkClosureUnconfirmed = true;
         const state = this.#stateStore.nativeWorkState(sessionId);
@@ -1476,13 +1558,22 @@ export class HarnessSessionManager {
     if (nativeWorkState) {
       this.#stateStore.saveNativeWorkState(sessionId, nativeWorkState, payload);
       if (eventType === "native.work.updated") this.#liveNativeWork.get(sessionId)?.add((data.work as HarnessNativeWorkRecord).work_id);
-    } else if (terminalTurnEvents.has(eventType) && (!retained || retained.turn.turn_id === turnId)) {
+    } else if (terminalTurnEvents.has(eventType) && (!retained || retained.turn.turn_id === turnId) && !retained?.native_work_id) {
       if (retained) this.#stateStore.clearMcpReview(sessionId, retained.request_id, [payload]);
       else this.#stateStore.appendEvent(payload);
       this.#mcpReviews.delete(sessionId);
     } else {
       this.#stateStore.appendEvent(payload);
     }
+    if (terminalTurnEvents.has(eventType) && this.#runningTurns.get(sessionId) === turnId) this.#runningTurns.delete(sessionId);
+    this.#publishPersistedEvent(payload);
+    return payload;
+  }
+
+  #publishPersistedEvent(payload: HcpHarnessEventPayload): void {
+    hcpHarnessEventPayloadSchema.parse(payload);
+    if (this.#publishing && this.#publicationAdmissions >= 128)
+      throw new HarnessAdapterError("native_session_event_limit", "Native event publication exceeded its bounded admission queue.");
     this.#publicationQueue.push(payload);
     this.#publicationAdmissions++;
     if (!this.#publishing) {
@@ -1499,7 +1590,6 @@ export class HarnessSessionManager {
         }
       } finally {this.#publishing = false; this.#publicationAdmissions = 0;}
     }
-    return payload;
   }
 
   async #recordAudit(event: Parameters<AuditLogger["record"]>[0]): Promise<void> {

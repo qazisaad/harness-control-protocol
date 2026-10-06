@@ -24,6 +24,7 @@ export const persistedMcpReviewSchema = z.object({
   native_thread_id: z.string().min(1),
   native_turn_id: z.string().min(1),
   native_call_id: z.string().min(1),
+  native_work_id: z.string().min(1).max(512).optional(),
   request_id: z.string().min(1).max(MCP_REVIEW_MAX_REQUEST_ID_LENGTH),
   ...reviewAction,
   expires_at: z.string().datetime({offset: true}),
@@ -51,6 +52,8 @@ export function validateMcpTransition(previous: PersistedMcpReview | undefined, 
   event?: HcpHarnessEventPayload): void {
   const outcome = next.outcome;
   const old = previous?.outcome;
+  if (event && ("native_work_id" in event.data ? event.data.native_work_id : undefined) !== next.native_work_id)
+    throw new Error("MCP review event changed its native work attribution.");
   if (outcome.phase === "review_waiting" || outcome.phase === "review_resuming") {
     const pending = outcome.phase === "review_waiting" ? outcome.pending : outcome.reply.pending;
     const delegated = mcpDelegatedReviewRequestSchema.parse(pending._meta?.[MCP_REVIEW_META_KEY]);

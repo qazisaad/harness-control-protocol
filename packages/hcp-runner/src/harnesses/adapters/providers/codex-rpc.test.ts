@@ -23,6 +23,12 @@ createInterface({input: process.stdin}).on("line", line => {
     send({id:value.id,result:{resolved:true}});
   } else if (value.method === "ping") {
     send({id:value.id,result:{alive:true}});
+  } else if (value.method === "bound-probe") {
+    send({id:value.id,result:{started:true}});
+    send({id:"tool-request",method:"item/tool/call",params:{threadId:"child",turnId:"child-turn",value:42}});
+  } else if (value.method === "terminal") {
+    send({method:"turn/completed",params:{threadId:value.params.threadId,turn:{id:value.params.turnId,status:"interrupted"}}});
+    send({id:value.id,result:{}});
   }
 });
 `, { mode: 0o700 });
@@ -91,5 +97,24 @@ test("native resolution fences a pending reply without killing its persistent ow
     await rpc.request("resolve-request", {}); await resolved;
     assert.deepEqual(await rpc.request("ping", {}), {alive:true});
     assert.equal(failure, undefined); assert.equal(reply, false);
+  } finally {await close();}
+});
+
+test("an observed native child terminal fences only callbacks for that exact thread and turn", {timeout:5000}, async () => {
+  const {rpc,close} = await fixture();
+  try {
+    let started!: () => void, aborted!: () => void, wasAborted = false, failure: Error | undefined;
+    const ready = new Promise<void>(resolve=>{started=resolve;});
+    const terminal = new Promise<void>(resolve=>{aborted=resolve;});
+    rpc.onFailure = error=>{failure=error;};
+    rpc.setRequestHandler("item/tool/call",async (_,signal)=>{
+      started(); await new Promise((_,reject)=>signal.addEventListener("abort",()=>{wasAborted=true;aborted();reject(signal.reason);},{once:true}));
+    });
+    await rpc.request("bound-probe",{}); await ready;
+    await rpc.request("terminal",{threadId:"root",turnId:"child-turn"});
+    await rpc.request("terminal",{threadId:"child",turnId:"older-child-turn"});
+    assert.equal(wasAborted,false);
+    await rpc.request("terminal",{threadId:"child",turnId:"child-turn"}); await terminal;
+    assert.deepEqual(await rpc.request("ping",{}),{alive:true}); assert.equal(failure,undefined);
   } finally {await close();}
 });

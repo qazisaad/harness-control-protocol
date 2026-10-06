@@ -35,6 +35,7 @@ export class CodexRpc {
   readonly #handlers = new Map<string, RpcRequestHandler>();
   readonly #activeRequests = new Set<string | number>();
   readonly #requestSignals = new Map<string | number, AbortController>();
+  readonly #requestTurns = new Map<string | number, {threadId: string; turnId: string}>();
   readonly #requestsAbort = new AbortController();
   readonly #observers = new Set<(message: RpcMessage) => void>();
   onNotification: (message: RpcMessage) => void = () => {};
@@ -122,6 +123,8 @@ export class CodexRpc {
     this.#activeRequests.add(id);
     const controller = new AbortController();
     this.#requestSignals.set(id, controller);
+    const turn = z.object({threadId: z.string().min(1), turnId: z.string().min(1)}).safeParse(params);
+    if (turn.success) this.#requestTurns.set(id, turn.data);
     try {
       const result = await handler(params, AbortSignal.any([this.#requestsAbort.signal, controller.signal]));
       if (!this.#failure && !controller.signal.aborted) this.#write({ id, result });
@@ -134,6 +137,7 @@ export class CodexRpc {
     } finally {
       this.#activeRequests.delete(id);
       this.#requestSignals.delete(id);
+      this.#requestTurns.delete(id);
     }
   }
 
@@ -176,6 +180,13 @@ export class CodexRpc {
       if (message.method === "serverRequest/resolved") {
         const resolved = z.object({requestId: z.union([z.string(), z.number()])}).safeParse(message.params);
         if (resolved.success) this.#requestSignals.get(resolved.data.requestId)?.abort();
+      }
+      if (message.method === "turn/completed") {
+        const terminal = z.object({threadId: z.string().min(1), turn: z.object({id: z.string().min(1),
+          status: z.enum(["completed", "interrupted", "failed"])})}).safeParse(message.params);
+        if (terminal.success) for (const [id, turn] of this.#requestTurns)
+          if (turn.threadId === terminal.data.threadId && turn.turnId === terminal.data.turn.id)
+            this.#requestSignals.get(id)?.abort();
       }
       for (const observer of this.#observers) observer(message);
       this.onNotification(message);

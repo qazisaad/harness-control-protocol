@@ -22,6 +22,10 @@ Native asynchronous input without a provider-confirmed root uses `request_scope:
 
 ## Commands and completion
 
+Approvals, input and lost-callback events may include `native_work_id` when the native owner confirms the child execution. They retain the child's original root turn even while another root runs; session-scoped input cannot claim a work ID without that origin. The runner checks live work membership before admitting a new child request. Adapters use `reviewNativeWorkMcp(workId)` for child MCP operations and the shared `dispatchMcp` slot for the whole approval, invocation and elicitation lifecycle. Callback loss never resumes the root to recreate a child callback, and unresolved MCP receipts fence subsequent dispatch. This generic interface is independent of any consuming application's task or thread model.
+
+Only one root turn can be admitted per session at a time. Rejected concurrent turn IDs remain reusable. Cancellation of an older root cannot interrupt a newer root or its MCP reviewer; interactive work owners receive native interruption before the corresponding root reviewer is closed.
+
 The SDK's `conversation` method and typed helpers expose capability-gated history reads, fork, rollback, content retrieval, work controls and explicit context injection through `injectContext`. `live_history_read` permits reading a retained thread without unloading its native owner; mutations require an idle owner. Injection carries user/assistant text and an expected history hash. Its matching result distinguishes applied context from confirmed native method absence. An unknown dispatch outcome must never be converted into a second prompt delivery. Durable injection fences and receipts remain owned by the runner, without product IDs or handoff formatting rules.
 
 Every current app-to-runner operation has a typed SDK method: session start, turn send/cancel, session stop/snapshot, approval/input response, MCP detach, local actions, and workspace list/add/rename/remove through `manageWorkspaces`. MCP attachments are part of session start. Provider capabilities and local policy remain authoritative; the SDK never widens requested permissions.
