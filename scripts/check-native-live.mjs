@@ -118,6 +118,19 @@ for (const driver of providers) {
         assert.deepEqual(effortChanged.findLast(event => event.event_type === "session.configured")?.data.model_selection,
           {model: effortModel.id, options: [{id: "effort", value: "low"}]});
         passed.push("effective-effort-transition", "effort-recall");
+        const optionsReadback = effortChanged.find(event => event.event_type === "settings.options.effective");
+        assert.equal(optionsReadback?.turn_id, "effort-changed");
+        assert.deepEqual(optionsReadback.data.model_selection.options, [{id: "effort", value: "low"}]);
+        const reset = await run(resumed.session_id, "effort-reset", "What exact marker did I ask you to remember? Reply with the marker only. Do not use tools.",
+          {model_selection: {model: effortModel.id}, mode: "execute"});
+        assert.ok(JSON.stringify(reset.filter(event => event.event_type === "turn.completed")).includes(token), "Effort reset lost the conversation");
+        const resetReadback = reset.find(event => event.event_type === "settings.options.effective");
+        assert.equal(resetReadback?.turn_id, "effort-reset");
+        assert.equal(resetReadback?.data.source, "native");
+        assert.equal(resetReadback?.data.scope, "root");
+        assert.ok(resetReadback?.data.model_selection.model);
+        assert.deepEqual(reset.findLast(event => event.event_type === "session.configured")?.data.model_selection, {model: effortModel.id});
+        passed.push("effort-reset", "effective-default-readback", "reset-recall");
       }
     }
     await manager.stopSession(resumed.session_id, "live-history");

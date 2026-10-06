@@ -22,6 +22,8 @@ Native asynchronous input without a provider-confirmed root uses `request_scope:
 
 ## Commands and completion
 
+Native effective settings are separate from requested configuration. `settings.effective` confirms the complete root settings snapshot; `settings.options.effective` confirms only the native model and model-option snapshot. Both require an admitted `turn_id`, `scope: "root"` and `source: "native"`. Their `model_selection` may contain a canonical native model ID and restored default options even when the request used an alias or removed an override. They do not rewrite already-running child work. Consumers must not infer policy or containment from a model-option observation.
+
 Approvals, input and lost-callback events may include `native_work_id` when the native owner confirms the child execution. They retain the child's original root turn even while another root runs; session-scoped input cannot claim a work ID without that origin. The runner checks live work membership before admitting a new child request. Adapters use `reviewNativeWorkMcp(workId)` for child MCP operations and the shared `dispatchMcp` slot for the whole approval, invocation and elicitation lifecycle. Callback loss never resumes the root to recreate a child callback, and unresolved MCP receipts fence subsequent dispatch. This generic interface is independent of any consuming application's task or thread model.
 
 Only one root turn can be admitted per session at a time. Rejected concurrent turn IDs remain reusable. Cancellation of an older root cannot interrupt a newer root or its MCP reviewer; interactive work owners receive native interruption before the corresponding root reviewer is closed.

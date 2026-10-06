@@ -108,13 +108,14 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     const selection = input.payload.model_selection ?? input.startPayload.model_selection;
     const mode = input.payload.mode ?? "execute";
     selectedEffort(selection, "claude");
+    let effectiveOptions: Awaited<ReturnType<ReturnType<typeof claudeEffortControl>>> | undefined;
     if (this.#selection && (JSON.stringify(selection) !== JSON.stringify(this.#selection) || mode !== this.#mode)) {
       if (this.#pending().length || this.#background.size || this.#sessionInputs.outstanding) throw error("native_work_settings_busy", "Settings cannot change while native work or session input is outstanding or its owner is unresolved.");
       const changeEffort = JSON.stringify(selection.options ?? []) !== JSON.stringify(this.#selection.options ?? [])
         ? claudeEffortControl(this.#stream!, selectedEffort(selection, "claude")) : undefined;
       try {
         if (selection.model !== this.#selection.model) await bounded(this.#stream!.setModel(selection.model));
-        if (changeEffort) await bounded(changeEffort());
+        if (changeEffort) effectiveOptions = await bounded(changeEffort());
         if (mode !== this.#mode) await bounded(this.#stream!.setPermissionMode(this.#permissionMode(mode)));
       } catch (failure) {this.#lose("transport_lost", failure); throw failure;}
     }
@@ -130,6 +131,9 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     signal.addEventListener("abort", abort, {once: true});
     try {
       signal.throwIfAborted();
+      if (effectiveOptions) emit({event_type: "settings.options.effective", turn_id: input.payload.turn_id, data: {
+        scope: "root", source: "native", model_selection: {model: effectiveOptions.model,
+          options: effectiveOptions.effort === null ? [] : [{id: "effort", value: effectiveOptions.effort}]}}});
       emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...root.context}});
       const message = this.#message(root, input.payload.action === "compact" ? "/compact" : input.payload.input);
       if (input.payload.images?.length) message.message.content = [{type: "text", text: input.payload.input}, ...input.payload.images.map(image => ({type: "image" as const,

@@ -39,7 +39,7 @@ async function fixture() {
   let completeOnStop = false;
   let failOpen = false, factoryCalls = 0;
   let confirmCompact = true;
-  let effectiveEffort = "medium";
+  let effectiveEffort: string | null = "medium";
   const emit = (message: Record<string, unknown>) => output.offer({session_id: nativeId, ...message});
   const assistant = (uuid: string, blocks: unknown[] = []) => emit({type: "assistant", user_message_uuid: uuid, parent_tool_use_id: null,
     message: {content: blocks, usage: {input_tokens: 10, output_tokens: 2}}});
@@ -74,8 +74,9 @@ async function fixture() {
       close() {closes++; output.close();},
       async setModel(model: string) {controls.push(`model:${model}`);},
       async setPermissionMode(mode: string) {controls.push(`mode:${mode}`);},
-      async applyFlagSettings(settings: {effortLevel: string}) {controls.push(`effort:${settings.effortLevel}`); effectiveEffort = settings.effortLevel;},
-      async getSettings() {controls.push("settings:read"); return {applied: {effort: effectiveEffort}};},
+      async applyFlagSettings(settings: {effortLevel: string | null}) {controls.push(`effort:${settings.effortLevel}`); effectiveEffort = settings.effortLevel;},
+      async getSettings() {controls.push("settings:read"); return {applied: {model: "claude-sonnet", effort: effectiveEffort ?? "high"},
+        sources: [{source: "flagSettings", settings: effectiveEffort === null ? {} : {effortLevel: effectiveEffort}}]};},
       async stopTask(id: string) {controls.push(`stop:${id}`); if (completeOnStop) emit({type: "system", subtype: "task_notification", task_id: id, status: "stopped", summary: "Stopped"});},
       async interrupt() {controls.push("interrupt"); emit({type: "result", subtype: "error_during_execution", is_error: true, user_message_uuid: current?.uuid});},
     }) as unknown as Query;
@@ -208,6 +209,15 @@ test("persistent effort changes preserve the runtime and confirm effective setti
     assert.equal(f.factoryCalls, 1); assert.equal(f.closes, 0);
     const configured = f.events.filter(event => event.event_type === "session.configured").at(-1)!;
     assert.deepEqual((configured.data as {model_selection: unknown}).model_selection, {model: "sonnet", options: [{id: "effort", value: "low"}]});
+    const evidence = result.find(event => event.event_type === "settings.options.effective");
+    assert.equal(evidence?.turn_id, "changed");
+    assert.deepEqual(evidence?.data, {scope: "root", source: "native", model_selection: {model: "claude-sonnet", options: [{id: "effort", value: "low"}]}});
+    const reset = await f.manager.sendTurn({session_id: "session", turn_id: "reset", input: "reset", model_selection: {model: "sonnet"}});
+    assert.equal(reset.at(-1)?.event_type, "turn.completed");
+    assert.deepEqual(reset.find(event => event.event_type === "settings.options.effective")?.data,
+      {scope: "root", source: "native", model_selection: {model: "claude-sonnet", options: [{id: "effort", value: "high"}]}});
+    assert.deepEqual(f.controls, ["effort:low", "settings:read", "effort:null", "settings:read"]);
+    assert.equal(f.factoryCalls, 1); assert.equal(f.closes, 0);
   } finally {await f.cleanup();}
 });
 

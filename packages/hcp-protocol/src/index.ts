@@ -56,6 +56,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "session.started",
   "session.configured",
   "settings.effective",
+  "settings.options.effective",
   "session.state.changed",
   "session.exited",
   "thread.started",
@@ -1392,6 +1393,10 @@ export const harnessEffectiveSettingsSchema = z.object({scope: z.literal("root")
   approval_policy: z.enum(["ask", "auto_edits", "full_access"]),
   sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"])}).strict();
 export type HarnessEffectiveSettings = z.infer<typeof harnessEffectiveSettingsSchema>;
+/** Native model-option evidence does not imply policy or sandbox readback. */
+export const harnessEffectiveModelOptionsSchema = z.object({scope: z.literal("root"), source: z.literal("native"),
+  model_selection: harnessModelSelectionSchema}).strict();
+export type HarnessEffectiveModelOptions = z.infer<typeof harnessEffectiveModelOptionsSchema>;
 const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(images =>
   images.reduce((bytes, image) => bytes + image.data_base64.length, 0) <= HARNESS_IMAGE_MAX_BYTES * 4 / 3, "Image aggregate exceeds the transport limit.");
 
@@ -2726,6 +2731,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   }
   if (eventType === "context.updated") return harnessContextUsageSchema;
   if (eventType === "settings.effective") return harnessEffectiveSettingsSchema;
+  if (eventType === "settings.options.effective") return harnessEffectiveModelOptionsSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
   if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"]), closure_unconfirmed: z.literal(true).optional()}).strict();
@@ -2806,7 +2812,7 @@ export const hcpHarnessEventPayloadSchema = z
   .strict()
   .superRefine((payload, context) => {
     const eventType: string = payload.event_type;
-    if (eventType === "settings.effective" && payload.turn_id === undefined)
+    if (["settings.effective", "settings.options.effective"].includes(eventType) && payload.turn_id === undefined)
       context.addIssue({code: "custom", path: ["turn_id"], message: "Effective root settings require their admitted HCP turn identity."});
     const dataSchema: z.ZodType<unknown> = isKnownHcpEventType(eventType)
       ? knownHcpEventDataSchemas[eventType]
