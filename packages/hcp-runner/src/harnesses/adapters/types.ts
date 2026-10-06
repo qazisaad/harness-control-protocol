@@ -64,6 +64,8 @@ export type HarnessAdapterStartInput = {
   provider: ProviderInstanceConfig;
   nativeConversation?: NativeConversation;
   mcpServers?: HarnessAdapterMcpServer[];
+  /** Authorized catalogs for adapters that establish conversations during startup. */
+  mcpToolsets?: readonly HarnessMcpToolset[];
 };
 
 export type HarnessMcpToolset = {

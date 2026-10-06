@@ -648,7 +648,8 @@ export class HarnessSessionManager {
       }),
       this.#event(payload.session_id, undefined, "session.configured", {
         execution_profile: payload.execution_profile ?? "isolated",
-        ...(configuredAdapter.emptyConversation ? {native_conversation_ready: true} : {}),
+        ...(configuredAdapter.emptyConversation || configuredAdapter.executionProfiles?.find(profile => profile.id === (payload.execution_profile ?? "isolated"))?.empty_conversation
+          ? {native_conversation_ready: true} : {}),
         ...(configuredInheritance ? {configuration_inheritance: configuredInheritance} : {}),
         model_selection: payload.model_selection,
         mcp_server_count: payload.mcp_servers.length,
@@ -821,6 +822,7 @@ export class HarnessSessionManager {
         payload: adapterStartPayload,
         provider,
         mcpServers: mcpAttachments.adapterAttachments,
+        mcpToolsets: mcpAttachments.toolsets,
         ...(adapter.sessionEvents ? {emitSessionEvent} : {}),
         ...(adapter.sessionEvents ? {registerSessionInteractions: (owner: HarnessNativeInteractions | undefined) => {
           if (eventsClosed || eventsActive && this.#sessions.get(payload.session_id) !== eventOwner)
@@ -842,7 +844,7 @@ export class HarnessSessionManager {
         adapterSession.native_thread_id = retainedConversation.native_thread_id;
         if (retainedConversation.fresh) adapterSession.native_fresh = true;
       }
-      if (adapter.emptyConversation) {
+      if (adapter.emptyConversation || profile?.empty_conversation) {
         if (!adapterSession.native_thread_id)
           throw new HarnessAdapterError("native_conversation_unconfirmed", "The adapter did not establish its advertised empty native conversation.");
         if (payload.continuation_group_key) {

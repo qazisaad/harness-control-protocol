@@ -286,6 +286,8 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   runtime_lifetime: z.enum(["turn", "session"]), native_work: z.boolean(), session_events: z.boolean(),
   required_configuration_inheritance: z.lazy(() => harnessConfigurationInheritanceSchema).optional(),
   mcp_attachments: z.boolean().optional(),
+  /** Startup establishes a native conversation before any root prompt; omission is unknown. */
+  empty_conversation: z.boolean().optional(),
   /** Native readback of root model/options and fixed execution policy; omission is unknown. */
   root_settings_readback: z.boolean().optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */

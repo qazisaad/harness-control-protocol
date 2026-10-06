@@ -3652,6 +3652,9 @@
                             "mcp_attachments": {
                               "type": "boolean"
                             },
+                            "empty_conversation": {
+                              "type": "boolean"
+                            },
                             "root_settings_readback": {
                               "type": "boolean"
                             },

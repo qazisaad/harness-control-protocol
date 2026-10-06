@@ -107,6 +107,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never',approvalsReviewer:process.env.MODE==='reviewer'?'auto_review':m.params.approvalsReviewer}}); }
+ if(m.method==='thread/section/move')send({id:m.id,result:{}});
+ if(m.method==='thread/read')send({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd(),path:process.cwd()+'/native-rollout.jsonl',turns:[]}}});
  if(m.method==='thread/settings/update') { notify('thread/settings/updated',{threadId:m.params.threadId,threadSettings:{model:m.params.model,effort:m.params.collaborationMode.settings.reasoning_effort,
    collaborationMode:m.params.collaborationMode,cwd:process.cwd(),approvalPolicy:'never',approvalsReviewer:'user',sandboxPolicy:{type:'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true}}}); send({id:m.id,result:{}}); }
  if(m.method==='turn/interrupt') {send({id:m.id,result:{}}); notify('turn/completed',{threadId:m.params.threadId,turn:{id:m.params.turnId,status:'interrupted',error:null}});}
@@ -259,6 +261,10 @@ it("Codex interactive roots reuse one native transport and interrupt only their 
   const adapter = new CodexHarnessAdapter();
   const session = await adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}});
   try {
+    assert.equal(session.native_thread_id, "native-thread");
+    const startup = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(startup.filter(request => request.method === "thread/start").length, 1);
+    assert.equal(startup.filter(request => request.method === "turn/start").length, 0);
     for (const id of ["first", "second"]) {
       const events = await adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: payload.session_id, turn_id: id, input: "hello"}});
       assert.equal(events.at(-1)?.event_type, "turn.completed", JSON.stringify(events.at(-1)?.data));
@@ -292,8 +298,14 @@ for (const mode of ["reviewer", "exit"]) {
     selected.env = {MODE: mode, VERSION: "codex-cli 0.160.0", RECORD: record};
     const payload = {...start("codex", cwd), execution_profile: "interactive" as const};
     const adapter = new CodexHarnessAdapter();
-    const session = await adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}});
     try {
+      if (mode === "reviewer") {
+        await assert.rejects(adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}}), /execution policy/);
+        const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+        assert.equal(requests.filter(request => request.method === "turn/start").length, 0);
+        return;
+      }
+      const session = await adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}});
       for (const id of ["first", "after-failure"]) {
         const events = await adapter.sendTurn({...turn(payload, selected), session,
           payload: {session_id: payload.session_id, turn_id: id, input: "hello"}});

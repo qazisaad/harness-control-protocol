@@ -113,7 +113,7 @@ export class CodexOwnedWork {
         this.#launches.set(launch, prior); return;
       }
       this.#unconfirmed.add(event.item.agentThreadId);
-      const read = childRead.parse(await this.#request("thread/read", {threadId: event.item.agentThreadId, includeTurns: true})).thread;
+      const read = childRead.parse(await this.#request("thread/read", {threadId: event.item.agentThreadId, includeTurns: false})).thread;
       if (read.id !== event.item.agentThreadId || read.parentThreadId !== thread || read.source.subAgent.thread_spawn.parent_thread_id !== thread)
         throw new Error("Native child parent is unconfirmed");
       if (await realpath(read.cwd) !== await realpath(this.start.payload.cwd)) throw new Error("Native child left its admitted workspace");

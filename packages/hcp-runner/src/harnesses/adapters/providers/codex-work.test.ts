@@ -24,7 +24,10 @@ createInterface({input:process.stdin}).on('line',line=>{
   notify('turn/started',{threadId:'child',turn:{id:'child-turn',status:'inProgress'}});
   notify('turn/completed',{threadId:'root',turn:{id:'root-turn',status:'completed',error:null}});
   send({id:m.id,result:{turn:{id:'root-turn'}}});
- } else if(m.method==='thread/read') send({id:m.id,result:{thread:{id:'child',cwd:process.cwd(),parentThreadId:'root',source:{subAgent:{thread_spawn:{parent_thread_id:process.env.MODE==='wrong-parent'?'foreign':'root'}}},turns:[{id:'child-turn',status}]}}});
+ } else if(m.method==='thread/read') {
+  if(process.env.MODE==='metadata-only'&&m.params.includeTurns)send({id:m.id,error:{code:-32601,message:'includeTurns is not supported yet'}});
+  else send({id:m.id,result:{thread:{id:'child',cwd:process.cwd(),parentThreadId:'root',source:{subAgent:{thread_spawn:{parent_thread_id:process.env.MODE==='wrong-parent'?'foreign':'root'}}},turns:m.params.includeTurns?[{id:'child-turn',status}]:[]}}});
+ }
  else if(m.method==='complete') {status='completed';notify('turn/completed',{threadId:'child',turn:{id:'child-turn',status,error:null}});send({id:m.id,result:{}});}
  else if(m.method==='turn/interrupt') {interrupts++;send({id:m.id,result:{}});if(process.env.MODE!=='ack-only'){status='interrupted';notify('turn/completed',{threadId:m.params.threadId,turn:{id:m.params.turnId,status,error:null}});}}
  else if(m.method==='thread/unsubscribe'){subscriptions.push(m.params.threadId);send({id:m.id,result:{status:'unsubscribed'}});}
@@ -66,6 +69,17 @@ async function requested(events: HarnessAdapterEvent[]): Promise<HarnessAdapterE
   }
   throw new Error("No child input arrived");
 }
+
+test("Codex child launch confirms ancestry without requiring materialized turns", async () => {
+  const f = await fixture("metadata-only");
+  try {
+    await f.rpc.request("launch", {}); f.owner.admitRoot("root", "root-turn", "app-root"); await f.owner.settled();
+    assert.equal(f.work().status, "running");
+    await f.rpc.request("complete", {}); await f.owner.settled();
+    assert.equal(f.work().status, "completed");
+    await f.owner.stop();
+  } finally {await f.close();}
+});
 
 test("persistent Codex callback routing separates an old child from a newer root handler", {timeout:5000}, async()=>{
   const f=await fixture();

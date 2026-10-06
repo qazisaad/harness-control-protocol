@@ -10,20 +10,36 @@ import {type ContentPublisher} from "./adapters/providers/content-projection.js"
 
 const threadSchema = z.object({thread: z.object({id: z.string(), historyMode: z.enum(["legacy", "paginated"]).optional(), turns: z.array(z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json()))}))})});
 type Thread = z.infer<typeof threadSchema>["thread"];
-async function readThread(rpc: CodexRpc, threadId: string): Promise<Thread> {
+async function readThread(rpc: CodexRpc, threadId: string, owned = false): Promise<Thread> {
   const metadata = threadSchema.parse(await rpc.request("thread/read", {threadId, includeTurns: false})).thread;
   if (metadata.id !== threadId) throw new HarnessAdapterError("native_history_binding", "Native history belongs to another conversation.");
-  if (metadata.historyMode !== "paginated") {
+  if (metadata.historyMode !== "paginated" || !owned) {
+    try {
     const legacy = threadSchema.parse(await rpc.request("thread/read", {threadId, includeTurns: true})).thread;
     if (legacy.id !== threadId) throw new HarnessAdapterError("native_history_binding", "Native history belongs to another conversation.");
     return legacy;
+    } catch (failure) {
+      // Loaded paginated threads require their owner's turns endpoint. Unloaded
+      // native rollouts can be read without resuming or changing execution policy.
+      if (metadata.historyMode !== "paginated" || !(failure instanceof CodexRpcRequestError) || failure.nativeCode !== -32601) throw failure;
+    }
   }
   const turns: Thread["turns"] = [];
   const visited = new Set<string>();
   let cursor: string | undefined, size = 0;
   do {
-    const page = z.object({data: z.array(threadSchema.shape.thread.shape.turns.element), nextCursor: z.string().nullish()}).parse(await rpc.request("thread/turns/list",
-      {threadId, cursor: cursor ?? null, limit: 100, sortDirection: "desc", itemsView: "full"}));
+    let result: unknown;
+    try {result = await rpc.request("thread/turns/list", {threadId, cursor: cursor ?? null, limit: 100, sortDirection: "desc", itemsView: "full"});}
+    catch (failure) {
+      // Pinned native 0.160.0 explicitly confirms that no first user message
+      // exists. A generic not-found/unloaded failure cannot establish emptiness.
+      if (owned && cursor === undefined && turns.length === 0 && failure instanceof CodexRpcRequestError &&
+        failure.nativeCode === -32600 && failure.message ===
+          `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`)
+        return {...metadata, turns: []};
+      throw failure;
+    }
+    const page = z.object({data: z.array(threadSchema.shape.thread.shape.turns.element), nextCursor: z.string().nullish()}).parse(result);
     size += Buffer.byteLength(JSON.stringify(page.data));
     if (size > 8 * 1024 * 1024 || turns.length + page.data.length > 10_000)
       throw new HarnessAdapterError("native_history_limit", "Native history exceeds the bounded snapshot limit.");
@@ -37,16 +53,19 @@ async function readThread(rpc: CodexRpc, threadId: string): Promise<Thread> {
 
 export async function nativeConversationOperation(commandId: string, request: HcpConversationRequestPayload,
   conversation: NativeConversation, provider: ProviderInstanceConfig, save: (conversation: NativeConversation) => void,
-  beginMutation?: () => void, publish?: ContentPublisher): Promise<HcpConversationResultPayload> {
-  const rpc = new CodexRpc(provider.executable_path ?? "codex", conversation.cwd, {...process.env, ...provider.env,
+  beginMutation?: () => void, publish?: ContentPublisher, ownedRpc?: CodexRpc): Promise<HcpConversationResultPayload> {
+  if (ownedRpc && request.operation.kind !== "read") throw new HarnessAdapterError("native_history_read_only", "A live native owner can only lend its transport for history reads.");
+  const rpc = ownedRpc ?? new CodexRpc(provider.executable_path ?? "codex", conversation.cwd, {...process.env, ...provider.env,
     ...(provider.home ? {CODEX_HOME: provider.home} : {})});
-  const timer = setTimeout(() => {void rpc.process.stop();}, 30_000);
+  const timer = ownedRpc ? undefined : setTimeout(() => {void rpc.process.stop();}, 30_000);
   try {
+    if (!ownedRpc) {
     await rpc.request("initialize", {clientInfo: {name: "hcp-conversation", version: "0.4.10"}, capabilities: {experimentalApi: true}});
     rpc.notify("initialized");
-    let thread = await readThread(rpc, conversation.native_thread_id);
+    }
+    let thread = await readThread(rpc, conversation.native_thread_id, !!ownedRpc);
     if (thread.id !== conversation.native_thread_id) throw new HarnessAdapterError("native_history_binding", "Native history belongs to another conversation.");
-    if (request.operation.kind === "read" && hash((await readThread(rpc, thread.id)).turns) !== hash(thread.turns))
+    if (request.operation.kind === "read" && hash((await readThread(rpc, thread.id, !!ownedRpc)).turns) !== hash(thread.turns))
       throw new HarnessAdapterError("native_history_changed", "Native history changed during the snapshot; read it again.");
     if (request.operation.kind === "inject") {
       const operation = request.operation;
@@ -128,5 +147,5 @@ export async function nativeConversationOperation(commandId: string, request: Hc
     }
     return hcpConversationResultPayloadSchema.parse({command_id: commandId, session_id: request.session_id,
       operation: request.operation.kind, filesystem_undo: false, history: publicHistory(thread, publish, request.operation.kind === "read" ? request.operation : undefined, "codex")});
-  } finally {clearTimeout(timer); await rpc.process.stop();}
+  } finally {if (timer) clearTimeout(timer); if (!ownedRpc) await rpc.process.stop();}
 }

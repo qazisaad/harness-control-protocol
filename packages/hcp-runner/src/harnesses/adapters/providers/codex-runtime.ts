@@ -112,137 +112,9 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
   try {
-    if (!lease?.initialized) {
-    await rpc.request("initialize", {
-      clientInfo: { name: "hcp-runner", version: "0.0.0" },
-      capabilities: { experimentalApi: true },
-    });
-    rpc.notify("initialized");
-    if (lease) lease.initialized = true;
-    }
-    const configResult = z.object({ config: object }).parse(
-      await rpc.request("config/read", {
-        cwd: input.startPayload.cwd,
-        includeLayers: false,
-      }),
-    );
-    const inherited = object.parse(configResult.config.mcp_servers ?? {});
-    const inheritedPlugins = object.parse(configResult.config.plugins ?? {});
-    const servers: Record<string, unknown> = {};
-    for (const name of Object.keys(inherited))
-      servers[name] = { enabled: false };
-    const attachments = adapterMcpServers(input.mcpServers, input.startPayload);
-    const toolsets = input.mcpToolsets ?? [];
-    if (attachments.length !== toolsets.length ||
-        attachments.some(attachment => !toolsets.some(toolset => toolset.name === attachment.name))) {
-      throw new HarnessAdapterError("mcp_bridge_missing", "Codex requires the authorized runner tool bridge for every selected MCP attachment.");
-    }
-    const bridge = new NativeMcpBridge(toolsets, input.reviewMcpTool, input.dispatchMcp);
-    const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
-    const approvalPolicy = {ask: "untrusted", auto_edits: "on-request", full_access: "never"}[input.startPayload.approval_policy];
-    const resumeThread = input.mcpContinuation?.native_thread_id ?? input.session.native_thread_id;
-    const started = lease?.started ?? startedSchema.parse(
-      await rpc.request(resumeThread ? "thread/resume" : "thread/start", {
-        ...(resumeThread ? {threadId: resumeThread} : {
-          ephemeral: false,
-          dynamicTools: bridge.definitions,
-        }),
-        cwd: input.startPayload.cwd,
-        model: selection.model,
-        sandbox,
-        approvalPolicy,
-        approvalsReviewer: "user",
-        ...(input.startPayload.instructions?.system ? {baseInstructions: input.startPayload.instructions.system} : {}),
-        ...(input.startPayload.instructions?.developer ? {developerInstructions: input.startPayload.instructions.developer} : {}),
-
-        config: {
-          mcp_servers: servers,
-          plugins: Object.fromEntries(
-            Object.keys(inheritedPlugins).map((name) => [name, { enabled: false }]),
-          ),
-          "features.apps": false,
-          "features.multi_agent": !!lease?.work,
-          "sandbox_workspace_write.writable_roots": [],
-          "sandbox_workspace_write.exclude_tmpdir_env_var": true,
-          "sandbox_workspace_write.exclude_slash_tmp": true,
-        },
-      }),
-    );
-    const expectedSandbox = {
-      read_only: "readOnly",
-      workspace_write: "workspaceWrite",
-      danger_full_access: "dangerFullAccess",
-    }[input.startPayload.sandbox_mode];
-    if (
-      started.sandbox.type !== expectedSandbox ||
-      started.approvalPolicy !== approvalPolicy || lease && started.approvalsReviewer !== "user"
-    ) {
-      throw new HarnessAdapterError(
-        "policy_mismatch",
-        "Codex did not accept the requested execution policy.",
-      );
-    }
-    if (started.sandbox.type === "workspaceWrite") {
-      const cwd = await realpath(input.startPayload.cwd);
-      const roots = await Promise.all(
-        (started.sandbox.writableRoots ?? []).map((root) => realpath(root)),
-      );
-      if (
-        started.sandbox.writableRoots === undefined ||
-        roots.some((root) => root !== cwd) ||
-        started.sandbox.excludeTmpdirEnvVar !== true ||
-        started.sandbox.excludeSlashTmp !== true
-      ) {
-        throw new HarnessAdapterError(
-          "policy_mismatch",
-          "Codex granted writes beyond the requested workspace.",
-        );
-      }
-    }
+    const {started, bridge} = await initializeCodexConversation(input, selection, rpc, lease);
     const threadId = started.thread.id;
-    lease?.work?.attachRootThread(threadId);
-    if (resumeThread && threadId !== resumeThread) {
-      throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
-    }
-    if (lease) lease.started = started;
-    input.session.native_thread_id = threadId;
-    input.persistNativeThread?.(threadId);
     if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true}});
-    let cursor: string | undefined;
-    do {
-      const inventory = z
-        .object({
-          data: z.array(
-            z.object({
-              name: z.string(),
-              runtimeStatus: z.string().nullable().optional(),
-              tools: object.optional(),
-            }),
-          ),
-          nextCursor: z.string().nullable().optional(),
-        })
-        .parse(
-          await rpc.request("mcpServerStatus/list", {
-            threadId,
-            ...(cursor ? { cursor } : {}),
-          }),
-        );
-      if (
-        inventory.data.some(
-          (server) =>
-            !(
-              server.runtimeStatus === "disabled" &&
-              Object.keys(server.tools ?? {}).length === 0
-            ),
-        )
-      ) {
-        throw new HarnessAdapterError(
-          "mcp_scope_mismatch",
-          "Codex exposed an MCP server outside the selected attachment scope.",
-        );
-      }
-      cursor = inventory.nextCursor ?? undefined;
-    } while (cursor);
     let live = true;
     input.registerActiveTurnControls?.({async steer(text) {
       if (!live || !nativeTurnId || signal.aborted)
@@ -509,4 +381,153 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
 function boundedText(value: string): string {
   if (Buffer.byteLength(value) <= 32 * 1024) return value;
   return [...value].slice(0, 8192).join("") + "\n[output truncated by HCP; inspect the native conversation for the full output]";
+}
+
+type CodexConversationInitializationInput = Pick<Parameters<NativeTurn>[0],
+  "startPayload" | "provider" | "mcpServers" | "mcpToolsets" | "reviewMcpTool" | "dispatchMcp" | "mcpContinuation" | "session" | "persistNativeThread">;
+/** Fresh native threads defer persistence until a prompt or explicit placement. */
+export async function materializeEmptyCodexConversation(rpc: Pick<CodexRpc, "request">, threadId: string, cwd: string): Promise<void> {
+  // A new conversation has no section. Confirm its default placement through
+  // the native persistence path, without adding model-visible history or a title.
+  z.object({}).strict().parse(await rpc.request("thread/section/move", {threadId, sectionId: null, beforeThreadId: null}));
+  const readback = z.object({thread: z.object({id: z.string(), cwd: z.string(), path: z.string().min(1), turns: z.array(z.unknown())})})
+    .parse(await rpc.request("thread/read", {threadId, includeTurns: true})).thread;
+  if (readback.id !== threadId || await realpath(readback.cwd) !== await realpath(cwd) || readback.turns.length !== 0)
+    throw new HarnessAdapterError("native_empty_conversation_mismatch", "Codex did not confirm the durable empty conversation and authorized workspace.");
+}
+/** Start and turn admission share the same native policy, tool inventory and continuation checks. */
+export async function initializeCodexConversation(input: CodexConversationInitializationInput,
+  selection: Parameters<NativeTurn>[0]["startPayload"]["model_selection"], rpc: CodexRpc, lease?: CodexRuntimeLease) {
+    if (!lease?.initialized) {
+    await rpc.request("initialize", {
+      clientInfo: { name: "hcp-runner", version: "0.0.0" },
+      capabilities: { experimentalApi: true },
+    });
+    rpc.notify("initialized");
+    if (lease) lease.initialized = true;
+    }
+    const configResult = z.object({ config: object }).parse(
+      await rpc.request("config/read", {
+        cwd: input.startPayload.cwd,
+        includeLayers: false,
+      }),
+    );
+    const inherited = object.parse(configResult.config.mcp_servers ?? {});
+    const inheritedPlugins = object.parse(configResult.config.plugins ?? {});
+    const servers: Record<string, unknown> = {};
+    for (const name of Object.keys(inherited))
+      servers[name] = { enabled: false };
+    const attachments = adapterMcpServers(input.mcpServers, input.startPayload);
+    const toolsets = input.mcpToolsets ?? [];
+    if (attachments.length !== toolsets.length ||
+        attachments.some(attachment => !toolsets.some(toolset => toolset.name === attachment.name))) {
+      throw new HarnessAdapterError("mcp_bridge_missing", "Codex requires the authorized runner tool bridge for every selected MCP attachment.");
+    }
+    const bridge = new NativeMcpBridge(toolsets, input.reviewMcpTool, input.dispatchMcp);
+    const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
+    const approvalPolicy = {ask: "untrusted", auto_edits: "on-request", full_access: "never"}[input.startPayload.approval_policy];
+    const resumeThread = input.mcpContinuation?.native_thread_id ?? input.session.native_thread_id;
+    const started = lease?.started ?? startedSchema.parse(
+      await rpc.request(resumeThread ? "thread/resume" : "thread/start", {
+        ...(resumeThread ? {threadId: resumeThread} : {
+          ephemeral: false,
+          dynamicTools: bridge.definitions,
+        }),
+        cwd: input.startPayload.cwd,
+        model: selection.model,
+        sandbox,
+        approvalPolicy,
+        approvalsReviewer: "user",
+        ...(input.startPayload.instructions?.system ? {baseInstructions: input.startPayload.instructions.system} : {}),
+        ...(input.startPayload.instructions?.developer ? {developerInstructions: input.startPayload.instructions.developer} : {}),
+
+        config: {
+          mcp_servers: servers,
+          plugins: Object.fromEntries(
+            Object.keys(inheritedPlugins).map((name) => [name, { enabled: false }]),
+          ),
+          "features.apps": false,
+          "features.multi_agent": !!lease?.work,
+          "sandbox_workspace_write.writable_roots": [],
+          "sandbox_workspace_write.exclude_tmpdir_env_var": true,
+          "sandbox_workspace_write.exclude_slash_tmp": true,
+        },
+      }),
+    );
+    const expectedSandbox = {
+      read_only: "readOnly",
+      workspace_write: "workspaceWrite",
+      danger_full_access: "dangerFullAccess",
+    }[input.startPayload.sandbox_mode];
+    if (
+      started.sandbox.type !== expectedSandbox ||
+      started.approvalPolicy !== approvalPolicy || lease && started.approvalsReviewer !== "user"
+    ) {
+      throw new HarnessAdapterError(
+        "policy_mismatch",
+        "Codex did not accept the requested execution policy.",
+      );
+    }
+    if (started.sandbox.type === "workspaceWrite") {
+      const cwd = await realpath(input.startPayload.cwd);
+      const roots = await Promise.all(
+        (started.sandbox.writableRoots ?? []).map((root) => realpath(root)),
+      );
+      if (
+        started.sandbox.writableRoots === undefined ||
+        roots.some((root) => root !== cwd) ||
+        started.sandbox.excludeTmpdirEnvVar !== true ||
+        started.sandbox.excludeSlashTmp !== true
+      ) {
+        throw new HarnessAdapterError(
+          "policy_mismatch",
+          "Codex granted writes beyond the requested workspace.",
+        );
+      }
+    }
+    const threadId = started.thread.id;
+    lease?.work?.attachRootThread(threadId);
+    if (resumeThread && threadId !== resumeThread) {
+      throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
+    }
+    if (lease) lease.started = started;
+    input.session.native_thread_id = threadId;
+    input.persistNativeThread?.(threadId);
+
+    let cursor: string | undefined;
+    do {
+      const inventory = z
+        .object({
+          data: z.array(
+            z.object({
+              name: z.string(),
+              runtimeStatus: z.string().nullable().optional(),
+              tools: object.optional(),
+            }),
+          ),
+          nextCursor: z.string().nullable().optional(),
+        })
+        .parse(
+          await rpc.request("mcpServerStatus/list", {
+            threadId,
+            ...(cursor ? { cursor } : {}),
+          }),
+        );
+      if (
+        inventory.data.some(
+          (server) =>
+            !(
+              server.runtimeStatus === "disabled" &&
+              Object.keys(server.tools ?? {}).length === 0
+            ),
+        )
+      ) {
+        throw new HarnessAdapterError(
+          "mcp_scope_mismatch",
+          "Codex exposed an MCP server outside the selected attachment scope.",
+        );
+      }
+      cursor = inventory.nextCursor ?? undefined;
+    } while (cursor);
+    return {started, bridge};
 }

@@ -11,7 +11,7 @@ import {
 } from "./index.js";
 import type { HcpConversationResultPayload, HcpSessionStartPayload } from "@harness-control/protocol";
 
-async function fixture(emptyConversation = false) {
+async function fixture(emptyConversation: boolean | "profile" = false) {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-custom-conversation-"));
   const state = new MemoryRunnerStateStore();
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:8787",
@@ -25,7 +25,9 @@ async function fixture(emptyConversation = false) {
   };
   const adapter: HarnessAdapter = {
     driverKind: "example.chat", conversationOperations: ["read", "rollback"],
-    ...(emptyConversation ? {emptyConversation: true as const} : {}),
+    ...(emptyConversation === true ? {emptyConversation: true as const} : {}),
+    ...(emptyConversation === "profile" ? {executionProfiles: [{id: "isolated", runtime_lifetime: "turn" as const,
+      native_work: false, session_events: false, empty_conversation: true}]} : {}),
     conversationOperation: input => operation(input),
     async probe() {return {driver_kind: "example.chat", installed: true, available: true, models: []};},
     async validateStart() {},
@@ -47,8 +49,8 @@ async function fixture(emptyConversation = false) {
     cleanup: () => rm(cwd, {recursive: true, force: true})};
 }
 
-test("an empty native conversation is retained and resumed before any model turn", async () => {
-  const f = await fixture(true);
+for (const declaration of [true, "profile"] as const) test(`empty native conversation declaration ${declaration} is retained before any model turn`, async () => {
+  const f = await fixture(declaration);
   let turns = 0;
   f.adapter.sendTurn = async () => {turns++; throw new Error("No model turn was requested");};
   try {

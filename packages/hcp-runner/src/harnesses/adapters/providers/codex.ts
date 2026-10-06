@@ -34,14 +34,14 @@ import {
   nativeExecutionCapabilities,
   validateNativeStart,
 } from "./native-turn.js";
-import { runCodexTurn, runRetainedCodexTurn, type CodexRuntimeLease } from "./codex-runtime.js";
+import { runCodexTurn, runRetainedCodexTurn, initializeCodexConversation, materializeEmptyCodexConversation, type CodexRuntimeLease } from "./codex-runtime.js";
 import {CodexRpc} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
 import {readCodexSettingsNotification} from "./codex-settings.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
@@ -64,7 +64,10 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   readonly conversationOperations = ["read", "rollback", "fork", "inject"] as const;
 
   conversationOperation(input: HarnessAdapterConversationInput) {
-    return nativeConversationOperation(input.commandId, input.request, input.conversation, input.provider, input.save, input.beginMutation, input.publishContent);
+    const lease = this.#leases.get(input.request.session_id);
+    if (lease && lease.started?.thread.id !== input.conversation.native_thread_id)
+      throw new HarnessAdapterError("native_history_binding", "The retained history owner belongs to another native conversation.");
+    return nativeConversationOperation(input.commandId, input.request, input.conversation, input.provider, input.save, input.beginMutation, input.publishContent, lease?.rpc);
   }
   readonly #processSpawner: CliProcessSpawner;
   readonly #probeTimeoutMs: number;
@@ -231,6 +234,16 @@ export class CodexHarnessAdapter implements HarnessAdapter {
       });
       void rpc.process.closed.then(() => {lease.settings = undefined; lease.closeSettings?.();});
       this.#leases.set(input.payload.session_id, lease);
+      const timer = setTimeout(() => {void rpc.process.stop();}, 30_000);
+      try {
+        const session = {adapter_session_id: input.payload.session_id,
+          ...(input.nativeConversation ? {native_thread_id: input.nativeConversation.native_thread_id} : {})};
+        const {started} = await initializeCodexConversation({startPayload: input.payload, provider: input.provider, session,
+          ...(input.mcpServers ? {mcpServers: input.mcpServers} : {}), ...(input.mcpToolsets ? {mcpToolsets: input.mcpToolsets} : {})},
+          input.payload.model_selection, rpc, lease);
+        if (!input.nativeConversation) await materializeEmptyCodexConversation(rpc, started.thread.id, input.payload.cwd);
+        return {adapter_session_id: input.payload.session_id, native_thread_id: started.thread.id};
+      } finally {clearTimeout(timer);}
     }
     return { adapter_session_id: input.payload.session_id };
   }
