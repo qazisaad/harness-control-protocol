@@ -11,35 +11,57 @@ import {readControlledOpenCodeReference, controlledOpenCodeInheritance} from "./
 import {RunnerConfigSchema} from "../config/index.js";
 import {JsonRunnerStateStore} from "../state/index.js";
 
-for (const kind of ["approval", "question"] as const) test(`OpenCode ${kind} replies, tool events, native resume and compaction use the generic runner`, async () => {
+for (const scenario of ["approval", "question", "session-approval"] as const) test(`OpenCode ${scenario} replies, tool events, native resume and compaction use the generic runner`, async () => {
+  const interactive = scenario === "session-approval", kind = scenario === "question" ? "question" : "approval";
   const cwd = await mkdtemp(join(tmpdir(), "hcp-opencode-conversation-"));
   const record = join(cwd, "native.jsonl");
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
     provider_instances: [{id: "opencode", driver_kind: "opencode", executable_path: process.execPath,
-      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))], env: {HCP_TEST_OPENCODE_RECORD: record}}]});
+      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))], env: {HCP_TEST_OPENCODE_RECORD: record,
+        ...(interactive ? {HCP_TEST_OPENCODE_VERSION: "opencode 1.18.34"} : {})}}]});
   const manager = () => new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(join(cwd, "state.json"))});
   let runner = manager();
   const start = (id: string, resume: boolean): HcpSessionStartPayload => ({session_id: id, workspace_id: "workspace", cwd,
     provider_instance_id: "opencode", driver_kind: "opencode", model_selection: {model: "anthropic/claude"}, sandbox_mode: "danger_full_access",
-    approval_policy: "ask", continue_session: resume, continuation_group_key: "conversation", mcp_servers: [], instructions: {system: "Application system instructions"}});
+    approval_policy: "ask", continue_session: resume, continuation_group_key: "conversation", mcp_servers: [], instructions: {system: "Application system instructions"},
+    ...(interactive ? {execution_profile: "interactive"} : {})});
   try {
     const events: HcpHarnessEventPayload[] = [...await runner.startSession(start("first-session", false))];
     await runner.sendTurn({session_id: "first-session", turn_id: "first-turn", input: kind}, event => {
       events.push(event);
       const data = event.data as Record<string, unknown>;
       if (event.event_type === "approval.requested") void runner.respondToMcpReview({session_id: "first-session", turn_id: "first-turn",
-        request_id: data.request_id as string, action_hash: data.action_hash as string, decision: "accept", actor_id: "actor"}, () => {});
+        request_id: data.request_id as string, action_hash: data.action_hash as string, decision: interactive ? "accept_for_session" : "accept", actor_id: "actor"}, () => {});
       if (event.event_type === "user_input.requested") void runner.respondToMcpInput({session_id: "first-session", turn_id: "first-turn",
         request_id: data.request_id as string, actor_id: "actor", value: {answers: {"question-0": {answers: ["A", "B"]}}}}, () => {});
     });
     assert.equal(events.filter(event => event.event_type === "turn.completed").length, 1);
     assert.equal(events.filter(event => event.event_type === "item.completed").length, 1);
     assert.equal(events.filter(event => event.event_type === "item.updated").length, 0);
+    if (kind === "approval") assert.equal((events.find(event => event.event_type === "approval.requested")!.data as {allowed_decisions: string[]}).allowed_decisions.includes("accept_for_session"), interactive);
+    if (interactive) {
+      const repeated = await runner.sendTurn({session_id: "first-session", turn_id: "remembered", input: "approval"});
+      assert.equal(repeated.at(-1)?.event_type, "turn.completed");
+      assert.equal(repeated.some(event => event.event_type === "approval.requested"), false);
+    }
     const reducer = new HcpSessionEventReducer();
     for (const event of events) {hcpHarnessEventPayloadSchema.parse(event); assert.equal(reducer.applyEvent(event).outcome, "applied");}
     await runner.stopSession("first-session", "done");
     runner = manager();
     await runner.startSession(start("second-session", true));
+    if (interactive) {
+      const reopened: HcpHarnessEventPayload[] = [];
+      await runner.sendTurn({session_id: "second-session", turn_id: "fresh-owner", input: "approval"}, event => {
+        reopened.push(event);
+        if (event.event_type === "approval.requested") {
+          const data = event.data as {request_id: string; action_hash: string};
+          void runner.respondToMcpReview({session_id: "second-session", turn_id: "fresh-owner", request_id: data.request_id,
+            action_hash: data.action_hash, decision: "accept", actor_id: "actor"}, () => {});
+        }
+      });
+      assert.equal(reopened.at(-1)?.event_type, "turn.completed");
+      assert.equal(reopened.some(event => event.event_type === "approval.requested"), true);
+    }
     const followup = await runner.sendTurn({session_id: "second-session", turn_id: "second-turn", input: "followup", mode: "plan",
       model_selection: {model: "anthropic/claude", options: [{id: "variant", value: "high"}]}, images: [{mime_type: "image/png", data_base64: "aGVsbG8="}]});
     assert.equal(followup.at(-1)?.event_type, "turn.completed");
@@ -65,6 +87,34 @@ for (const kind of ["approval", "question"] as const) test(`OpenCode ${kind} rep
     assert.equal(prompt.system, "Application system instructions");
     assert.equal(requests.filter(request => request.path.endsWith("/summarize")).length, 1);
   } finally {for (const id of ["first-session", "second-session"]) if (runner.activeSessionCount()) await runner.stopSession(id, "cleanup"); await rm(cwd, {recursive: true, force: true});}
+});
+
+test("OpenCode closes uncertain permission owners instead of retaining an unconfirmed remembered grant", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-opencode-uncertain-reply-"));
+  const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
+    provider_instances: [{id: "opencode", driver_kind: "opencode", executable_path: process.execPath,
+      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))],
+      env: {HCP_TEST_OPENCODE_VERSION: "opencode 1.18.34", HCP_TEST_OPENCODE_REPLY_ACK: "false"}}]});
+  const runner = new HarnessSessionManager(config);
+  try {
+    await runner.startSession({session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "opencode", driver_kind: "opencode",
+      model_selection: {model: "anthropic/claude"}, sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false,
+      execution_profile: "interactive", mcp_servers: []});
+    const events: HcpHarnessEventPayload[] = [];
+    await runner.sendTurn({session_id: "session", turn_id: "turn", input: "approval"}, event => {
+      events.push(event);
+      if (event.event_type === "approval.requested") {
+        const data = event.data as {request_id: string; action_hash: string};
+        void runner.respondToMcpReview({session_id: "session", turn_id: "turn", request_id: data.request_id, action_hash: data.action_hash,
+          decision: "accept_for_session", actor_id: "actor"}, () => {});
+      }
+    });
+    assert.equal(events.some(event => event.event_type === "turn.completed"), false);
+    assert.equal((events.find(event => event.event_type === "turn.failed")!.data as {error: {code: string}}).error.code, "native_reply_unknown");
+    const later = await runner.sendTurn({session_id: "session", turn_id: "later", input: "approval"});
+    assert.equal(later.some(event => event.event_type === "turn.completed"), false);
+    assert.equal((later.find(event => event.event_type === "turn.failed")!.data as {error: {code: string}}).error.code, "native_session_unavailable");
+  } finally {await runner.stopSession("session", "done"); await rm(cwd, {recursive: true, force: true});}
 });
 
 for (const drift of ["system", "session"] as const) test(`OpenCode rejects ${drift} drift in admitted instruction readback`, async () => {

@@ -9,6 +9,7 @@ if (process.argv.includes("--version")) {
 
 const streams = new Set();
 const pending = new Map();
+let rememberedPermission = false;
 const admittedMessages = new Map();
 const emit = value => {for (const stream of streams) sendEvent(stream, value);};
 const finish = response => {
@@ -105,10 +106,11 @@ const server = createServer(async (request, response) => {
     response.hcpMessageId = payload.messageID;
     admittedMessages.set(payload.messageID, {...payload, hcpSessionId: executionId});
     if (text === "approval" || text === "question") {
+      if (text === "approval" && rememberedPermission) {finish(response); return;}
       pending.set(text, response);
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "another-session", permission: "bash", questions: []}});
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "fake-opencode-session", permission: "bash",
-        patterns: ["echo hello"], metadata: {}, questions: [{question: "Which scope?", header: "Scope", multiple: true, custom: false,
+        patterns: ["echo hello"], always: ["echo hello"], metadata: {}, questions: [{question: "Which scope?", header: "Scope", multiple: true, custom: false,
           options: [{label: "A", description: "first"}, {label: "B", description: "second"}]}]}});
       return;
     }
@@ -143,11 +145,12 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === "POST" && (url.pathname === "/permission/approval/reply" || url.pathname === "/question/question/reply")) {
     const kind = url.pathname.startsWith("/permission") ? "approval" : "question";
-    if ((kind === "approval" && payload.reply !== "once") || (kind === "question" && JSON.stringify(payload.answers) !== JSON.stringify([["A", "B"]]))) {
+    if ((kind === "approval" && !["once", "always"].includes(payload.reply)) || (kind === "question" && JSON.stringify(payload.answers) !== JSON.stringify([["A", "B"]]))) {
       response.writeHead(400).end("Incorrect native reply"); return;
     }
     const original = pending.get(kind); pending.delete(kind);
-    writeJson(response, true);
+    if (kind === "approval" && payload.reply === "always") rememberedPermission = true;
+    writeJson(response, process.env.HCP_TEST_OPENCODE_REPLY_ACK === "false" ? false : true);
     finish(original); return;
   }
   if (request.method === "POST" && url.pathname === "/session/fake-opencode-session/abort") {

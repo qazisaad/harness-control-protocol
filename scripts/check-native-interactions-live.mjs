@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtemp, readFile, writeFile, access} from "node:fs/promises";
+import {mkdtemp, readFile, writeFile, access, unlink} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {randomUUID} from "node:crypto";
@@ -43,7 +43,8 @@ for (const driver of providers) {
       const approved = stage === "approval" && (details.arguments?.command === command || details.metadata?.command === command
         || details.arguments?.file_path === target && details.arguments?.content === marker);
       track(manager.respondToMcpReview({session_id: session, turn_id: event.turn_id,
-        request_id: event.data.request_id, action_hash: event.data.action_hash, decision: approved ? "accept" : "decline", actor_id: "live-test"}, observe), event.turn_id);
+        request_id: event.data.request_id, action_hash: event.data.action_hash,
+        decision: approved ? (driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1" ? "accept_for_session" : "accept") : "decline", actor_id: "live-test"}, observe), event.turn_id);
     }
     if (event.event_type === "user_input.requested") {
       assert.equal(stage, "question", "Unexpected native input outside the controlled question");
@@ -64,11 +65,20 @@ for (const driver of providers) {
     await manager.startSession({session_id: session, workspace_id: "workspace", provider_instance_id: driver, driver_kind: driver, cwd,
       model_selection: {model: driver === "claude" ? process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet" : process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/minimax-m2.7"},
       sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false, mcp_servers: [],
-      ...(driver === "claude" ? {execution_profile: "interactive"} : {})});
+      ...(driver === "claude" || driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1" ? {execution_profile: "interactive"} : {})});
     await run("approval", `Use the ${driver === "claude" ? "Bash" : "bash"} tool to run exactly this command, with no prefix or suffix: ${command}\nDo not use any other tool. Wait for permission if asked, then reply done.`);
     assert.ok(events.some(event => event.turn_id === "approval" && event.event_type === "approval.requested"), "No native approval was observed");
     assert.equal(await readFile(target, "utf8"), marker);
     passed.push("native-approval", "approved-effect");
+    if (driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1") {
+      assert.ok(events.find(event => event.turn_id === "approval" && event.event_type === "approval.requested").data.allowed_decisions.includes("accept_for_session"));
+      await unlink(target);
+      stage = "remembered";
+      await run("remembered", `Use the bash tool to run exactly this command again, with no prefix or suffix: ${command}\nDo not use any other tool. Then reply done.`);
+      assert.equal(events.some(event => event.turn_id === "remembered" && event.event_type === "approval.requested"), false, "The native runtime did not retain its offered session permission");
+      assert.equal(await readFile(target, "utf8"), marker);
+      passed.push("remembered-session-decision", "repeated-authorized-effect");
+    }
     stage = "question";
     const answer = await run("question", `Use the ${driver === "claude" ? "AskUserQuestion" : "question"} tool to ask exactly one question: Which test color? Offer Green and Blue, allow one choice. Do not answer it yourself. After the user replies, respond with their color only. Do not use other tools.`);
     assert.ok(events.some(event => event.turn_id === "question" && event.event_type === "user_input.requested"), "No native question was observed");
