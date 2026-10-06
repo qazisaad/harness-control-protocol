@@ -1,0 +1,24 @@
+{
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.conversation.result",
+  "payload": {
+    "session_id": "session",
+    "input_file": {
+      "action": "seal",
+      "received_bytes": 1,
+      "state": "sealed",
+      "reference": {
+        "byte_length": 1,
+        "filename": "note.txt",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "mime_type": "text/plain",
+        "file_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "filesystem_undo": false,
+    "operation": "input_file",
+    "command_id": "seal"
+  },
+  "version": "hcp.v0",
+  "id": "fixture-input-file-result"
+}

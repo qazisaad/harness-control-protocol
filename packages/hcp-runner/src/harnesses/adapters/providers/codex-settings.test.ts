@@ -66,3 +66,28 @@ test("native advertised effort strings are preserved without freezing a provider
     collaborationMode:{mode:"default",settings:{model:"model",reasoning_effort:"future-effort"}}});return {};};
   assert.equal((await updateCodexRootSettings(f.rpc,{...f.expected,effort:"future-effort"},new AbortController().signal)).effort,"future-effort");
 });
+
+test("cold no-op settings require an observed root mode transition and confirmed restoration before admission",async()=>{
+  const f=fixture();const modes:string[]=[];
+  f.rpc.request=async(_method,params)=>{
+    const mode=(params as {collaborationMode:{mode:string}}).collaborationMode.mode;
+    modes.push(mode);
+    if(modes.length>1)f.send({...f.settings,collaborationMode:{...f.settings.collaborationMode,mode}});
+    return {};
+  };
+  const settings=await updateCodexRootSettings(f.rpc,f.expected,new AbortController().signal);
+  assert.deepEqual(modes,["default","plan","default"]);
+  assert.equal(settings.collaborationMode.mode,"default");assert.equal(settings.approvalPolicy,f.expected.approvalPolicy);
+});
+
+test("a cold confirmation handshake cannot admit a root if the native restoration is missing",async()=>{
+  const f=fixture(),abort=new AbortController();let calls=0;
+  f.rpc.request=async(_method,params)=>{
+    calls++;
+    if(calls===2)f.send({...f.settings,collaborationMode:{...f.settings.collaborationMode,mode:"plan"}});
+    if(calls===3)abort.abort(new Error("restoration unavailable"));
+    return {};
+  };
+  await assert.rejects(updateCodexRootSettings(f.rpc,f.expected,abort.signal),/restoration unavailable/);
+  assert.equal(calls,3);assert.equal(f.subscribed(),false);
+});

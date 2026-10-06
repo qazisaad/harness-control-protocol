@@ -19,6 +19,21 @@ function ack(id: string): HcpMessage {
 }
 const stop = () => createCommand({ type: "harness.session.stop", payload: { session_id: "session-1", reason: "done" } });
 
+test("file results require the requested action, reference and confirmed upload offset", async () => {
+  const {peer, sent} = connected();
+  const file = {file_id: "a".repeat(64), sha256: "b".repeat(64), filename: "note.txt", mime_type: "text/plain", byte_length: 1};
+  const pending = peer.inputFile("session", {action: "append", file_id: file.file_id, offset: 0, data_base64: "eA=="});
+  const id = sent.at(-1)!.id;
+  let settled = false; void pending.then(() => {settled = true;});
+  const result = (action: "append" | "read", received_bytes: number, reference = file) => createHcpEnvelope("harness.conversation.result", {
+    command_id: id, session_id: "session", operation: "input_file", filesystem_undo: false,
+    input_file: {action, reference, received_bytes, state: "uploading"}});
+  peer.receive(result("read", 1)); peer.receive(result("append", 0));
+  peer.receive(result("append", 1, {...file, file_id: "c".repeat(64)}));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(result("append", 1)); assert.equal((await pending).payload.input_file?.received_bytes, 1);
+});
+
 test("context injection waits for its matching confirmed outcome and cannot resolve from an ACK or partial application", async () => {
   const {peer, sent} = connected();
   const waiting = peer.injectContext("session", {expected_history_hash: "a".repeat(64), messages: [{role: "user", content: "Context"}, {role: "assistant", content: "Answer"}]});

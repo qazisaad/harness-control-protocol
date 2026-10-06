@@ -7,6 +7,8 @@ export * from "./content.js";
 import {harnessNativeWorkRecordSchema} from "./native-work.js";
 export * from "./native-work.js";
 export * from "./portable-history.js";
+import {harnessTurnFilesSchema, harnessFileInputCapabilitiesSchema, type HarnessTurnFile} from "./input-file.js";
+export * from "./input-file.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -253,6 +255,7 @@ export type HarnessModel = {
 };
 
 export type HarnessExecutionCapabilities = {
+  file_inputs?: z.infer<typeof harnessFileInputCapabilitiesSchema>;
   execution_profiles?: HarnessExecutionProfileCapabilities[];
   portable_history?: boolean;
   context_usage?: boolean;
@@ -477,7 +480,7 @@ export type HcpSessionStartPayload = {
   workspace_preflight?: WorkspacePreflight;
   local_capability_lease?: LocalCapabilityLease;
   mcp_servers: McpServerAttachment[];
-  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[] };
+  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[]; files?: HarnessTurnFile[] };
 };
 
 export type HcpSessionSnapshotRequestPayload = {
@@ -491,6 +494,7 @@ export type HcpTurnSendPayload = {
   action?: "prompt" | "compact";
   mode?: "execute" | "plan";
   images?: HcpImageInput[];
+  files?: HarnessTurnFile[];
   model_selection?: HarnessModelSelection;
 };
 
@@ -1134,6 +1138,7 @@ export const harnessProviderSnapshotSchema = z
       plan_mode: z.boolean().optional(),
       native_history: z.boolean().optional(),
       empty_conversation: z.boolean().optional(),
+      file_inputs: harnessFileInputCapabilitiesSchema.optional(),
       live_history_read: z.boolean().optional(),
       native_history_injection: z.boolean().optional(),
       history_pagination: z.boolean().optional(),
@@ -1426,6 +1431,7 @@ export const hcpSessionStartPayloadSchema = z
       not_after: timestampSchema,
       mode: z.enum(["execute", "plan"]).optional(),
       images: harnessImagesSchema.optional(),
+      files: harnessTurnFilesSchema.optional(),
     }).strict().optional(),
   })
   .strict();
@@ -1444,11 +1450,12 @@ export const hcpTurnSendPayloadSchema = z
     action: z.enum(["prompt", "compact"]).optional(),
     mode: z.enum(["execute", "plan"]).optional(),
     images: harnessImagesSchema.optional(),
+    files: harnessTurnFilesSchema.optional(),
     model_selection: harnessModelSelectionSchema.optional(),
   })
   .strict().superRefine((value, ctx) => {
-    if (value.action === "compact" && (value.input !== "" || value.images?.length || value.mode === "plan"))
-      ctx.addIssue({code: "custom", message: "Compaction accepts no prompt, images or Plan mode."});
+    if (value.action === "compact" && (value.input !== "" || value.images?.length || value.files?.length || value.mode === "plan"))
+      ctx.addIssue({code: "custom", message: "Compaction accepts no prompt, images, files or Plan mode."});
   });
 
 export const hcpTurnCancelPayloadSchema = z

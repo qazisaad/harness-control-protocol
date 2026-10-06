@@ -187,15 +187,20 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     }
     if (hasMessageTypeConst(messageSchema, "harness.conversation.result")) {
       const payload = getObjectProperty(messageSchema, "payload", "conversation result");
-      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"], ["inject", "injection"]]
+      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"], ["inject", "injection"], ["input_file", "input_file"]]
         .map(([operation, field]) => ({if: {properties: {operation: {const: operation}}, required: ["operation"]}, then: {required: [field]}})),
         {if: {required: ["native_fresh"]}, then: {properties: {operation: {enum: ["fork", "rollback"]}}}},
-        {if: {required: ["injection"]}, then: {properties: {operation: {const: "inject"}}}}];
+        {if: {required: ["injection"]}, then: {properties: {operation: {const: "inject"}}}},
+        {if: {required: ["input_file"]}, then: {properties: {operation: {const: "input_file"}}}}];
+      const file = getObjectProperty(payload, "input_file", "input file result");
+      file.allOf = [{if: {properties: {action: {const: "release"}}, required: ["action"]}, then: {properties: {state: {const: "released"}}}},
+        {if: {properties: {state: {const: "released"}}, required: ["state"]}, then: {properties: {action: {const: "release"}}}},
+        {if: {properties: {action: {const: "seal"}}, required: ["action"]}, then: {properties: {state: {enum: ["sealed", "retained"]}}}}];
     }
     if (hasMessageTypeConst(messageSchema, "harness.turn.send")) {
       const payload = getObjectProperty(messageSchema, "payload", "turn send");
       payload.allOf = [{if: {properties: {action: {const: "compact"}}, required: ["action"]},
-        then: {properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}}}}];
+        then: {properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}, files: {maxItems: 0}}}}];
     }
     return [messageSchema];
   });

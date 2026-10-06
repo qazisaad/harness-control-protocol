@@ -28,16 +28,25 @@ export async function updateCodexRootSettings(rpc:Pick<CodexRpc,"request"|"obser
     previous.threadSettings.effort===requestedEffort&&previous.threadSettings.collaborationMode.mode===expected.mode&&
     previous.threadSettings.collaborationMode.settings.model===expected.model&&previous.threadSettings.collaborationMode.settings.reasoning_effort===requestedEffort
     ?previous:undefined;
-  let resolve!:(value:z.infer<typeof notification>)=>void,reject!:(error:unknown)=>void;
-  const observed=new Promise<z.infer<typeof notification>>((yes,no)=>{resolve=yes;reject=no;});
-  void observed.catch(()=>undefined);
+  let latest:CodexSettingsReadback|undefined;
+  const waiters=new Set<{mode:Expected["mode"];resolve:(value:CodexSettingsReadback)=>void;reject:(error:unknown)=>void}>();
+  const observe=(mode:Expected["mode"]):Promise<CodexSettingsReadback>=>{
+    const result=new Promise<CodexSettingsReadback>((resolve,reject)=>{
+      if(latest?.threadSettings.collaborationMode.mode===mode)resolve(latest);
+      else waiters.add({mode,resolve,reject});
+    });void result.catch(()=>undefined);return result;
+  };
   const unsubscribe=rpc.observeNotifications(message=>{
     if(message.method!=="thread/settings/updated")return;
     const candidate=z.object({threadId:z.string()}).safeParse(message.params);
     if(!candidate.success||candidate.data.threadId!==expected.threadId)return;
     const parsed=notification.safeParse(message.params);
-    if(!parsed.success)reject(new HarnessAdapterError("native_settings_unconfirmed","Codex returned invalid effective settings."));
-    else resolve(parsed.data);
+    if(!parsed.success) {
+      for(const waiter of waiters)waiter.reject(new HarnessAdapterError("native_settings_unconfirmed","Codex returned invalid effective settings."));
+      return;
+    }
+    latest=parsed.data;
+    for(const waiter of [...waiters])if(waiter.mode===parsed.data.threadSettings.collaborationMode.mode){waiters.delete(waiter);waiter.resolve(parsed.data);}
   });
   let failDeadline!:(error:unknown)=>void;
   const deadline=new Promise<never>((_,no)=>{failDeadline=no;});void deadline.catch(()=>undefined);
@@ -50,11 +59,27 @@ export async function updateCodexRootSettings(rpc:Pick<CodexRpc,"request"|"obser
     let settings:CodexSettingsReadback["threadSettings"];
     if(cached)settings=cached.threadSettings;
     else {
-      const mutation=rpc.request("thread/settings/update",{threadId:expected.threadId,model:expected.model,effort:requestedEffort,
-        collaborationMode:{mode:expected.mode,settings:{model:expected.model,reasoning_effort:requestedEffort,developer_instructions:null}}});
-      // A timeout must also bound a lost RPC acknowledgement, even after the notification arrived.
-      await Promise.race([Promise.all([mutation,observed]),deadline]);
-      settings=(await observed).threadSettings;
+      const mutate=(mode:Expected["mode"])=>rpc.request("thread/settings/update",{threadId:expected.threadId,model:expected.model,effort:requestedEffort,
+        collaborationMode:{mode,settings:{model:expected.model,reasoning_effort:requestedEffort,developer_instructions:null}}});
+      const observed=observe(expected.mode);
+      await Promise.race([mutate(expected.mode),deadline]);
+      // Native 0.160.0 omits notifications for a no-op. Without retained evidence,
+      // establish a real root-only mode transition, then restore and confirm the requested snapshot.
+      // No model turn is admitted until restoration is observed. Never change authority or child settings.
+      let grace:ReturnType<typeof setTimeout>|undefined;
+      const initial=await Promise.race([observed,new Promise<undefined>(yes=>{grace=setTimeout(()=>yes(undefined),250);}),deadline]);
+      if(grace)clearTimeout(grace);
+      if(initial)settings=initial.threadSettings;
+      else {
+        const opposite=expected.mode==="default"?"plan":"default";
+        latest=undefined;
+        const transitioned=observe(opposite);
+        await Promise.race([Promise.all([mutate(opposite),transitioned]),deadline]);
+        latest=undefined;
+        const restored=observe(expected.mode);
+        await Promise.race([Promise.all([mutate(expected.mode),restored]),deadline]);
+        settings=(await restored).threadSettings;
+      }
     }
     if(settings.model!==expected.model||settings.effort!==requestedEffort||settings.collaborationMode.mode!==expected.mode||
       settings.collaborationMode.settings.model!==expected.model||settings.collaborationMode.settings.reasoning_effort!==requestedEffort||

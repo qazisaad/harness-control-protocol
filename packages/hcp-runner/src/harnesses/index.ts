@@ -7,6 +7,8 @@ import {nativeWorkPage} from "./native-work-page.js";
 import { HarnessMcpReview } from "./mcp-review.js";
 import {HarnessMcpDispatchQueue} from "./mcp-dispatch.js";
 import {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
+import {OwnedHarnessInputFileStore, type HarnessInputFileScope} from "./input-files.js";
+export {OwnedHarnessInputFileStore, type HarnessInputFileScope} from "./input-files.js";
 export {BoundedHarnessContentStore, type HarnessContentStore, type HarnessContentScope} from "./content-store.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
 import type { McpInputReply } from "../mcp/input-required.js";
@@ -70,6 +72,7 @@ export type HarnessDriver = {
 };
 
 export type HarnessSession = {
+  inputFileScope: HarnessInputFileScope;
   sessionId: string;
   cancelRequested: boolean;
   nativeWorkOwnerAvailable?: boolean;
@@ -130,6 +133,7 @@ export type HarnessSessionManagerOptions = {
   stateStore?: RunnerStateStore;
   adapterRegistry?: HarnessAdapterRegistry;
   contentStore?: HarnessContentStore;
+  inputFileStore?: OwnedHarnessInputFileStore;
 };
 
 export type HarnessReplayResult = {
@@ -154,6 +158,7 @@ class SessionStartCleanedError extends Error {
 }
 
 const terminalTurnEvents = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.aborted"]);
+const memoryInputFiles = new WeakMap<RunnerStateStore, OwnedHarnessInputFileStore>();
 
 export class HarnessSessionManager {
   readonly #nativeInteractions = new Map<string, HarnessNativeInteractions>();
@@ -169,6 +174,7 @@ export class HarnessSessionManager {
   readonly #auditLogger: AuditLogger | undefined;
   readonly #stateStore: RunnerStateStore;
   readonly #contentStore: HarnessContentStore;
+  #inputFiles: OwnedHarnessInputFileStore | undefined;
   readonly #adapterRegistry: HarnessAdapterRegistry;
   readonly #sessions = new Map<string, HarnessSession>();
   readonly #eventListeners = new Map<(event: HcpHarnessEventPayload) => void, ((error: unknown) => void) | undefined>();
@@ -202,6 +208,16 @@ export class HarnessSessionManager {
       );
     this.#adapterRegistry = resolvedOptions.adapterRegistry ?? createDefaultHarnessAdapterRegistry();
     this.#contentStore = resolvedOptions.contentStore ?? new BoundedHarnessContentStore(this.#stateStore.contentDirectory);
+    this.#inputFiles = resolvedOptions.inputFileStore;
+  }
+
+  #inputFileStore(): OwnedHarnessInputFileStore {
+    if (!this.#inputFiles) {
+      this.#inputFiles = memoryInputFiles.get(this.#stateStore) ?? new OwnedHarnessInputFileStore(
+        this.#stateStore.contentDirectory ? `${this.#stateStore.contentDirectory}.inputs` : undefined);
+      memoryInputFiles.set(this.#stateStore, this.#inputFiles);
+    }
+    return this.#inputFiles;
   }
 
   #workspaceQueue: Promise<unknown> = Promise.resolve();
@@ -368,6 +384,15 @@ export class HarnessSessionManager {
 
   conversationOperation(commandId: string, request: HcpConversationRequestPayload): Promise<HcpConversationResultPayload> {
     return this.#serializeWorkspace(async () => {
+      if (request.operation.kind === "input_file") {
+        const session = this.#sessions.get(request.session_id);
+        if (!session) throw new HarnessAdapterError("input_file_owner_unavailable", "Input uploads require an active authorized HCP session.");
+        await this.#assertWorkspaceAllowed(session.workspaceId, session.cwd);
+        if (nativeProviderHash(this.#requireProvider(session.providerInstanceId, session.driverKind)) !== session.inputFileScope.provider_binding_hash)
+          throw new HarnessAdapterError("input_file_binding_changed", "The original input-file provider identity changed.");
+        return {command_id: commandId, session_id: request.session_id, operation: "input_file", filesystem_undo: false,
+          input_file: this.#inputFileStore().operation(session.inputFileScope, commandId, request.operation)};
+      }
       if (request.operation.kind === "work") return this.#nativeWorkOperation(commandId, request as HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "work"}>});
       if (request.operation.kind === "content") {
         const scope = this.#contentStore.scope(request.session_id, request.operation.content_id);
@@ -417,6 +442,8 @@ export class HarnessSessionManager {
         throw new HarnessAdapterError("native_work_shutdown_unknown", "Native work closure is unconfirmed; retained conversation mutations require authoritative reconciliation.");
       if (request.operation.kind === "retire") {
         this.#stateStore.retireNativeConversation(key);
+        this.#inputFileStore().retire({owner: `conversation:${key}`, provider_instance_id: conversation.provider_instance_id,
+          provider_binding_hash: conversation.provider_binding_hash, workspace_id: conversation.workspace_id, cwd: conversation.cwd});
         return {command_id: commandId, session_id: request.session_id, operation: "retire", filesystem_undo: false};
       }
       const adapter = this.#adapterRegistry.require(provider.driver_kind);
@@ -451,6 +478,9 @@ export class HarnessSessionManager {
           this.#stateStore.saveNativeConversation(key, {...conversation, fork: {command_id: commandId,
             request_hash: createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(request.operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex"),
             target_key: request.operation.continuation_group_key, target_session_id: request.operation.target_session_id, phase: "pending"}});
+          this.#inputFileStore().fork({owner: `conversation:${key}`, provider_instance_id: conversation.provider_instance_id,
+            provider_binding_hash: conversation.provider_binding_hash, workspace_id: conversation.workspace_id, cwd: conversation.cwd},
+            `conversation:${request.operation.continuation_group_key}`);
         }} : request.operation.kind === "inject" ? {beginMutation: () => {
           if (injectionStarted) throw new HarnessAdapterError("native_injection_unknown", "Context injection dispatch can be fenced only once.");
           injectionStarted = true;
@@ -603,7 +633,7 @@ export class HarnessSessionManager {
       onEvent(cancelled);
       return this.stopSession(payload.session_id, "Combined startup cancelled before turn dispatch");
     }
-    return this.sendTurn({session_id: payload.session_id, turn_id: first.turn_id, input: first.input, ...(first.mode ? {mode: first.mode} : {}), ...(first.images ? {images: first.images} : {})}, onEvent);
+    return this.sendTurn({session_id: payload.session_id, turn_id: first.turn_id, input: first.input, ...(first.mode ? {mode: first.mode} : {}), ...(first.images ? {images: first.images} : {}), ...(first.files ? {files: first.files} : {})}, onEvent);
   }
 
   async #startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
@@ -868,6 +898,8 @@ export class HarnessSessionManager {
     }
 
     const session: HarnessSession = {
+      inputFileScope: {owner: payload.continuation_group_key ? `conversation:${payload.continuation_group_key}` : `session:${payload.session_id}`,
+        provider_instance_id: provider.id, provider_binding_hash: nativeProviderHash(provider), workspace_id: payload.workspace_id, cwd: payload.cwd},
       sessionId: payload.session_id,
       cancelRequested: false,
       ...(adapter.nativeWork && (!adapter.executionProfiles || profile?.native_work) ? {nativeWorkOwnerAvailable: true} : {}),
@@ -1096,6 +1128,15 @@ export class HarnessSessionManager {
     this.#runningTurns.set(payload.session_id, payload.turn_id);
     try {
     await Promise.resolve();
+    let nativeInput = payload.input;
+    if (payload.files?.length) {
+      if (payload.action === "compact" || !session.adapter.fileContextInputs)
+        throw new HarnessAdapterError("input_file_delivery_unsupported", "This execution path does not declare file-context input.");
+      await this.#assertWorkspaceAllowed(session.workspaceId, session.cwd);
+      if (nativeProviderHash(this.#requireProvider(session.providerInstanceId, session.driverKind)) !== session.inputFileScope.provider_binding_hash)
+        throw new HarnessAdapterError("input_file_binding_changed", "The original input-file provider identity changed.");
+      nativeInput += this.#inputFileStore().materialize(session.inputFileScope, payload.files);
+    }
     const events: HcpHarnessEventPayload[] = [];
     if (!continuation) {
       const startedEvent: HcpHarnessEventPayload = this.#event(payload.session_id, payload.turn_id, "turn.started", {
@@ -1150,7 +1191,7 @@ export class HarnessSessionManager {
       this.#mcpDispatch.set(payload.session_id, dispatch);
     }
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.sendTurn({
-      payload,
+      payload: {...payload, input: nativeInput},
       session: session.adapterSession,
       startPayload: session.startPayload,
       provider: this.#requireProvider(session.providerInstanceId, session.driverKind),
@@ -1308,6 +1349,7 @@ export class HarnessSessionManager {
     const pendingWork = Object.values(this.#stateStore.nativeWorkState(sessionId)?.items ?? {}).filter(work => !isNativeWorkTerminal(work.status));
     if (pendingWork.length || session.nativeWorkClosureUnconfirmed || this.#stateStore.nativeWorkState(sessionId)?.closure_unconfirmed)
       throw new HarnessAdapterError("native_work_shutdown_unknown", "Native work closure is unconfirmed; the execution lease remains retained.");
+    if (!session.startPayload.continuation_group_key) this.#inputFiles?.retire(session.inputFileScope);
     await this.#closeMcpClients(session);
     if (session.localCapabilityLease) {
       this.#localCapabilities.revokeLease(session.localCapabilityLease.lease_id);

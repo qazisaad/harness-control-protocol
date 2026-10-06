@@ -1,0 +1,16 @@
+{
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.conversation.request",
+  "payload": {
+    "session_id": "session",
+    "operation": {
+      "request": {
+        "file_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "action": "seal"
+      },
+      "kind": "input_file"
+    }
+  },
+  "version": "hcp.v0",
+  "id": "fixture-input-file-seal"
+}

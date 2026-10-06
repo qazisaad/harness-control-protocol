@@ -154,6 +154,18 @@ export class HcpHostConnection {
       if (operation.kind === "inject" && message.payload.injection?.outcome === "applied" &&
           message.payload.injection.message_count !== operation.messages.length) return;
       if (operation.kind === "steer" && operation.turn_id !== message.payload.turn_id) return;
+      if (operation.kind === "input_file") {
+        const request = operation.request, file = message.payload.input_file;
+        if (!file || file.action !== request.action) return;
+        if (request.action === "create") {
+          if (file.reference.sha256 !== request.sha256 || file.reference.filename !== request.filename ||
+            file.reference.mime_type !== request.mime_type || file.reference.byte_length !== request.byte_length) return;
+        } else if (file.reference.file_id !== request.file_id) return;
+        if (request.action === "append") {
+          const size = request.data_base64.length / 4 * 3 - (request.data_base64.endsWith("==") ? 2 : request.data_base64.endsWith("=") ? 1 : 0);
+          if (file.received_bytes < request.offset + size) return;
+        }
+      }
       if (operation.kind === "content" && (operation.content_id !== message.payload.content?.reference.content_id
         || operation.offset !== message.payload.content?.offset)) return;
       if (operation.kind === "fork" && (operation.target_session_id !== message.payload.fork?.session_id
@@ -195,6 +207,10 @@ export class HcpHostConnection {
   }
   conversation(payload: Payload<"harness.conversation.request">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "harness.conversation.request", payload }, command), wait);
+  }
+  inputFile(sessionId: string, request: Extract<Payload<"harness.conversation.request">["operation"], {kind: "input_file"}>["request"],
+    command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "input_file", request}}, command, wait);
   }
   readConversation(sessionId: string, page: {cursor?: string; limit?: number} = {}, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "read", ...page}}, command, wait);

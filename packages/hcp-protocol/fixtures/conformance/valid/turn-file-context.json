@@ -1,0 +1,23 @@
+{
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.turn.send",
+  "payload": {
+    "turn_id": "turn",
+    "files": [
+      {
+        "delivery": "file_context",
+        "reference": {
+          "byte_length": 1,
+          "filename": "note.txt",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mime_type": "text/plain",
+          "file_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "input": "read",
+    "session_id": "session"
+  },
+  "version": "hcp.v0",
+  "id": "fixture-turn-file-context"
+}

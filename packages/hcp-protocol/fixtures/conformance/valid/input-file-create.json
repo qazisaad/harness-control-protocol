@@ -1,0 +1,19 @@
+{
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.conversation.request",
+  "payload": {
+    "session_id": "session",
+    "operation": {
+      "request": {
+        "byte_length": 1,
+        "action": "create",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "filename": "note.txt",
+        "mime_type": "text/plain"
+      },
+      "kind": "input_file"
+    }
+  },
+  "version": "hcp.v0",
+  "id": "fixture-input-file-create"
+}

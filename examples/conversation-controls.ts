@@ -8,6 +8,7 @@ type Turn = {id: string; status: string; items: Array<Record<string, string>>};
 const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(turns)).digest("hex");
 /** A deterministic provider for public-package conformance; no native CLI or consumer-specific IDs. */
 export class ControlHarnessAdapter implements HarnessAdapter {
+  readonly fileContextInputs = true;
   readonly driverKind = "example.controls";
   readonly portableHistory = true;
   readonly liveHistoryRead = true;
@@ -18,6 +19,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   inputsReceived = 0;
   nativeCancellations = 0;
   readonly observations = new Map<string, NonNullable<HarnessAdapterStartInput["emitSessionEvent"]>>();
+  readonly workStatus = new Map<string, string>();
   readonly instructionRoles = ["system"] as const;
   instructionsSeen: HarnessInstructions | undefined;
   readonly configurationInheritance = {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false};
@@ -80,6 +82,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     return id;
   }
   emitWork(sessionId: string, originTurnId: string, status: "running" | "cancelled") {
+    this.workStatus.set(sessionId, status);
     this.observations.get(sessionId)!({event_type: "native.work.updated", data: {work: {
       work_id: "background-task", native_reference: "fixture-task", origin_turn_id: originTurnId,
       kind: "task", background: true, status, supports_cancel: true,
@@ -105,7 +108,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     const turns = this.histories.get(nativeId)!;
     if (input.payload.action === "compact") text = "compacted";
     turns.push({id: input.payload.turn_id, status: "completed", items: [{id: input.payload.turn_id, type: "text", text}]});
-    const full = text.repeat(30_000);
+    const full = input.payload.files?.length ? text : text.repeat(30_000);
     const reference = input.publishContent!(full);
     const context = {status: "measured" as const, source: "example.native.context", observed_at: new Date().toISOString(),
       selection: input.payload.model_selection ?? input.startPayload.model_selection, measurement_scope: "last_request" as const,
@@ -148,5 +151,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
           body: {storage: "inline", value: item.text!}}))}))}};
   }
   async cancelTurn(): Promise<HarnessAdapterEvent[]> {return [];}
-  async stopSession(input: Parameters<HarnessAdapter["stopSession"]>[0]): Promise<HarnessAdapterEvent[]> {this.observations.delete(input.sessionId); return [];}
+  async stopSession(input: Parameters<HarnessAdapter["stopSession"]>[0]): Promise<HarnessAdapterEvent[]> {
+    if (this.workStatus.get(input.sessionId) === "running") throw new HarnessAdapterError("native_work_shutdown_unknown", "Native work closure is unconfirmed.");
+    this.observations.delete(input.sessionId); return [];
+  }
 }

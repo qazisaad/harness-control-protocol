@@ -8,7 +8,7 @@ import type { NativeConversation } from "../../state/index.js";
 import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
 import type {HarnessContentReference} from "@harness-control/protocol";
 
-export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content" | "work">;
+export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content" | "work" | "input_file">;
 
 /** A live control belongs to exactly one running HCP turn, and expires with its runtime. */
 export type HarnessActiveTurnControls = {
@@ -132,6 +132,8 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  /** The manager may project verified owned workspace files into user-level input. */
+  readonly fileContextInputs?: true;
   /** Start establishes a confirmed native conversation before any model turn. */
   readonly emptyConversation?: true;
   readonly executionProfiles?: readonly import("@harness-control/protocol").HarnessExecutionProfileCapabilities[];

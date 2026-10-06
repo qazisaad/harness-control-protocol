@@ -51,6 +51,7 @@ export type CodexHarnessAdapterOptions = {
   processKillGraceMs?: number;
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
+  readonly fileContextInputs = true;
   readonly executionProfiles = retainedProfiles;
   readonly nativeWork = true;
   readonly sessionEvents = true;

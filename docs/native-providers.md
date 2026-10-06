@@ -174,3 +174,6 @@ All 12 live Codex work checks passed at /tmp/hcp-live-codex-work-np6hby, includi
 
 This does not complete all seven migration steps. Root policy/profile changes, Claude/OpenCode effective settings with work, fresh context and owned non-image inputs, MCP/optional native extensions, child history/fork access and consumer parity still need implementation or acceptance. No T3 adapter has been switched.
 
+
+Owned inputs now use the generic [file input contract](input-files.md), including upload integrity, file-context capability discovery, fork retention and ownership-based cleanup. Live lifecycle and fork checks passed for Codex, Claude Code and OpenCode Go. Native document input is not advertised. Codex cold settings readback additionally uses an observed mode transition and confirmed restoration when its native no-op update emits no notification; a blank acknowledgement never establishes effective settings.
+

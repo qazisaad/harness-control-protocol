@@ -1,0 +1,12 @@
+{
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.conversation.result",
+  "payload": {
+    "session_id": "session",
+    "filesystem_undo": false,
+    "operation": "input_file",
+    "command_id": "seal"
+  },
+  "version": "hcp.v0",
+  "id": "fixture-input-file-missing-result"
+}

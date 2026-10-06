@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import {mkdtemp, rm} from "node:fs/promises";
+import {mkdtemp, rm, readFile} from "node:fs/promises";
+import {createHash} from "node:crypto";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
@@ -136,6 +137,29 @@ try {
   assert.equal(adapter.nativeCancellations, 1);
   adapter.emitWork("child", "child-turn", "cancelled");
   await peer.stopSession({session_id: "child"}); await peer.retireConversation("child");
+  await peer.startSession({...start, session_id: "files", continuation_group_key: "files"});
+  const bytes = Buffer.from("Independent consumer attachment"), sha256 = createHash("sha256").update(bytes).digest("hex");
+  const created = await peer.inputFile("files", {action: "create", filename: "note.txt", mime_type: "text/plain", byte_length: bytes.length, sha256}, {id: "file-create"});
+  const file = created.payload.input_file.reference;
+  await peer.inputFile("files", {action: "append", file_id: file.file_id, offset: 0, data_base64: bytes.toString("base64")});
+  const sealed = await peer.inputFile("files", {action: "seal", file_id: file.file_id});
+  assert.equal(sealed.payload.input_file.state, "sealed");
+  await peer.sendTurn({session_id: "files", turn_id: "file-read", input: "Read selected attachment", files: [{reference: file, delivery: "file_context"}]});
+  await until(() => events.some(event => event.turn_id === "file-read" && event.event_type === "turn.completed"));
+  const text = events.find(event => event.turn_id === "file-read" && event.event_type === "turn.completed").data.final_output.final_text;
+  const filePath = JSON.parse(text.slice(text.indexOf("[{")))[0].path;
+  assert.equal(await readFile(filePath, "utf8"), bytes.toString());
+  adapter.emitWork("files", "file-read", "running");
+  await until(() => events.some(event => event.session_id === "files" && event.event_type === "native.work.updated"));
+  await assert.rejects(peer.inputFile("files", {action: "release", file_id: file.file_id}), /retained by native history/);
+  await assert.rejects(peer.stopSession({session_id: "files"}), /closure is unconfirmed/);
+  assert.equal(await readFile(filePath, "utf8"), bytes.toString());
+  adapter.emitWork("files", "file-read", "cancelled");
+  await peer.stopSession({session_id: "files"});
+  assert.equal(await readFile(filePath, "utf8"), bytes.toString());
+  await peer.retireConversation("files");
+  await assert.rejects(readFile(filePath), error => error.code === "ENOENT");
+  console.log("Public SDK chunked file inputs, native context projection, background retention and retirement cleanup passed");
   console.log("Public SDK controls, session observations, native adapter hooks, content chunks, mutation receipts and fork resume passed");
 } finally {
   await runner?.close(); for (const socket of server.clients) socket.terminate();

@@ -320,6 +320,146 @@
                       "additionalProperties": false
                     }
                   ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "input_file"
+                    },
+                    "request": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "action": {
+                              "type": "string",
+                              "const": "create"
+                            },
+                            "sha256": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "filename": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255,
+                              "pattern": "^(?!\\.{1,2}$)[^\\x00-\\x1f\\x7f/\\\\]+$"
+                            },
+                            "mime_type": {
+                              "type": "string",
+                              "maxLength": 255,
+                              "pattern": "^[a-zA-Z0-9!#$&^_.+-]+\\/[a-zA-Z0-9!#$&^_.+-]+$"
+                            },
+                            "byte_length": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 33554432
+                            }
+                          },
+                          "required": [
+                            "action",
+                            "sha256",
+                            "filename",
+                            "mime_type",
+                            "byte_length"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "action": {
+                              "type": "string",
+                              "const": "append"
+                            },
+                            "file_id": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "offset": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "data_base64": {
+                              "type": "string",
+                              "minLength": 4,
+                              "maxLength": 87384,
+                              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+                            }
+                          },
+                          "required": [
+                            "action",
+                            "file_id",
+                            "offset",
+                            "data_base64"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "action": {
+                              "type": "string",
+                              "const": "seal"
+                            },
+                            "file_id": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "action",
+                            "file_id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "action": {
+                              "type": "string",
+                              "const": "read"
+                            },
+                            "file_id": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "action",
+                            "file_id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "action": {
+                              "type": "string",
+                              "const": "release"
+                            },
+                            "file_id": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "action",
+                            "file_id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "request"
+                  ],
+                  "additionalProperties": false
                 }
               ]
             }
@@ -388,12 +528,148 @@
                 "fork",
                 "content",
                 "work",
-                "inject"
+                "inject",
+                "input_file"
               ]
             },
             "filesystem_undo": {
               "type": "boolean",
               "const": false
+            },
+            "input_file": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "create",
+                    "append",
+                    "seal",
+                    "read",
+                    "release"
+                  ]
+                },
+                "reference": {
+                  "type": "object",
+                  "properties": {
+                    "file_id": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255,
+                      "pattern": "^(?!\\.{1,2}$)[^\\x00-\\x1f\\x7f/\\\\]+$"
+                    },
+                    "mime_type": {
+                      "type": "string",
+                      "maxLength": 255,
+                      "pattern": "^[a-zA-Z0-9!#$&^_.+-]+\\/[a-zA-Z0-9!#$&^_.+-]+$"
+                    },
+                    "byte_length": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 33554432
+                    }
+                  },
+                  "required": [
+                    "file_id",
+                    "sha256",
+                    "filename",
+                    "mime_type",
+                    "byte_length"
+                  ],
+                  "additionalProperties": false
+                },
+                "received_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 33554432
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "uploading",
+                    "sealed",
+                    "retained",
+                    "released"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "reference",
+                "received_bytes",
+                "state"
+              ],
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "action": {
+                        "const": "release"
+                      }
+                    },
+                    "required": [
+                      "action"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "state": {
+                        "const": "released"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "state": {
+                        "const": "released"
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "action": {
+                        "const": "release"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "action": {
+                        "const": "seal"
+                      }
+                    },
+                    "required": [
+                      "action"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "sealed",
+                          "retained"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
             },
             "injection": {
               "oneOf": [
@@ -2398,6 +2674,23 @@
             },
             {
               "if": {
+                "properties": {
+                  "operation": {
+                    "const": "input_file"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "input_file"
+                ]
+              }
+            },
+            {
+              "if": {
                 "required": [
                   "native_fresh"
                 ]
@@ -2423,6 +2716,20 @@
                 "properties": {
                   "operation": {
                     "const": "inject"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "input_file"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "operation": {
+                    "const": "input_file"
                   }
                 }
               }
@@ -3763,6 +4070,39 @@
                       "empty_conversation": {
                         "type": "boolean"
                       },
+                      "file_inputs": {
+                        "type": "object",
+                        "properties": {
+                          "delivery": {
+                            "minItems": 1,
+                            "maxItems": 2,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "file_context",
+                                "native"
+                              ]
+                            }
+                          },
+                          "max_bytes": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 33554432
+                          },
+                          "max_files": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8
+                          }
+                        },
+                        "required": [
+                          "delivery",
+                          "max_bytes",
+                          "max_files"
+                        ],
+                        "additionalProperties": false
+                      },
                       "live_history_read": {
                         "type": "boolean"
                       },
@@ -4881,6 +5221,64 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "files": {
+                  "maxItems": 8,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "reference": {
+                        "type": "object",
+                        "properties": {
+                          "file_id": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "sha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "filename": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255,
+                            "pattern": "^(?!\\.{1,2}$)[^\\x00-\\x1f\\x7f/\\\\]+$"
+                          },
+                          "mime_type": {
+                            "type": "string",
+                            "maxLength": 255,
+                            "pattern": "^[a-zA-Z0-9!#$&^_.+-]+\\/[a-zA-Z0-9!#$&^_.+-]+$"
+                          },
+                          "byte_length": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 33554432
+                          }
+                        },
+                        "required": [
+                          "file_id",
+                          "sha256",
+                          "filename",
+                          "mime_type",
+                          "byte_length"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "delivery": {
+                        "type": "string",
+                        "enum": [
+                          "file_context",
+                          "native"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "reference",
+                      "delivery"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -5376,6 +5774,64 @@
                 "additionalProperties": false
               }
             },
+            "files": {
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "reference": {
+                    "type": "object",
+                    "properties": {
+                      "file_id": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "filename": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255,
+                        "pattern": "^(?!\\.{1,2}$)[^\\x00-\\x1f\\x7f/\\\\]+$"
+                      },
+                      "mime_type": {
+                        "type": "string",
+                        "maxLength": 255,
+                        "pattern": "^[a-zA-Z0-9!#$&^_.+-]+\\/[a-zA-Z0-9!#$&^_.+-]+$"
+                      },
+                      "byte_length": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 33554432
+                      }
+                    },
+                    "required": [
+                      "file_id",
+                      "sha256",
+                      "filename",
+                      "mime_type",
+                      "byte_length"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "delivery": {
+                    "type": "string",
+                    "enum": [
+                      "file_context",
+                      "native"
+                    ]
+                  }
+                },
+                "required": [
+                  "reference",
+                  "delivery"
+                ],
+                "additionalProperties": false
+              }
+            },
             "model_selection": {
               "type": "object",
               "properties": {
@@ -5447,6 +5903,9 @@
                     "const": "execute"
                   },
                   "images": {
+                    "maxItems": 0
+                  },
+                  "files": {
                     "maxItems": 0
                   }
                 }
