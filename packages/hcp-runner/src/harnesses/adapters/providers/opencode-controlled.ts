@@ -9,9 +9,30 @@ const MAX_AUTH_BYTES = 1024 * 1024;
 const apiAuthSchema = z.object({type: z.literal("api"), key: z.string().min(1).max(8192),
   metadata: z.record(z.string().max(128), z.string().max(8192)).refine(value => Object.keys(value).length <= 32).optional()}).strict();
 const referenceSchema = z.object({session_id: z.string().min(1).max(512), provider_id: z.string().regex(/^[a-zA-Z0-9_.-]{1,128}$/),
-  account_binding: z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+  account_binding: z.string().regex(/^[a-f0-9]{64}$/), native_work: z.literal(true).optional()}).strict();
 const PREFIX = "hcp-opencode-controlled-v1:";
 export const controlledOpenCodeInheritance = {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false} as const;
+
+/** Session ask rules are not inherited by native subagents. Install the same
+ * authority at agent configuration scope before any background task can run. */
+export function openCodeAgentPermission(policy: "ask" | "auto_edits" | "full_access") {
+  return {"*": policy === "full_access" ? "allow" : "ask",
+    ...(policy === "auto_edits" ? {edit: "allow"} : {}),
+    question: policy === "full_access" ? "deny" : "allow", task: "allow"};
+}
+export function assertOpenCodeAgentPermission(value: unknown, policy: "ask" | "auto_edits" | "full_access"): void {
+  const agents = z.array(z.object({name: z.string(), permission: z.array(z.object({permission: z.string(), pattern: z.string(), action: z.enum(["allow", "ask", "deny"])}))})).parse(value);
+  if (!agents.length) throw new HarnessAdapterError("native_policy_mismatch", "OpenCode did not confirm native agent permissions.");
+  for (const agent of agents) {
+    let wildcard = -1;
+    agent.permission.forEach((rule, index) => {if (rule.permission === "*" && rule.pattern === "*") wildcard = index;});
+    const expected = Object.entries(openCodeAgentPermission(policy)).map(([permission, action]) => ({permission, pattern: "*", action}));
+    const actual = agent.permission.slice(wildcard, wildcard + expected.length);
+    if (wildcard < 0 || JSON.stringify(actual) !== JSON.stringify(expected) ||
+        agent.permission.slice(wildcard + expected.length).some(rule => rule.permission !== "external_directory"))
+      throw new HarnessAdapterError("native_policy_mismatch", "OpenCode native agents did not preserve the authorized background policy.");
+  }
+}
 
 /** Opaque references retain the native account/configuration owner without exposing credentials. */
 export function controlledOpenCodeReference(value: z.infer<typeof referenceSchema>): string {
@@ -64,6 +85,7 @@ export async function prepareControlledOpenCode(input: {
   mcpServers: Record<string, {type: "remote"; url: string; enabled: true}>;
   /** Internal ownership root, injectable for host-level tests; never a client-supplied path. */
   ownershipRoot?: string;
+  backgroundPolicy?: "ask" | "auto_edits" | "full_access";
 }): Promise<{env: NodeJS.ProcessEnv; accountBinding: string; cleanup(): Promise<void>}> {
   await assertManagedPolicyAbsent(input.env);
   let auth: z.infer<typeof apiAuthSchema>;
@@ -104,7 +126,8 @@ export async function prepareControlledOpenCode(input: {
     HOME: join(configRoot, "home"), USERPROFILE: join(configRoot, "home"),
     XDG_CONFIG_HOME: join(configRoot, "config"), XDG_DATA_HOME: join(stable, "data"), XDG_STATE_HOME: join(stable, "state"), XDG_CACHE_HOME: join(stable, "cache"),
     OPENCODE_AUTH_CONTENT: JSON.stringify({[input.providerId]: auth}),
-    OPENCODE_CONFIG_CONTENT: JSON.stringify({enabled_providers: [input.providerId], plugin: [], mcp: input.mcpServers, instructions: [], autoupdate: false, share: "disabled"}),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({enabled_providers: [input.providerId], plugin: [], mcp: input.mcpServers, instructions: [], autoupdate: false, share: "disabled",
+      ...(input.backgroundPolicy ? {permission: openCodeAgentPermission(input.backgroundPolicy), subagent_depth: 1} : {})}),
     OPENCODE_DISABLE_PROJECT_CONFIG: "true", OPENCODE_PURE: "true", OPENCODE_DISABLE_DEFAULT_PLUGINS: "true", OPENCODE_DISABLE_CLAUDE_CODE: "true",
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "true", OPENCODE_DISABLE_AUTOUPDATE: "true",
   });

@@ -9,10 +9,12 @@ import {OpenCodeText} from "./opencode-text.js";
 import {OpenCodeItems} from "./opencode-items.js";
 import {projectOpenCodeCatalog} from "./opencode-models.js";
 import {openCodeContext} from "./opencode-context.js";
-import {prepareControlledOpenCode, controlledOpenCodeInheritance, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory} from "./opencode-controlled.js";
-import {verifyOpenCodeRequestOrigin} from "./opencode-request-binding.js";
+import {prepareControlledOpenCode, controlledOpenCodeInheritance, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory, openCodeAgentPermission, assertOpenCodeAgentPermission} from "./opencode-controlled.js";
+import {respondOpenCodeInteraction} from "./opencode-interactions.js";
 import {consumeNativeSse} from "./native-sse.js";
 import {NativeEventOwner} from "./native-event-owner.js";
+import {OpenCodeOwnedWork} from "./opencode-work.js";
+import {OpenCodeWorkCallbacks} from "./opencode-work-callbacks.js";
 import {unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, type ContentPublisher} from "./content-projection.js";
 
@@ -53,7 +55,9 @@ const DEFAULT_SERVER_START_TIMEOUT_MS = 10_000;
 const DEFAULT_EVENT_SETTLE_TIMEOUT_MS = 5_000;
 const executionProfiles = [
   {id: "isolated", runtime_lifetime: "session", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false},
+  {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false, root_interrupt_effect: "owned_work"},
+  {id: "background", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "owned_work",
+    required_configuration_inheritance: controlledOpenCodeInheritance, mcp_attachments: false},
 ] as const;
 
 const executionCapabilities: HarnessExecutionCapabilities = {
@@ -73,7 +77,7 @@ function supportedVersion(version: string | undefined): boolean {
 function controlledVersion(version: string | undefined): boolean {return /^(?:opencode\s+)?1\.18\.34$/.test(version ?? "");}
 function nativeReference(runtime: OpenCodeRuntime): string {
   return runtime.ownedAccount ? controlledOpenCodeReference({session_id: runtime.sessionId, provider_id: runtime.ownedAccount.providerId,
-    account_binding: runtime.ownedAccount.binding}) : runtime.sessionId;
+    account_binding: runtime.ownedAccount.binding, ...(runtime.backgroundPermissions ? {native_work: true} : {})}) : runtime.sessionId;
 }
 
 function openCodeModels(provider: ProviderInstanceConfig) {
@@ -106,6 +110,8 @@ const eventSchema = z
 
 type OpenCodeRuntimeStartInput = {
   interactive?: true;
+  workOwner?: HarnessAdapterStartInput;
+  backgroundPermissions?: true;
   controlled?: {providerId: string; expectedAccountBinding?: string; ownershipRoot?: string};
   executable: string;
   launchArgs: string[];
@@ -136,6 +142,10 @@ export type OpenCodeRuntimeTurnInput = {
 };
 
 export type OpenCodeRuntime = {
+  readonly backgroundPermissions?: true;
+  readonly work?: OpenCodeOwnedWork;
+  stopNativeWork?(): Promise<void>;
+  cancelOwnedWork?(work: import("@harness-control/protocol").HarnessNativeWorkRecord, signal: AbortSignal): Promise<void>;
   readonly sessionPermissions?: true;
   readonly ownedAccount?: {providerId: string; binding: string};
   readonly sessionId: string;
@@ -156,6 +166,8 @@ export type OpenCodeHarnessAdapterOptions = {
 };
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
+  readonly nativeWork = true;
+  readonly sessionEvents = true;
   readonly executionProfiles = executionProfiles;
   readonly instructionRoles = ["system"] as const;
   readonly portableHistory = true;
@@ -223,6 +235,12 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     validateConfigurationInheritance(input.payload, this.configurationInheritance, this.configurationInheritanceOptions);
     validateInstructionRoles(input.payload, this.instructionRoles);
+    if (input.payload.execution_profile === "background") {
+      if (Object.entries(controlledOpenCodeInheritance).some(([key,value]) => input.payload.configuration_inheritance?.[key as keyof typeof controlledOpenCodeInheritance] !== value))
+        throw new HarnessAdapterError("execution_profile_configuration_required", "Background work requires the explicitly controlled configuration owner.");
+      if (input.payload.mcp_servers.length || input.mcpServers?.length)
+        throw new HarnessAdapterError("execution_profile_mcp_unsupported", "Background MCP attachment callback ownership is not verified.");
+    }
     if (input.payload.sandbox_mode !== "danger_full_access")
       throw new HarnessAdapterError("sandbox_unsupported", "This OpenCode adapter does not implement filesystem containment.");
     if (input.payload.continue_session && !input.payload.continuation_group_key)
@@ -238,6 +256,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
     const runtime = await this.#runtimeFactory({executable: input.provider.executable_path ?? "opencode",
       launchArgs: input.provider.launch_args, cwd: input.conversation.cwd, env: providerEnvironment(input.provider),
       mcpServers: {}, nativeThreadId: controlled?.session_id ?? input.conversation.native_thread_id, approvalPolicy: input.conversation.approval_policy,
+      ...(controlled?.native_work ? {backgroundPermissions: true} : {}),
       ...(controlled ? {controlled: {providerId: controlled.provider_id, expectedAccountBinding: controlled.account_binding,
         ...(this.#controlledStorageRoot ? {ownershipRoot: this.#controlledStorageRoot} : {})}} : {})});
     try {
@@ -252,6 +271,8 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
+    if (input.payload.execution_profile === "background" && (!input.emitSessionEvent || !input.registerSessionInteractions))
+      throw new HarnessAdapterError("native_session_owner_required", "Background work requires registered native observation and interaction owners.");
     if (input.payload.continue_session && !input.nativeConversation)
       throw new HarnessAdapterError("native_continuation_binding", "OpenCode resume requires the runner-authorized retained binding.");
     if (this.#runtimes.has(input.payload.session_id)) {
@@ -275,7 +296,8 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       cwd: input.payload.cwd,
       env: providerEnvironment(input.provider),
       mcpServers,
-      ...(input.payload.execution_profile === "interactive" ? {interactive: true} : {}),
+      ...(["interactive", "background"].includes(input.payload.execution_profile ?? "") ? {interactive: true} : {}),
+      ...(input.payload.execution_profile === "background" ? {workOwner: input, backgroundPermissions: true} : {}),
       ...(input.nativeConversation ? {nativeThreadId: retained?.session_id ?? input.nativeConversation.native_thread_id} : {}),
       ...(controlled ? {controlled: {providerId: model.providerID, ...(retained ? {expectedAccountBinding: retained.account_binding} : {}),
         ...(this.#controlledStorageRoot ? {ownershipRoot: this.#controlledStorageRoot} : {})}} : {}),
@@ -284,8 +306,11 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
     if (controlled && (!runtime.ownedAccount || runtime.ownedAccount.providerId !== model.providerID)) {
       await runtime.close(); throw new HarnessAdapterError("native_configuration_mismatch", "The runtime did not establish the requested controlled owner.");
     }
-    if (input.payload.execution_profile === "interactive" && !runtime.sessionPermissions) {
+    if (["interactive", "background"].includes(input.payload.execution_profile ?? "") && !runtime.sessionPermissions) {
       await runtime.close(); throw new HarnessAdapterError("native_profile_mismatch", "The native runtime did not confirm interactive permission ownership.");
+    }
+    if (input.payload.execution_profile === "background" && (!runtime.work || !runtime.backgroundPermissions)) {
+      await runtime.close(); throw new HarnessAdapterError("native_profile_mismatch", "The native runtime did not establish background ownership.");
     }
     this.#runtimes.set(input.payload.session_id, runtime);
     return { adapter_session_id: runtime.sessionId, native_thread_id: nativeReference(runtime) };
@@ -347,8 +372,12 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       return [];
     }
     await this.#turns.stop(input.sessionId);
-    this.#runtimes.delete(input.sessionId);
+    if (runtime.work) {
+      if (!runtime.stopNativeWork) throw new HarnessAdapterError("native_work_closure_unknown", "The runtime has no native shutdown control.");
+      await runtime.stopNativeWork();
+    }
     await runtime.close();
+    this.#runtimes.delete(input.sessionId);
     return [];
   }
 
@@ -358,6 +387,12 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       throw new HarnessAdapterError("opencode_session_not_found", `OpenCode session '${sessionId}' is not active.`);
     }
     return runtime;
+  }
+  async cancelNativeWork(input: Parameters<NonNullable<HarnessAdapter["cancelNativeWork"]>>[0]): Promise<void> {
+    const runtime = this.#requireRuntime(input.sessionId);
+    if (!runtime.work) throw new HarnessAdapterError("native_work_unsupported", "The selected runtime has no background work owner.");
+    if (!runtime.cancelOwnedWork) throw new HarnessAdapterError("native_work_owner_unavailable", "The runtime has no native callback cancellation owner.");
+    await runtime.cancelOwnedWork(input.work, input.signal);
   }
 }
 
@@ -393,6 +428,8 @@ async function openCodeModelCatalog(provider: ProviderInstanceConfig): Promise<R
 }
 
 async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<OpenCodeRuntime> {
+  if (input.workOwner && (!input.controlled || !input.interactive || !input.backgroundPermissions))
+    throw new HarnessAdapterError("native_profile_unsupported", "Background ownership requires its controlled persistent runtime.");
   // Check at launch too: a cached capability snapshot cannot authorize another runtime version.
   const probe = await runProbe(input.executable, [...input.launchArgs, "--version"],
     {env: input.env}, DEFAULT_PROBE_TIMEOUT_MS);
@@ -403,39 +440,55 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
   const controlled = input.controlled ? await prepareControlledOpenCode({env: {...process.env, ...input.env}, cwd: input.cwd,
     providerId: input.controlled.providerId,
     ...(input.controlled.expectedAccountBinding ? {expectedAccountBinding: input.controlled.expectedAccountBinding} : {}),
-    ...(input.controlled.ownershipRoot ? {ownershipRoot: input.controlled.ownershipRoot} : {}), mcpServers: input.mcpServers}) : undefined;
+    ...(input.controlled.ownershipRoot ? {ownershipRoot: input.controlled.ownershipRoot} : {}), mcpServers: input.mcpServers,
+    ...(input.backgroundPermissions ? {backgroundPolicy: input.approvalPolicy ?? "ask"} : {})}) : undefined;
   const config: Record<string, unknown> = Object.keys(input.mcpServers).length > 0 ? { mcp: input.mcpServers } : {};
   let processHandle: NativeProcess;
   try {processHandle = new NativeProcess(
     input.executable,
     [...input.launchArgs, "serve", "--hostname=127.0.0.1", "--port=0"],
     input.cwd,
-    controlled?.env ?? { ...process.env, ...input.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+    input.workOwner ? {...controlled!.env, OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true"}
+      : controlled?.env ?? { ...process.env, ...input.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
   );} catch (failure) {await controlled?.cleanup(); throw failure;}
   const child = processHandle.child;
   try {
     child.stdin.end();
     const baseUrl: string = await waitForServerUrl(child, DEFAULT_SERVER_START_TIMEOUT_MS);
+    if (input.workOwner && z.object({backgroundSubagents: z.literal(true)}).safeParse(await fetchJson(
+      new URL(`/experimental/capabilities?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"})).success !== true)
+      throw new HarnessAdapterError("native_profile_unsupported", "OpenCode did not confirm native background task support.");
     if (input.controlled) assertControlledOpenCodeInventory(await fetchJson(
       new URL(`/config?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}), input.controlled.providerId, input.mcpServers);
+    if (input.backgroundPermissions) {
+      const policy = input.approvalPolicy ?? "ask";
+      const configReadback = z.object({permission: z.unknown(), subagent_depth: z.literal(1)}).parse(await fetchJson(
+        new URL(`/config?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}));
+      const expectedPolicy = openCodeAgentPermission(policy);
+      const actualPolicy = z.record(z.string(), z.enum(["allow", "ask", "deny"])).parse(configReadback.permission);
+      if (Object.keys(actualPolicy).length !== Object.keys(expectedPolicy).length ||
+          Object.entries(expectedPolicy).some(([key, action]) => actualPolicy[key] !== action))
+        throw new HarnessAdapterError("native_policy_mismatch", "OpenCode did not confirm the configured background policy.");
+      assertOpenCodeAgentPermission(await fetchJson(new URL(`/agent?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}), policy);
+    }
     const owner = controlled && input.controlled ? {providerId: input.controlled.providerId, binding: controlled.accountBinding} : undefined;
     if (input.nativeThreadId) {
       const retained = z.object({id: z.string(), directory: z.string(), permission: z.array(z.object({permission: z.string(), pattern: z.string(), action: z.enum(["allow", "ask", "deny"])}))}).parse(await fetchJson(
         new URL(`/session/${encodeURIComponent(input.nativeThreadId)}?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}));
       if (retained.id !== input.nativeThreadId || await realpath(retained.directory) !== await realpath(input.cwd))
         throw new HarnessAdapterError("native_continuation_binding", "OpenCode retained history belongs to another directory or conversation.");
-      if (!input.approvalPolicy || JSON.stringify(retained.permission) !== JSON.stringify(permissionRules(input.approvalPolicy)))
+      if (!input.approvalPolicy || JSON.stringify(retained.permission) !== JSON.stringify(permissionRules(input.approvalPolicy, input.backgroundPermissions)))
         throw new HarnessAdapterError("native_policy_mismatch", "OpenCode retained permissions differ from the runner-authorized policy.");
-      return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, retained.id, input.approvalPolicy, owner, controlled?.cleanup, input.interactive);
+      return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, retained.id, input.approvalPolicy, owner, controlled?.cleanup, input.interactive, input.backgroundPermissions, input.workOwner);
     }
     const session: z.infer<typeof sessionSchema> = sessionSchema.parse(
       await fetchJson(new URL(`/session?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "HCP session", permission: permissionRules(input.approvalPolicy ?? "ask") }),
+        body: JSON.stringify({ title: "HCP session", permission: permissionRules(input.approvalPolicy ?? "ask", input.backgroundPermissions) }),
       }),
     );
-    return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, session.id, input.approvalPolicy ?? "ask", owner, controlled?.cleanup, input.interactive);
+    return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, session.id, input.approvalPolicy ?? "ask", owner, controlled?.cleanup, input.interactive, input.backgroundPermissions, input.workOwner);
   } catch (error: unknown) {
     await processHandle.stop();
     await controlled?.cleanup();
@@ -443,16 +496,18 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
   }
 }
 
-function permissionRules(policy: "ask" | "auto_edits" | "full_access") {
+function permissionRules(policy: "ask" | "auto_edits" | "full_access", background = false) {
   return [
     {permission: "*", pattern: "*", action: policy === "full_access" ? "allow" : "ask"},
     ...(policy === "auto_edits" ? [{permission: "edit", pattern: "*", action: "allow"}] : []),
     {permission: "question", pattern: "*", action: policy === "full_access" ? "deny" : "allow"},
-    {permission: "task", pattern: "*", action: "deny"},
+    {permission: "task", pattern: "*", action: background ? "allow" : "deny"},
   ];
 }
 
 class HttpOpenCodeRuntime implements OpenCodeRuntime {
+  readonly backgroundPermissions?: true;
+  readonly work?: OpenCodeOwnedWork;
   readonly sessionPermissions?: true;
   readonly #process: NativeProcess;
   readonly #baseUrl: string;
@@ -465,6 +520,10 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
   #activeRequest: AbortController | undefined;
   readonly #events: NativeEventOwner | undefined;
   #closing: Promise<void> | undefined;
+  #shutdownRequested = false;
+  readonly #callbacks: OpenCodeWorkCallbacks | undefined;
+  readonly #backgroundAbort = new AbortController();
+  readonly #backgroundObservation: Promise<void> | undefined;
 
   constructor(
     processHandle: NativeProcess,
@@ -475,6 +534,8 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     owner?: {providerId: string; binding: string},
     cleanup?: () => Promise<void>,
     interactive?: true,
+    backgroundPermissions?: true,
+    workOwner?: HarnessAdapterStartInput,
   ) {
     this.#process = processHandle;
     this.#baseUrl = baseUrl;
@@ -484,20 +545,39 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     if (owner) this.ownedAccount = owner;
     if (interactive) this.sessionPermissions = true;
     this.#cleanup = cleanup;
+    if (backgroundPermissions) this.backgroundPermissions = true;
+    if (workOwner) {
+      const read = (path: string) => fetchJson(new URL(`${path}?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "GET"});
+      this.work = new OpenCodeOwnedWork(sessionId, {...workOwner, emitSessionEvent: event => {
+        workOwner.emitSessionEvent!(event);if (event.event_type === "native.work.updated") this.#callbacks?.synchronize();
+      }}, {session: id => read(`/session/${encodeURIComponent(id)}`),
+        message: (session, id) => read(`/session/${encodeURIComponent(session)}/message/${encodeURIComponent(id)}`),
+        cancel: (session, signal) => fetchJson(new URL(`/session/${encodeURIComponent(session)}/abort?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "POST", signal})});
+      this.#callbacks = new OpenCodeWorkCallbacks(this.work, workOwner, (path, body, signal) => fetchJson(
+        new URL(`${path}?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body), signal}),
+        () => {this.work!.lose();this.#callbacks?.close();void this.close().catch(() => {});});
+    }
     if (interactive) this.#events = new NativeEventOwner(async signal => {
       const response = await fetch(new URL(`/event?directory=${encodeURIComponent(cwd)}`, baseUrl),
         {headers: {accept: "text/event-stream"}, signal});
       if (!response.ok || !response.body) throw new HarnessAdapterError("native_event_stream_closed", "OpenCode could not establish its observation owner.");
       return response.body;
-    }, () => {void this.close().catch(() => {});});
-    void processHandle.closed.then(() => {this.#closed = true; this.#activeRequest?.abort();void this.#events?.close().catch(() => {});});
+    }, () => {this.work?.lose();this.#callbacks?.close();void this.close().catch(() => {});});
+    if (this.work && this.#events) {
+      this.#backgroundObservation = this.#events.consume(value => {this.work!.observe(value);this.#callbacks!.observe(value);}, this.#backgroundAbort.signal, () => {});
+      void this.#backgroundObservation.catch(() => {if (!this.#closing) {this.work?.lose();this.#callbacks?.close();void this.close().catch(() => {});}});
+    }
+    void processHandle.closed.then(() => {if (!this.#closing) this.work?.lose();this.#callbacks?.close();this.#closed = true; this.#activeRequest?.abort();void this.#events?.close().catch(() => {});});
   }
 
   async sendTurn(input: OpenCodeRuntimeTurnInput): Promise<string> {
-    if (this.#closed) throw new HarnessAdapterError("native_session_unavailable", "This native owner closed; unload it before resuming the retained conversation.");
+    if (this.#closed || this.#shutdownRequested) throw new HarnessAdapterError("native_session_unavailable", "This native owner closed or is shutting down; unload it before resuming the retained conversation.");
     if (this.#activeRequest) {
       throw new Error(`OpenCode session '${this.sessionId}' already has an active HTTP request.`);
     }
+    await this.work?.settled();
+    if (this.work?.rootBusy) throw new HarnessAdapterError("native_root_busy", "A native parent continuation is still running.");
+    if (input.action === "compact" && this.work?.busy) throw new HarnessAdapterError("native_work_active", "Compaction requires resolved background work.");
     const abortController = new AbortController();
     const abort = () => abortController.abort();
     input.signal?.addEventListener("abort", abort, {once: true});
@@ -517,6 +597,10 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     );
     try {
       await streamReady.ready;
+      if (this.work && input.action !== "compact") {
+        this.work.admitRoot(messageId, input.turnId);
+        this.#callbacks!.admitRoot({session_id: this.work.start.payload.session_id, turn_id: input.turnId, input: input.input});
+      }
       const model = parseModel(input.model);
       if (input.action === "compact") {
         if (!model) throw new HarnessAdapterError("unsupported_model", "Compaction requires a provider/model identifier.");
@@ -545,6 +629,13 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
         ), streamReady.settled.then(() => new Promise<never>(() => {}))]),
       );
       await waitWithTimeout(streamReady.settled, DEFAULT_EVENT_SETTLE_TIMEOUT_MS, "OpenCode did not emit session.idle.");
+      if (this.work) {
+        const native = z.object({sessionID: z.string(), role: z.literal("assistant"), parentID: z.string()}).safeParse(response.info);
+        if (!native.success || native.data.sessionID !== this.sessionId || native.data.parentID !== messageId)
+          throw new HarnessAdapterError("native_root_response_unconfirmed", "The native response does not belong to the admitted root prompt.");
+        await this.work.settled();
+        this.work.closeRoot(messageId);
+      }
       if (input.systemInstructions) {
         const user = z.object({info: z.object({id: z.string(), sessionID: z.string(), role: z.literal("user"), system: z.string()})}).parse(await fetchJson(
           new URL(`/session/${encodeURIComponent(this.sessionId)}/message/${encodeURIComponent(messageId)}?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl),
@@ -570,7 +661,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     } catch (failure) {
       // An unconfirmed reply may already have installed a volatile native grant.
       // Close its owner so later turns cannot inherit uncertain authority.
-      if (failure instanceof HarnessAdapterError && (["native_reply_unknown","native_request_origin_unconfirmed","native_event_stream_closed"].includes(failure.code)
+      if (failure instanceof HarnessAdapterError && (["native_reply_unknown","native_request_origin_unconfirmed","native_event_stream_closed","native_root_response_unconfirmed"].includes(failure.code)
         || failure.code.startsWith("native_sse_"))) await this.close();
       throw failure;
     } finally {
@@ -607,14 +698,25 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
 
   async cancelTurn(): Promise<void> {
     this.#activeRequest?.abort();
+    if (this.work) {await this.work.cancelFamily(AbortSignal.timeout(10000));return;}
     const outcome = await fetchJson(new URL(`/session/${encodeURIComponent(this.sessionId)}/abort?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {
       method: "POST",
     });
     if (outcome !== true) throw new HarnessAdapterError("native_cancel_unknown", "OpenCode did not acknowledge session cancellation.");
   }
+  async stopNativeWork(): Promise<void> {
+    this.#shutdownRequested = true;
+    this.#callbacks?.close();
+    await this.work?.stop();
+  }
+  async cancelOwnedWork(work: import("@harness-control/protocol").HarnessNativeWorkRecord, signal: AbortSignal): Promise<void> {
+    if (!this.work) throw new HarnessAdapterError("native_work_unsupported", "This runtime has no native work owner.");
+    signal.throwIfAborted();
+    await this.work.cancel(work, signal, () => this.#callbacks!.closeWork(work.work_id));
+  }
 
   #verifyPermissions(actual: unknown) {
-    if (JSON.stringify(actual) !== JSON.stringify(permissionRules(this.#approvalPolicy)))
+    if (JSON.stringify(actual) !== JSON.stringify(permissionRules(this.#approvalPolicy, this.backgroundPermissions)))
       throw new HarnessAdapterError("native_policy_mismatch", "OpenCode retained permissions differ from the runner-authorized policy.");
   }
 
@@ -623,6 +725,9 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       this.#closed = true;
       this.#activeRequest?.abort();
       this.#closing = (async () => {
+        this.#backgroundAbort.abort();
+        this.#callbacks?.close();
+        await this.#backgroundObservation?.catch(() => {});
         await this.#events?.close();
         await this.#process.stop();
         await this.#cleanup?.();
@@ -675,33 +780,12 @@ function createEventStream(
           requests.add(id);
           const owner = input.interactions;
           if (!owner) throw new HarnessAdapterError("native_request_unavailable", "A native request requires its HCP owner.");
-          const binding = {threadId: sessionId, turnId: input.turnId, itemId: id};
-          const respond = async () => {
-            await verifyOpenCodeRequestOrigin(event.properties, sessionId, usage.promptId, messageId => fetchJson(
-              new URL(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(messageId)}?directory=${encodeURIComponent(cwd)}`,baseUrl),
-              {method:"GET",signal:AbortSignal.any([signal,AbortSignal.timeout(5000)])}));
-            let path: string, body: unknown;
-            if (event.type === "permission.asked") {
-              const permission = z.string().parse(event.properties.permission);
-              const type = permission === "bash" ? "command" : permission === "read" ? "file_read" : permission === "edit" ? "file_change" : "other";
-              const remembered = input.allowSessionPermissions && z.array(z.string().min(1).max(4096)).min(1).max(128).safeParse(event.properties.always).success;
-              const result = await owner.approval({...event.properties, ...binding,
-                availableDecisions: ["accept", ...(remembered ? ["accept_for_session"] : []), "decline"]}, type, signal);
-              path = `/permission/${encodeURIComponent(id)}/reply`; body = {reply: result.decision === "accept_for_session" ? "always" : result.decision === "accept" ? "once" : "reject"};
-            } else {
-              const questions = z.array(z.object({question: z.string(), header: z.string(), options: z.array(z.object({label: z.string(), description: z.string()})),
-                multiple: z.boolean().optional(), custom: z.boolean().optional()})).parse(event.properties.questions);
-              const result = z.object({answers: z.record(z.string(), z.object({answers: z.array(z.string())}))}).parse(await owner.questions({...binding,
-                questions: questions.map((question, index) => ({...question, id: `question-${index}`, isOther: question.custom !== false, multiSelect: question.multiple ?? false}))}, signal));
-              const cancelled = !Object.keys(result.answers).length;
-              path = `/question/${encodeURIComponent(id)}/${cancelled ? "reject" : "reply"}`;
-              body = cancelled ? {} : {answers: questions.map((_question, index) => result.answers[`question-${index}`]!.answers)};
-            }
-            try {
-              const outcome = await fetchJson(new URL(`${path}?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body), signal});
-              if (outcome !== true) throw new Error("Unconfirmed native reply");
-            } catch {throw new HarnessAdapterError("native_reply_unknown", "OpenCode did not acknowledge the native interaction reply; its execution outcome is unknown.");}
-          };
+          const respond = () => respondOpenCodeInteraction(event, {sessionId, promptId: usage.promptId, turnId: input.turnId,
+            owner, signal, sessionPermissions: input.allowSessionPermissions === true,
+            readMessage: messageId => fetchJson(new URL(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(messageId)}?directory=${encodeURIComponent(cwd)}`, baseUrl),
+              {method: "GET", signal: AbortSignal.any([signal, AbortSignal.timeout(5000)])}),
+            reply: (path, body, requestSignal) => fetchJson(new URL(`${path}?directory=${encodeURIComponent(cwd)}`, baseUrl),
+              {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body), signal: requestSignal})});
           const response = respond(); responses.push(response);
           void response.catch(error => rejectSettled(error instanceof Error ? error : new Error("Native response failed.")));
           return;

@@ -81,6 +81,6 @@
         }
       }
     ],
-    "execution_profile": "t3"
+    "execution_profile": "../runtime"
   }
 }

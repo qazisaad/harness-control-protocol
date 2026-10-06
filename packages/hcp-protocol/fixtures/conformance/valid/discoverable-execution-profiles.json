@@ -1,0 +1,66 @@
+{
+  "id": "discoverable-execution-profiles",
+  "type": "host.capabilities.updated",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "providers": [
+      {
+        "provider_instance_id": "example",
+        "driver_kind": "example",
+        "enabled": true,
+        "installed": true,
+        "status": "ready",
+        "availability": "available",
+        "models": [],
+        "execution_capabilities": {
+          "streaming": true,
+          "multi_turn": true,
+          "session_continuation": true,
+          "native_history": true,
+          "live_history_read": true,
+          "sandbox_modes": [
+            "read_only"
+          ],
+          "approval_policies": [
+            "ask"
+          ],
+          "configuration_inheritance": {
+            "project_settings": true,
+            "user_settings": true,
+            "mcp_servers": true,
+            "hooks": true,
+            "plugins": true
+          },
+          "configuration_inheritance_options": [
+            {
+              "project_settings": false,
+              "user_settings": false,
+              "mcp_servers": false,
+              "hooks": false,
+              "plugins": false
+            }
+          ],
+          "execution_profiles": [
+            {
+              "id": "background",
+              "runtime_lifetime": "session",
+              "required_configuration_inheritance": {
+                "hooks": false,
+                "mcp_servers": false,
+                "plugins": false,
+                "user_settings": false,
+                "project_settings": false
+              },
+              "native_work": true,
+              "session_events": true,
+              "root_interrupt_effect": "owned_work"
+            }
+          ]
+        }
+      }
+    ],
+    "local_capabilities": [],
+    "workspaces": []
+  }
+}

@@ -711,8 +711,17 @@ export class HarnessSessionManager {
       provider,
     );
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
-    if (payload.execution_profile === "interactive" && !adapter.executionProfiles?.some(profile => profile.id === "interactive"))
-      throw new HarnessAdapterError("execution_profile_unsupported", "This adapter has not declared an interactive execution profile.");
+    const profile = adapter.executionProfiles?.find(profile => profile.id === (payload.execution_profile ?? "isolated"));
+    if (payload.execution_profile && !profile)
+      throw new HarnessAdapterError("execution_profile_unsupported", "This adapter has not declared the selected execution profile.");
+    if (profile?.native_work && (!adapter.nativeWork || !adapter.sessionEvents || !adapter.cancelNativeWork
+      || profile.runtime_lifetime !== "session" || !profile.session_events))
+      throw new HarnessAdapterError("execution_profile_contract_invalid", "Native work requires a retained runtime, observations and cancellation controls.");
+    if (profile?.required_configuration_inheritance && Object.entries(profile.required_configuration_inheritance)
+      .some(([key,value]) => payload.configuration_inheritance?.[key as keyof typeof profile.required_configuration_inheritance] !== value))
+      throw new HarnessAdapterError("execution_profile_configuration_required", "The selected profile requires its advertised explicit configuration inheritance.");
+    if (profile?.mcp_attachments === false && payload.mcp_servers.length)
+      throw new HarnessAdapterError("execution_profile_mcp_unsupported", "The selected profile does not support MCP attachments.");
     validateConfigurationInheritance(payload, adapter.configurationInheritance, adapter.configurationInheritanceOptions);
     validateInstructionRoles(payload, adapter.instructionRoles);
     await adapter.validateStart({ payload, provider });
@@ -799,7 +808,7 @@ export class HarnessSessionManager {
       } else if (payload.continuation_group_key && this.#stateStore.getNativeConversation(payload.continuation_group_key)) {
         throw new HarnessAdapterError("native_continuation_exists", "An existing native conversation requires explicit continuation.");
       }
-      if (adapter.nativeWork) {
+      if (adapter.nativeWork && (!adapter.executionProfiles || profile?.native_work)) {
         createdWorkState = !this.#stateStore.nativeWorkState(payload.session_id);
         const existing = this.#stateStore.nativeWorkState(payload.session_id);
         if (existing?.closure_unconfirmed) throw new HarnessAdapterError("native_work_shutdown_unknown", "Earlier native work has unconfirmed closure; restarting cannot reclaim its execution owner.");
@@ -843,7 +852,7 @@ export class HarnessSessionManager {
     const session: HarnessSession = {
       sessionId: payload.session_id,
       cancelRequested: false,
-      ...(adapter.nativeWork ? {nativeWorkOwnerAvailable: true} : {}),
+      ...(adapter.nativeWork && (!adapter.executionProfiles || profile?.native_work) ? {nativeWorkOwnerAvailable: true} : {}),
       workspaceId: payload.workspace_id,
       providerInstanceId: provider.id,
       driverKind: provider.driver_kind,
@@ -1228,7 +1237,7 @@ export class HarnessSessionManager {
         !(this.#mcpResumes.has(sessionId) && retained?.turn.turn_id === turnId && !retained.native_work_id)) return [];
     session.cancelRequested = true;
     const rootReview = this.#mcpReviews.get(sessionId);
-    const graceful = session.adapter.nativeWork && session.startPayload.execution_profile === "interactive";
+    const graceful = session.nativeWorkOwnerAvailable === true;
     if (!graceful) rootReview?.interrupt();
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.cancelTurn({ sessionId, turnId });
     rootReview?.interrupt();
@@ -1259,7 +1268,7 @@ export class HarnessSessionManager {
 
     session.cancelRequested = true;
     const rootReview = this.#mcpReviews.get(sessionId);
-    const graceful = session.adapter.nativeWork && session.startPayload.execution_profile === "interactive";
+    const graceful = session.nativeWorkOwnerAvailable === true;
     if (!graceful) rootReview?.interrupt();
     const events: HcpHarnessEventPayload[] = [];
     const first = session.startPayload.first_turn;
@@ -1775,7 +1784,7 @@ function nativeBindingHash(payload: HcpSessionStartPayload, provider: ProviderIn
     ...(provider.launch_args.length ? {launch_args: provider.launch_args} : {}),
     home: provider.home, env: provider.env}, workspace: {id: payload.workspace_id, cwd: payload.cwd},
     sandbox: payload.sandbox_mode, approval: payload.approval_policy,
-    ...(payload.execution_profile === "interactive" ? {execution_profile: "interactive"} : {}),
+    ...(payload.execution_profile && payload.execution_profile !== "isolated" ? {execution_profile: payload.execution_profile} : {}),
     ...(payload.instructions && Object.keys(payload.instructions).length ? {instructions: payload.instructions} : {}),
     attachments: payload.mcp_servers.map(attachment => ({name: attachment.name, transport: attachment.transport,
       ...(attachment.transport === "runner_stdio_profile" ? {profile: attachment.profile_id} : {}),

@@ -278,8 +278,13 @@ export type HarnessExecutionCapabilities = {
 };
 
 /** Describes which native configuration sources this execution path permits; omitted fields are unknown. */
-export const harnessExecutionProfileCapabilitiesSchema = z.object({id: z.enum(["isolated", "interactive"]),
-  runtime_lifetime: z.enum(["turn", "session"]), native_work: z.boolean(), session_events: z.boolean()}).strict();
+export const harnessExecutionProfileIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessExecutionProfileIdSchema,
+  runtime_lifetime: z.enum(["turn", "session"]), native_work: z.boolean(), session_events: z.boolean(),
+  required_configuration_inheritance: z.lazy(() => harnessConfigurationInheritanceSchema).optional(),
+  mcp_attachments: z.boolean().optional(),
+  /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
+  root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;
 
 export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.boolean().optional(), project_settings: z.boolean().optional(),
@@ -449,7 +454,7 @@ export type RunnerStdioMcpProfileAttachment = {
 export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
-  execution_profile?: "isolated" | "interactive";
+  execution_profile?: string;
   instructions?: HarnessInstructions;
   configuration_inheritance?: HarnessConfigurationInheritance;
   session_id: string;
@@ -1108,7 +1113,7 @@ export const harnessModelSchema = z
 export const harnessProviderSnapshotSchema = z
   .object({
     execution_capabilities: z.object({
-      execution_profiles: z.array(harnessExecutionProfileCapabilitiesSchema).min(1).max(2).refine(profiles => new Set(profiles.map(profile => profile.id)).size === profiles.length, "Execution profiles must have unique identities.").optional(),
+      execution_profiles: z.array(harnessExecutionProfileCapabilitiesSchema).min(1).max(16).refine(profiles => new Set(profiles.map(profile => profile.id)).size === profiles.length, "Execution profiles must have unique identities.").optional(),
       native_work: z.boolean().optional(),
       context_usage: z.boolean().optional(),
       portable_history: z.boolean().optional(),
@@ -1382,7 +1387,7 @@ const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(im
 export const hcpSessionStartPayloadSchema = z
   .object({
     instructions: harnessInstructionsSchema.optional(),
-    execution_profile: z.enum(["isolated", "interactive"]).optional(),
+    execution_profile: harnessExecutionProfileIdSchema.optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     session_id: nonEmptyStringSchema,
     workspace_id: nonEmptyStringSchema,
@@ -2327,7 +2332,7 @@ const sessionEventDataSchema = z
   .object({
     mode: z.enum(["execute", "plan"]).optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
-    execution_profile: z.enum(["isolated", "interactive"]).optional(),
+    execution_profile: harnessExecutionProfileIdSchema.optional(),
     provider_instance_id: nonEmptyStringSchema.optional(),
     driver_kind: nonEmptyStringSchema.optional(),
     workspace_id: nonEmptyStringSchema.optional(),

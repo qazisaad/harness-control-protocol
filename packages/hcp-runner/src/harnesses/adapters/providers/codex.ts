@@ -40,7 +40,7 @@ import {CodexOwnedWork} from "./codex-work.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only"},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {

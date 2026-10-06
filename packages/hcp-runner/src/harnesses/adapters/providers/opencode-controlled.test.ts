@@ -3,7 +3,26 @@ import {test} from "node:test";
 import {mkdtemp, rm, access, symlink} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join, dirname} from "node:path";
-import {prepareControlledOpenCode, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory} from "./opencode-controlled.js";
+import {prepareControlledOpenCode, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory, openCodeAgentPermission, assertOpenCodeAgentPermission} from "./opencode-controlled.js";
+
+test("background policies cover native agent authority rather than relying on session ask inheritance", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-agent-policy-test-"));
+  let prepared: Awaited<ReturnType<typeof prepareControlledOpenCode>> | undefined;
+  try {
+    prepared = await prepareControlledOpenCode({cwd, providerId: "go", ownershipRoot: join(cwd, "owned"), mcpServers: {},
+      backgroundPolicy: "ask", env: {OPENCODE_AUTH_CONTENT: JSON.stringify({go: {type: "api", key: "fixture"}})}});
+    const config = JSON.parse(prepared.env.OPENCODE_CONFIG_CONTENT!);
+    assert.deepEqual(config.permission, openCodeAgentPermission("ask")); assert.equal(config.subagent_depth, 1);
+    for (const policy of ["ask", "auto_edits", "full_access"] as const) {
+      const permission = Object.entries(openCodeAgentPermission(policy)).map(([permission, action]) => ({permission, pattern: "*", action}));
+      const agent = {name: "general", permission: [{permission: "bash", pattern: "*", action: "allow"}, ...permission]};
+      assertOpenCodeAgentPermission([agent], policy);
+      assert.throws(() => assertOpenCodeAgentPermission([{...agent, permission: [...agent.permission, {permission: "bash", pattern: "*", action: "allow"}]}], policy), /background policy/);
+      assert.throws(() => assertOpenCodeAgentPermission([{...agent, permission: agent.permission.slice(0, 1)}], policy), /background policy/);
+    }
+    assert.throws(() => assertOpenCodeAgentPermission([], "ask"), /agent permissions/);
+  } finally {await prepared?.cleanup(); await rm(cwd, {recursive: true, force: true});}
+});
 
 test("controlled OpenCode retains only the selected API credential and stable account data, and removes temporary configuration", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-controlled-config-test-"));

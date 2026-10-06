@@ -97,7 +97,7 @@ export class NativeInteractions {
           && (requestType !== "file_change" || this.start.sandbox_mode === "workspace_write"));
       const allowed = (["accept", "accept_for_session", "decline", "cancel"] as const).filter(decision =>
         (!advertised || advertised.includes(decision)) && (!["accept", "accept_for_session"].includes(decision) || permitsAccept)
-        && (decision !== "accept_for_session" || this.start.execution_profile === "interactive" && advertised?.includes(decision)));
+        && (decision !== "accept_for_session" || !!this.start.execution_profile && this.start.execution_profile !== "isolated" && advertised?.includes(decision)));
       if (!allowed.length) throw new HarnessAdapterError("native_decisions_unsupported", "Native provider offered no supported decision.");
       const expires = this.#expires();
       const decision = await this.#wait<HcpApprovalResponsePayload["decision"]>(signal,

@@ -10,7 +10,7 @@ import {hcpHarnessEventPayloadSchema, isNativeWorkTerminal} from "@harness-contr
 
 if (process.env.HCP_NATIVE_LIVE !== "1") throw new Error("Set HCP_NATIVE_LIVE=1 to run authenticated native acceptance.");
 const driver = process.env.HCP_LIVE_PROVIDER ?? "claude";
-assert.ok(["claude", "codex"].includes(driver), "Work acceptance currently supports Claude and Codex only");
+assert.ok(["claude", "codex", "opencode"].includes(driver), "Unknown native work provider");
 const cwd = await mkdtemp(join(tmpdir(), `hcp-live-${driver}-work-`));
 const config = RunnerConfigSchema.parse({runner_id: "work-acceptance", control_plane_url: "ws://localhost:8787",
   workspaces: [{id: "workspace", path: cwd}], provider_instances: [{id: driver, driver_kind: driver}]});
@@ -45,7 +45,9 @@ const spawn = async (turn, seconds) => {
   const childPrompt = `Use Bash to run exactly: sleep ${seconds}; printf '%s' '${marker}'. Use no other tools, then return the command output.`;
   await send(turn, driver === "claude"
     ? `Use Agent exactly once with run_in_background: true and this exact child prompt: ${childPrompt}\nAfter launching it, immediately reply ROOT_RETURNED. Do not wait for it, call other tools, or perform the child's work yourself.`
-    : `Spawn exactly one native child agent with this prompt: Use a shell tool to run exactly sleep ${seconds}; printf '%s' '${marker}'. Use no other tools, then return the output.\nAfter launching it, immediately reply ROOT_RETURNED. Do not wait, send follow-up messages or perform the child's work yourself.`);
+    : driver === "opencode"
+      ? `Use task exactly once with background: true, subagent_type: general and this exact child prompt: ${childPrompt}\nAfter launching, immediately reply ROOT_RETURNED. Do not wait, poll or use other tools.`
+      : `Spawn exactly one native child agent with this prompt: Use a shell tool to run exactly sleep ${seconds}; printf '%s' '${marker}'. Use no other tools, then return the output.\nAfter launching it, immediately reply ROOT_RETURNED. Do not wait, send follow-up messages or perform the child's work yourself.`);
   const owned = (await work()).items.find(item => item.work.origin_turn_id === turn && !isNativeWorkTerminal(item.work.status));
   assert.ok(owned, "No owned background child remained after root completion");
   assert.equal(owned.work.background, true);
@@ -54,12 +56,15 @@ const spawn = async (turn, seconds) => {
 const passed = [];
 try {
   const model = driver === "claude" ? process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet"
-    : process.env.HCP_LIVE_CODEX_MODEL ?? (await manager.providerDriverStatuses()).find(status => status.driver_kind === driver)?.models.find(model => model.is_default)?.id;
+    : driver === "opencode" ? process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/glm-5.3-flash"
+      : process.env.HCP_LIVE_CODEX_MODEL ?? (await manager.providerDriverStatuses()).find(status => status.driver_kind === driver)?.models.find(model => model.is_default)?.id;
   assert.ok(model, "No verified default native model was discovered");
   await manager.startSession({session_id: "work", workspace_id: "workspace", provider_instance_id: driver, driver_kind: driver, cwd,
-    execution_profile: "interactive", sandbox_mode: "danger_full_access", approval_policy: "full_access", continue_session: false, continuation_group_key: "live-work-history",
+    execution_profile: driver === "opencode" ? "background" : "interactive",
+    ...(driver === "opencode" ? {configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}} : {}),
+    sandbox_mode: "danger_full_access", approval_policy: "full_access", continue_session: false, continuation_group_key: "live-work-history",
     model_selection: {model}, mcp_servers: []});
-  const first = await spawn("background-completion", 30);
+  const first = await spawn(driver === "opencode" ? "background-interruption" : "background-completion", 30);
   const history = await manager.conversationOperation("background-live-read", {session_id: "work", operation: {kind: "read"}});
   assert.ok(history.history?.turn_count >= 1, "A live background owner lost its readable root history");
   passed.push("live-history-with-background");
@@ -67,17 +72,33 @@ try {
   assert.ok(interrupt, "No streaming root was available to interrupt");
   await interrupt;
   assert.equal(events.findLast(event => event.turn_id === "interrupted-root" && ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type))?.event_type, "turn.cancelled");
-  assert.ok((await work()).items.some(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Root interruption stopped its independent background child");
-  passed.push("root-interruption-preserves-background");
+  let completionChild = first;
+  if (driver === "opencode") {
+    await until(async () => (await work()).items.find(item => item.work.work_id === first.work_id && item.work.status === "cancelled"));
+    passed.push("root-interruption-cancels-owned-background");
+    completionChild = await spawn("background-completion", 30);
+  } else {
+    assert.ok((await work()).items.some(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Root interruption stopped its independent background child");
+    passed.push("root-interruption-preserves-background");
+  }
   await send("followup", "Reply FOLLOWUP only. Do not use tools or wait for the child.");
-  await until(async () => (await work()).items.find(item => item.work.work_id === first.work_id && item.work.status === "completed"));
+  await until(async () => (await work()).items.find(item => item.work.work_id === completionChild.work_id && item.work.status === "completed"));
+  if (driver === "opencode") {
+    await until(async () => {
+      const related = (await work()).items.filter(item => item.work.origin_turn_id === "background-completion");
+      return related.some(item => item.work.kind === "task") && related.every(item => isNativeWorkTerminal(item.work.status));
+    });
+    passed.push("observed-parent-continuation");
+  }
   passed.push("background-after-root", "followup-with-background", "observed-child-completion");
-  const second = await spawn("background-cancel", 60);
+  const launchedSecond = await spawn("background-cancel", 60);
+  const second = await until(async () => (await work()).items.find(item => item.work.work_id === launchedSecond.work_id && item.work.supports_cancel)?.work);
   const request = {session_id: "work", operation: {kind: "work", action: "cancel", work_id: second.work_id, expected_revision: second.revision}};
   const controlId = randomUUID(), receipt = await manager.conversationOperation(controlId, request);
   assert.deepEqual(await manager.conversationOperation(controlId, request), receipt);
   await until(async () => (await work()).items.find(item => item.work.work_id === second.work_id && item.work.status === "cancelled"));
   passed.push("child-cancel", "duplicate-cancel-receipt", "observed-child-cancellation");
+  if (driver === "opencode") await spawn("background-unload", 60);
   await manager.stopSession("work", "live-work-complete");
   assert.equal(manager.activeSessionCount(), 0);
   passed.push("safe-unload");

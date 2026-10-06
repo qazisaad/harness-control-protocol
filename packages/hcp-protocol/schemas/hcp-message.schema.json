@@ -3606,17 +3606,14 @@
                     "properties": {
                       "execution_profiles": {
                         "minItems": 1,
-                        "maxItems": 2,
+                        "maxItems": 16,
                         "type": "array",
                         "items": {
                           "type": "object",
                           "properties": {
                             "id": {
                               "type": "string",
-                              "enum": [
-                                "isolated",
-                                "interactive"
-                              ]
+                              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
                             },
                             "runtime_lifetime": {
                               "type": "string",
@@ -3630,6 +3627,38 @@
                             },
                             "session_events": {
                               "type": "boolean"
+                            },
+                            "required_configuration_inheritance": {
+                              "type": "object",
+                              "properties": {
+                                "user_settings": {
+                                  "type": "boolean"
+                                },
+                                "project_settings": {
+                                  "type": "boolean"
+                                },
+                                "hooks": {
+                                  "type": "boolean"
+                                },
+                                "mcp_servers": {
+                                  "type": "boolean"
+                                },
+                                "plugins": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "mcp_attachments": {
+                              "type": "boolean"
+                            },
+                            "root_interrupt_effect": {
+                              "type": "string",
+                              "enum": [
+                                "root_only",
+                                "owned_work",
+                                "unknown"
+                              ]
                             }
                           },
                           "required": [
@@ -4369,10 +4398,7 @@
             },
             "execution_profile": {
               "type": "string",
-              "enum": [
-                "isolated",
-                "interactive"
-              ]
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
             },
             "configuration_inheritance": {
               "type": "object",
@@ -10704,10 +10730,7 @@
                 },
                 "execution_profile": {
                   "type": "string",
-                  "enum": [
-                    "isolated",
-                    "interactive"
-                  ]
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -10937,10 +10960,7 @@
                 },
                 "execution_profile": {
                   "type": "string",
-                  "enum": [
-                    "isolated",
-                    "interactive"
-                  ]
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -11170,10 +11190,7 @@
                 },
                 "execution_profile": {
                   "type": "string",
-                  "enum": [
-                    "isolated",
-                    "interactive"
-                  ]
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
                 },
                 "provider_instance_id": {
                   "type": "string",
@@ -11403,10 +11420,7 @@
                 },
                 "execution_profile": {
                   "type": "string",
-                  "enum": [
-                    "isolated",
-                    "interactive"
-                  ]
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
                 },
                 "provider_instance_id": {
                   "type": "string",
