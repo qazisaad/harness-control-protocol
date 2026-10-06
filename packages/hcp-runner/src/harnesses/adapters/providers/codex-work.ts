@@ -44,7 +44,7 @@ export class CodexOwnedWork {
     if (this.#lost) return;
     this.#lost = true;
     try {this.start.emitSessionEvent!({event_type: "native.work.owner_lost", data: {reason,
-      ...(this.#pending.size || this.#unconfirmed.size || this.#activeRoots.size ? {closure_unconfirmed: true} : {})}});} catch { /* Persistence failure cannot restore native ownership. */ }
+      ...(this.busy || this.#activeRoots.size ? {closure_unconfirmed: true} : {})}});} catch { /* Persistence failure cannot restore native ownership. */ }
     if (reason === "runtime_error") void this.rpc.process.stop();
   }
   #publish(child: Child): void {this.start.emitSessionEvent!({event_type: "native.work.updated", data: {work: structuredClone(child.work)}});}

@@ -150,6 +150,15 @@ test("native Codex cancellation acknowledgement alone does not complete work", {
     assert.deepEqual(await f.rpc.request("stats",{}),{interrupts:1,subscriptions:[]});
   } finally {await f.close();}
 });
+test("provider death with a known child after root completion explicitly preserves closure uncertainty",{timeout:5000},async()=>{
+  const f=await fixture();
+  try {
+    await f.launch();await f.rpc.process.stop();
+    await assert.rejects(f.owner.settled(),/owner was lost/);
+    assert.equal(f.events.find(event=>event.event_type==="native.work.owner_lost")?.data.closure_unconfirmed,true);
+    assert.equal(f.work().status,"running");await assert.rejects(f.owner.stop(),/owner was lost/);
+  } finally {await f.close();}
+});
 
 test("native Codex parent mismatch loses the owner without publishing fabricated child work", {timeout:5000}, async () => {
   const f = await fixture("wrong-parent");

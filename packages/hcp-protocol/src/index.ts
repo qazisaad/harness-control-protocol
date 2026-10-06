@@ -55,6 +55,7 @@ export const SESSION_SNAPSHOT_MESSAGE_TYPES = ["harness.session.snapshot", "harn
 export const KNOWN_HCP_EVENT_TYPES = [
   "session.started",
   "session.configured",
+  "settings.effective",
   "session.state.changed",
   "session.exited",
   "thread.started",
@@ -283,6 +284,8 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   runtime_lifetime: z.enum(["turn", "session"]), native_work: z.boolean(), session_events: z.boolean(),
   required_configuration_inheritance: z.lazy(() => harnessConfigurationInheritanceSchema).optional(),
   mcp_attachments: z.boolean().optional(),
+  /** Native readback of root model/options and fixed execution policy; omission is unknown. */
+  root_settings_readback: z.boolean().optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;
@@ -1381,6 +1384,12 @@ export const HARNESS_IMAGE_MIME_TYPES = ["image/gif", "image/jpeg", "image/png",
 export const hcpImageInputSchema = z.object({mime_type: z.enum(HARNESS_IMAGE_MIME_TYPES),
   data_base64: z.string().min(4).max(HARNESS_IMAGE_MAX_BYTES * 4 / 3).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict();
 export type HcpImageInput = z.infer<typeof hcpImageInputSchema>;
+/** An observed root configuration does not rewrite the settings of already running work. */
+export const harnessEffectiveSettingsSchema = z.object({scope: z.literal("root"), source: z.literal("native"),
+  model_selection: harnessModelSelectionSchema, mode: z.enum(["execute", "plan"]),
+  approval_policy: z.enum(["ask", "auto_edits", "full_access"]),
+  sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"])}).strict();
+export type HarnessEffectiveSettings = z.infer<typeof harnessEffectiveSettingsSchema>;
 const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(images =>
   images.reduce((bytes, image) => bytes + image.data_base64.length, 0) <= HARNESS_IMAGE_MAX_BYTES * 4 / 3, "Image aggregate exceeds the transport limit.");
 
@@ -2714,6 +2723,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
     return harnessUsageSnapshotSchema;
   }
   if (eventType === "context.updated") return harnessContextUsageSchema;
+  if (eventType === "settings.effective") return harnessEffectiveSettingsSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
   if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"]), closure_unconfirmed: z.literal(true).optional()}).strict();
@@ -2794,6 +2804,8 @@ export const hcpHarnessEventPayloadSchema = z
   .strict()
   .superRefine((payload, context) => {
     const eventType: string = payload.event_type;
+    if (eventType === "settings.effective" && payload.turn_id === undefined)
+      context.addIssue({code: "custom", path: ["turn_id"], message: "Effective root settings require their admitted HCP turn identity."});
     const dataSchema: z.ZodType<unknown> = isKnownHcpEventType(eventType)
       ? knownHcpEventDataSchemas[eventType]
       : hcpExtensionEventDataSchema;

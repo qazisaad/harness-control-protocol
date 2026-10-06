@@ -107,6 +107,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never',approvalsReviewer:process.env.MODE==='reviewer'?'auto_review':m.params.approvalsReviewer}}); }
+ if(m.method==='thread/settings/update') { notify('thread/settings/updated',{threadId:m.params.threadId,threadSettings:{model:m.params.model,effort:m.params.collaborationMode.settings.reasoning_effort,
+   collaborationMode:m.params.collaborationMode,cwd:process.cwd(),approvalPolicy:'never',approvalsReviewer:'user',sandboxPolicy:{type:'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true}}}); send({id:m.id,result:{}}); }
  if(m.method==='turn/interrupt') {send({id:m.id,result:{}}); notify('turn/completed',{threadId:m.params.threadId,turn:{id:m.params.turnId,status:'interrupted',error:null}});}
  if(m.method==='thread/unsubscribe') send({id:m.id,result:{status:'unsubscribed'}});
  if(m.method==='turn/start') {

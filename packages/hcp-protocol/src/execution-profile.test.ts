@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {harnessExecutionProfileCapabilitiesSchema,harnessExecutionProfileIdSchema} from "./index.js";
+import {harnessExecutionProfileCapabilitiesSchema,harnessExecutionProfileIdSchema,hcpHarnessEventPayloadSchema} from "./index.js";
+
+test("effective settings evidence has an explicit root scope and native provenance",()=>{
+  const event={session_id:"session",turn_id:"turn",sequence:1,created_at:new Date().toISOString(),event_type:"settings.effective",
+    data:{scope:"root",source:"native",model_selection:{model:"model",options:[]},mode:"execute",approval_policy:"ask",sandbox_mode:"read_only"}};
+  assert.equal(hcpHarnessEventPayloadSchema.safeParse(event).success,true);
+  const {turn_id:_turn,...unowned}=event;
+  assert.equal(hcpHarnessEventPayloadSchema.safeParse(unowned).success,false);
+  for(const patch of [{scope:"all_work"},{source:"requested"},{approval_policy:"implicit"}])
+    assert.equal(hcpHarnessEventPayloadSchema.safeParse({...event,data:{...event.data,...patch}}).success,false);
+});
 
 test("apps can distinguish root-only interruption from descendant cancellation",()=>{
   const base={id:"interactive",runtime_lifetime:"session",native_work:true,session_events:true};

@@ -37,10 +37,11 @@ import {
 import { runCodexTurn, runRetainedCodexTurn, type CodexRuntimeLease } from "./codex-runtime.js";
 import {CodexRpc} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
+import {readCodexSettingsNotification} from "./codex-settings.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only"},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
@@ -220,7 +221,16 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         {...process.env, ...providerEnvironment(input.provider)});
       const work = new CodexOwnedWork(rpc, input);
       const callbacks = new CodexWorkCallbacks(rpc, work, input);
-      this.#leases.set(input.payload.session_id, {initialized: false, rpc, work, callbacks});
+      const lease: CodexRuntimeLease = {initialized: false, rpc, work, callbacks};
+      lease.closeSettings = rpc.observeNotifications(message => {
+        if (message.method === "thread/settings/updated") {
+          const readback = readCodexSettingsNotification(message);
+          if (!readback || !lease.started || readback.threadId === lease.started.thread.id) lease.settings = readback;
+        }
+        if (message.method === "model/rerouted") lease.settings = undefined;
+      });
+      void rpc.process.closed.then(() => {lease.settings = undefined; lease.closeSettings?.();});
+      this.#leases.set(input.payload.session_id, lease);
     }
     return { adapter_session_id: input.payload.session_id };
   }
@@ -252,6 +262,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     const lease = this.#leases.get(input.sessionId);
     await lease?.work?.stop();
     lease?.callbacks?.close();
+    lease?.closeSettings?.();
     this.#leases.delete(input.sessionId);
     await lease?.rpc.process.stop();
     return events;

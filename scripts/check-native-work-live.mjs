@@ -34,8 +34,8 @@ const until = async (predicate, deadline = 120000) => {
   while (Date.now() < end) {const result = await predicate(); if (result) return result; await new Promise(resolve => setTimeout(resolve, 200));}
   throw new Error("Native work did not reach its expected observation before the deadline");
 };
-const send = async (turn_id, input) => {
-  await manager.sendTurn({session_id: "work", turn_id, input}, observe);
+const send = async (turn_id, input, options = {}) => {
+  await manager.sendTurn({session_id: "work", turn_id, input, ...options}, observe);
   const terminal = events.findLast(event => event.turn_id === turn_id && ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type));
   assert.equal(terminal?.event_type, "turn.completed", JSON.stringify(terminal?.data));
 };
@@ -64,7 +64,8 @@ try {
     ...(driver === "opencode" ? {configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}} : {}),
     sandbox_mode: "danger_full_access", approval_policy: "full_access", continue_session: false, continuation_group_key: "live-work-history",
     model_selection: {model}, mcp_servers: []});
-  const first = await spawn(driver === "opencode" ? "background-interruption" : "background-completion", 30);
+  const settingsAcceptance = driver === "codex" && process.env.HCP_LIVE_SETTINGS === "1";
+  const first = await spawn(driver === "opencode" ? "background-interruption" : "background-completion", settingsAcceptance ? 90 : 30);
   const history = await manager.conversationOperation("background-live-read", {session_id: "work", operation: {kind: "read"}});
   assert.ok(history.history?.turn_count >= 1, "A live background owner lost its readable root history");
   passed.push("live-history-with-background");
@@ -80,6 +81,18 @@ try {
   } else {
     assert.ok((await work()).items.some(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Root interruption stopped its independent background child");
     passed.push("root-interruption-preserves-background");
+  }
+  if (settingsAcceptance) {
+    for (const effort of ["low", "high", null]) {
+      assert.ok((await work()).items.find(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Settings test requires a still-running child");
+      const turn = effort ? `settings-${effort}` : "settings-reset";
+      await send(turn, "Reply READY only. Use no tools and do not wait for any child.", {model_selection: {model, options: effort ? [{id: "reasoningEffort", value: effort}] : []}});
+      const observed = events.find(event => event.turn_id === turn && event.event_type === "settings.effective");
+      assert.ok(observed); assert.equal(observed.data.scope, "root");
+      assert.deepEqual(observed.data.model_selection.options, effort ? [{id: "reasoningEffort", value: effort}] : []);
+      assert.ok((await work()).items.find(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Changing root settings stopped or replaced its child");
+      passed.push(effort ? `effective-effort-${effort}-with-background` : "effective-effort-reset-with-background");
+    }
   }
   await send("followup", "Reply FOLLOWUP only. Do not use tools or wait for the child.");
   await until(async () => (await work()).items.find(item => item.work.work_id === completionChild.work_id && item.work.status === "completed"));

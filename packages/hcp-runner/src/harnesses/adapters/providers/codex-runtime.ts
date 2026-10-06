@@ -12,6 +12,7 @@ import { CodexRpc, type RpcMessage, type RpcRequestHandler } from "./codex-rpc.j
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
+import {updateCodexRootSettings, type CodexSettingsReadback} from "./codex-settings.js";
 import {codexApproval} from "./codex-approvals.js";
 import type {CodexOwnedWork} from "./codex-work.js";
 import type {CodexWorkCallbacks} from "./codex-work-callbacks.js";
@@ -38,6 +39,8 @@ export type CodexRuntimeLease = {
   started?: z.infer<typeof startedSchema>;
   work?: CodexOwnedWork;
   callbacks?: CodexWorkCallbacks;
+  settings?: CodexSettingsReadback | undefined;
+  closeSettings?: () => void;
 };
 const deltaSchema = z.object({
   threadId: z.string(),
@@ -442,6 +445,15 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         throw new HarnessAdapterError("codex_admission_overflow", "Codex exceeded the bounded turn-admission notification buffer.");
       pendingNotifications.push(message);
     };
+    if (lease && input.payload.action !== "compact") {
+      const settings = await updateCodexRootSettings(rpc, {threadId, model: selection.model, ...(effort ? {effort} : {}),
+        mode: input.payload.mode === "plan" ? "plan" : "default", cwd: input.startPayload.cwd,
+        approvalPolicy: started.approvalPolicy, sandbox: started.sandbox}, signal, lease.settings);
+      emit({event_type: "settings.effective", turn_id: input.payload.turn_id, data: {scope: "root", source: "native",
+        model_selection: {model: settings.model, options: settings.effort ? [{id: "reasoningEffort", value: settings.effort}] : []},
+        mode: settings.collaborationMode.mode === "plan" ? "plan" : "execute",
+        approval_policy: input.startPayload.approval_policy, sandbox_mode: input.startPayload.sandbox_mode}});
+    }
     const continuation = input.mcpContinuation;
     if (continuation) await recordMcpContinuation(rpc, threadId, continuation);
     if (input.payload.action === "compact") {
