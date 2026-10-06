@@ -5,6 +5,10 @@ import {verifyOpenCodeRequestOrigin} from "./opencode-request-binding.js";
 const request={sessionID:"session",tool:{messageID:"assistant",callID:"call"}};
 const message={info:{id:"assistant",sessionID:"session",role:"assistant",parentID:"admitted-prompt"},
   parts:[{type:"tool",callID:"call",messageID:"assistant",sessionID:"session"}]};
+test("failed native origin lookup cannot leave an unverified callback owner alive",async()=>{
+  await assert.rejects(verifyOpenCodeRequestOrigin(request,"session","admitted-prompt",async()=>{throw new Error("lookup timed out");}),
+    error=>error instanceof Error&&"code" in error&&error.code==="native_request_origin_unconfirmed");
+});
 test("native permission/question origin requires its admitted assistant parent and tool",async()=>{
   const reads:string[]=[];
   await verifyOpenCodeRequestOrigin(request,"session","admitted-prompt",async id=>{reads.push(id);return message;});

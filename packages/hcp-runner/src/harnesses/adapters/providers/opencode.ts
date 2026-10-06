@@ -11,6 +11,8 @@ import {projectOpenCodeCatalog} from "./opencode-models.js";
 import {openCodeContext} from "./opencode-context.js";
 import {prepareControlledOpenCode, controlledOpenCodeInheritance, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory} from "./opencode-controlled.js";
 import {verifyOpenCodeRequestOrigin} from "./opencode-request-binding.js";
+import {consumeNativeSse} from "./native-sse.js";
+import {NativeEventOwner} from "./native-event-owner.js";
 import {unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, type ContentPublisher} from "./content-projection.js";
 
@@ -461,6 +463,8 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
   readonly #cleanup: (() => Promise<void>) | undefined;
   #closed = false;
   #activeRequest: AbortController | undefined;
+  readonly #events: NativeEventOwner | undefined;
+  #closing: Promise<void> | undefined;
 
   constructor(
     processHandle: NativeProcess,
@@ -480,7 +484,13 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     if (owner) this.ownedAccount = owner;
     if (interactive) this.sessionPermissions = true;
     this.#cleanup = cleanup;
-    void processHandle.closed.then(() => {this.#closed = true; this.#activeRequest?.abort();});
+    if (interactive) this.#events = new NativeEventOwner(async signal => {
+      const response = await fetch(new URL(`/event?directory=${encodeURIComponent(cwd)}`, baseUrl),
+        {headers: {accept: "text/event-stream"}, signal});
+      if (!response.ok || !response.body) throw new HarnessAdapterError("native_event_stream_closed", "OpenCode could not establish its observation owner.");
+      return response.body;
+    }, () => {void this.close().catch(() => {});});
+    void processHandle.closed.then(() => {this.#closed = true; this.#activeRequest?.abort();void this.#events?.close().catch(() => {});});
   }
 
   async sendTurn(input: OpenCodeRuntimeTurnInput): Promise<string> {
@@ -503,6 +513,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       this.#baseUrl,
       this.#cwd,
       usage,
+      this.#events,
     );
     try {
       await streamReady.ready;
@@ -559,7 +570,8 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     } catch (failure) {
       // An unconfirmed reply may already have installed a volatile native grant.
       // Close its owner so later turns cannot inherit uncertain authority.
-      if (failure instanceof HarnessAdapterError && ["native_reply_unknown","native_request_origin_unconfirmed"].includes(failure.code)) await this.close();
+      if (failure instanceof HarnessAdapterError && (["native_reply_unknown","native_request_origin_unconfirmed","native_event_stream_closed"].includes(failure.code)
+        || failure.code.startsWith("native_sse_"))) await this.close();
       throw failure;
     } finally {
       abortController.abort();
@@ -607,10 +619,16 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
   }
 
   async close(): Promise<void> {
-    this.#closed = true;
-    this.#activeRequest?.abort();
-    await this.#process.stop();
-    await this.#cleanup?.();
+    if (!this.#closing) {
+      this.#closed = true;
+      this.#activeRequest?.abort();
+      this.#closing = (async () => {
+        await this.#events?.close();
+        await this.#process.stop();
+        await this.#cleanup?.();
+      })();
+    }
+    await this.#closing;
   }
 }
 
@@ -624,6 +642,7 @@ function createEventStream(
   baseUrl: string,
   cwd: string,
   usage: OpenCodeUsage,
+  owner?: NativeEventOwner,
 ): OpenCodeEventStream {
   let markReady: () => void = () => {};
   let rejectReady: (error: Error) => void = () => {};
@@ -644,12 +663,7 @@ function createEventStream(
   const items = new OpenCodeItems(sessionId, input.turnId, id => text.ownsMessage(id), input.emitEvent, input.publishContent);
   const completed: Promise<void> = (async (): Promise<void> => {
     try {
-      const response: Response = await fetch(url, { headers: { accept: "text/event-stream" }, signal });
-      if (!response.ok || !response.body) {
-        throw new Error(`OpenCode event stream failed with HTTP ${response.status}.`);
-      }
-      markReady();
-      await consumeSse(response.body, (value: unknown): void => {
+      const observe = (value: unknown): void => {
         const event = eventSchema.parse(value);
         usage.observe(event);
         text.observe(event);
@@ -695,7 +709,14 @@ function createEventStream(
         const outcome: OpenCodeEventOutcome = emitOpenCodeEvent(value, sessionId, input);
         if (outcome === "settled") void Promise.all(responses).then(markSettled, rejectSettled);
         if (outcome instanceof Error) rejectSettled(outcome);
-      });
+      };
+      if (owner) await owner.consume(observe, signal, markReady);
+      else {
+        const response: Response = await fetch(url, { headers: { accept: "text/event-stream" }, signal });
+        if (!response.ok || !response.body) throw new HarnessAdapterError("native_event_stream_closed", "OpenCode could not establish its observation stream.");
+        markReady();
+        await consumeNativeSse(response.body, observe, signal);
+      }
     } catch (error: unknown) {
       if (!signal.aborted) {
         const normalized: Error = error instanceof Error ? error : new Error("OpenCode event stream failed.");
@@ -707,29 +728,6 @@ function createEventStream(
     }
   })();
   return { ready, settled, completed };
-}
-
-async function consumeSse(stream: ReadableStream<Uint8Array>, onData: (value: unknown) => void): Promise<void> {
-  const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-  while (true) {
-    const result: ReadableStreamReadResult<Uint8Array> = await reader.read();
-    if (result.done) break;
-    buffered += decoder.decode(result.value, { stream: true }).replaceAll("\r\n", "\n");
-    if (Buffer.byteLength(buffered) > 8 * 1024 * 1024) throw new HarnessAdapterError("opencode_protocol_error", "OpenCode emitted an oversized SSE frame.");
-    let boundary: number;
-    while ((boundary = buffered.indexOf("\n\n")) >= 0) {
-      const block: string = buffered.slice(0, boundary);
-      buffered = buffered.slice(boundary + 2);
-      const data: string = block
-        .split("\n")
-        .filter((line): boolean => line.startsWith("data:"))
-        .map((line): string => line.slice(5).trimStart())
-        .join("\n");
-      if (data.length > 0) onData(JSON.parse(data) as unknown);
-    }
-  }
 }
 
 type OpenCodeEventOutcome = "continue" | "settled" | Error;

@@ -86,6 +86,8 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
     assert.equal(prompt.parts[1].url, "data:image/png;base64,aGVsbG8=");
     assert.equal(prompt.system, "Application system instructions");
     assert.equal(requests.filter(request => request.path.endsWith("/summarize")).length, 1);
+    if (interactive) assert.equal(requests.filter(request => request.path === "/event").length, 2,
+      "One continuous observation connection per loaded owner, across prompts and compaction");
   } finally {for (const id of ["first-session", "second-session"]) if (runner.activeSessionCount()) await runner.stopSession(id, "cleanup"); await rm(cwd, {recursive: true, force: true});}
 });
 
