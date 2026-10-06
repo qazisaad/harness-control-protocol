@@ -194,9 +194,8 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     validateNativeStart(input, "claude");
-    if (input.payload.conversation_transition && (input.payload.execution_profile !== "interactive"
-      || adapterMcpServers(input.mcpServers, input.payload).length))
-      throw new HarnessAdapterError("native_configuration_transition_unsupported", "Idle Claude policy replacement requires the interactive owner without unverified MCP reattachment.");
+    if (input.payload.conversation_transition && input.payload.execution_profile !== "interactive")
+      throw new HarnessAdapterError("native_configuration_transition_unsupported", "Idle Claude policy replacement requires the interactive owner.");
   }
   async conversationOperation(input: HarnessAdapterConversationInput) {
     return claudeConversation(input, this.#sessionHelper);

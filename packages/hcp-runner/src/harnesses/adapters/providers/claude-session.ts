@@ -83,8 +83,6 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   async confirmIdlePolicy(): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback> {
     if (!this.start.nativeConversation || this.start.nativeConversation.fresh || this.#stream || this.#lost)
       throw error("native_configuration_transition_unsupported", "Idle policy confirmation requires the retained native conversation and a fresh execution owner.");
-    if (adapterMcpServers(this.start.mcpServers, this.start.payload).length)
-      throw error("native_configuration_transition_unsupported", "Idle Claude MCP reattachment has not been verified.");
     this.#selection = this.start.payload.model_selection; this.#mode = "execute";
     try {
       this.#open();
@@ -99,6 +97,10 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       // state, then restore the requested state before any user input is offered.
       await confirm(desired === "acceptEdits" ? "default" : "acceptEdits");
       await confirm(desired);
+      if (!this.#mcpReady) {
+        await bounded(initializeClaudeMcp(this.#stream!, this.#mcpConfigurations));
+        this.#mcpReady = true;
+      }
       if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The native owner was lost during policy confirmation.");
       return {source: "native", execution_profile: "interactive", approval_policy: this.start.payload.approval_policy,
         sandbox_mode: "danger_full_access"};

@@ -5,9 +5,11 @@ import {PersistentClaudeSession} from "./claude-session.js";
 import type {HarnessAdapterStartInput} from "../types.js";
 import {RunnerConfigSchema} from "../../../config/index.js";
 
-for (const scenario of ["confirmed", "foreign-session", "wrong-mode", "lost-control"] as const)
+for (const scenario of ["confirmed", "foreign-session", "wrong-mode", "lost-control", "mcp-confirmed", "mcp-unconfirmed"] as const)
 test(`Claude idle replacement requires observed native policy without a user prompt (${scenario})`, async () => {
   const messages: SDKMessage[] = [], controls: string[] = [];
+  const withMcp = scenario.startsWith("mcp-");
+  let servers: Record<string, {type: "http"; url: string}> = {}, registrations = 0;
   let wake: (() => void) | undefined, closed = false, promptCount = 0;
   const output = async function* () {
     while (!closed) {
@@ -25,10 +27,18 @@ test(`Claude idle replacement requires observed native policy without a user pro
     nativeConversation: {native_thread_id: "native", binding_hash: "a".repeat(64), updated_at: new Date().toISOString(),
       last_session_id: "source", provider_instance_id: "claude", provider_binding_hash: "b".repeat(64), workspace_id: "workspace", cwd: process.cwd()},
     emitSessionEvent() {}, registerSessionInteractions() {}};
+  if (withMcp) start.mcpServers = [{name: "selected", transport: "streamable_http", url: "http://localhost:4321/owned", headers: {}}];
   const runtime = new PersistentClaudeSession(start, ({prompt}) => {
     void (async () => {for await (const _message of prompt) promptCount++;})();
     return Object.assign(output(), {
       async initializationResult() {return {};},
+      async mcpServerStatus() {return Object.entries(servers).map(([name, config]) => ({name, status: "connected", config}));},
+      async setMcpServers(next: typeof servers) {
+        assert.deepEqual(controls, ["acceptEdits", "default"]);
+        assert.equal(promptCount, 0);
+        registrations++; servers = next;
+        return {added: scenario === "mcp-unconfirmed" ? [] : Object.keys(next), removed: [], errors: {}};
+      },
       async setPermissionMode(mode: NonNullable<Options["permissionMode"]>) {
         controls.push(mode);
         if (scenario === "lost-control") throw new Error("Native acknowledgement lost");
@@ -41,11 +51,13 @@ test(`Claude idle replacement requires observed native policy without a user pro
     }) as unknown as Query;
   });
   try {
-    if (scenario === "confirmed") {
+    if (scenario === "confirmed" || scenario === "mcp-confirmed") {
       assert.deepEqual(await runtime.confirmIdlePolicy(), {source: "native", execution_profile: "interactive",
         approval_policy: "ask", sandbox_mode: "danger_full_access"});
       assert.deepEqual(controls, ["acceptEdits", "default"]);
     } else await assert.rejects(runtime.confirmIdlePolicy());
+    assert.equal(registrations, withMcp ? 1 : 0);
+    if (scenario === "mcp-unconfirmed") await assert.rejects(runtime.confirmIdlePolicy());
     assert.equal(promptCount, 0);
   } finally {await runtime.stop();}
 });
