@@ -65,7 +65,7 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
           assistant(message.uuid!, [{type: "tool_use", id: "launch", name: "Agent", input: {prompt: "work", run_in_background: true}}]);
           emit({type: "system", subtype: "task_started", task_id: "agent", task_type: "local_agent", tool_use_id: "launch", description: "Background agent", is_backgrounded: true});
           if (text !== "spawn-wait") result(message);
-        } else if (text === "wait") {assistant(message.uuid!);}
+        } else if (text === "wait" || text === "wait-unstamped") {if (text === "wait") assistant(message.uuid!);}
         else if (text === "/compact") {emit({type: "system", subtype: "compact_boundary", compact_metadata: {trigger: "manual", post_tokens: 5}}); result(message);}
         else {assistant(message.uuid!); result(message, text);}
       }
@@ -161,7 +161,7 @@ test("conflicting Claude retry identities fence the native owner", async () => {
   } finally {await f.cleanup();}
 });
 
-test("Claude completed blocks retain their exact stamped native message lane without admitting another message", async () => {
+test("Claude stamped SDK turns retain successive API tool rounds, while closed message identities cannot adopt a newer root", async () => {
   const f = await fixture();
   try {
     const running = f.send("first", "wait"); await until(() => f.prompts.length === 1);
@@ -171,15 +171,28 @@ test("Claude completed blocks retain their exact stamped native message lane wit
     f.emit({type: "assistant", uuid: "owned-block", parent_tool_use_id: null,
       message: {id: "api-owned", content: [{type: "tool_use", id: "owned-tool", name: "Read", input: {file_path: "fixture"}}], usage: {input_tokens: 10, output_tokens: 2}}});
     await until(() => f.events.some(event => event.event_type === "item.started" && (event.data as {item_id: string}).item_id === "owned-tool"));
-    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-unowned"}}});
-    f.emit({type: "assistant", uuid: "unowned-block", parent_tool_use_id: null, message: {id: "api-unowned", content: [{type: "text", text: "Uncorrelated"}]}});
-    await until(() => f.events.some(event => event.event_type === "native.output.updated"));
-    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-owned"}}});
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-next-round"}}});
+    f.emit({type: "assistant", uuid: "next-block", parent_tool_use_id: null,
+      message: {id: "api-next-round", content: [{type: "tool_use", id: "second-tool", name: "Read", input: {file_path: "fixture-two"}}]}});
+    await until(() => f.events.some(event => event.event_type === "item.started" && (event.data as {item_id: string}).item_id === "second-tool"));
+    assert.equal(f.events.find(event => event.event_type === "item.started" && (event.data as {item_id: string}).item_id === "second-tool")!.turn_id, "first");
     f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "Owned continuation"}}});
     await until(() => f.events.some(event => event.event_type === "content.delta" && (event.data as {delta: string}).delta === "Owned continuation"));
     assert.equal(f.events.find(event => event.event_type === "content.delta")!.turn_id, "first");
-    assert.equal(f.events.find(event => event.event_type === "native.output.updated")!.turn_id, undefined);
     f.result(prompt, "done"); await running;
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-autonomous"}}});
+    f.emit({type: "assistant", uuid: "unowned-block", parent_tool_use_id: null, message: {id: "api-autonomous", content: [{type: "text", text: "Uncorrelated"}]}});
+    await until(() => f.events.some(event => event.event_type === "native.output.updated"));
+    assert.equal(f.events.find(event => event.event_type === "native.output.updated")!.turn_id, undefined);
+    const newer = f.send("second", "wait"); await until(() => f.prompts.length === 2);
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-owned"}}});
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "Old replay"}}});
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-new-root"}}});
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "New reply"}}});
+    await until(() => f.events.some(event => event.event_type === "content.delta" && (event.data as {delta: string}).delta === "New reply"));
+    assert.equal(f.events.some(event => event.event_type === "content.delta" && (event.data as {delta: string}).delta === "Old replay"), false);
+    assert.equal(f.events.find(event => event.event_type === "content.delta" && (event.data as {delta: string}).delta === "New reply")!.turn_id, "second");
+    f.result(f.prompts[1]!, "done"); await newer;
   } finally {await f.cleanup();}
 });
 
@@ -511,10 +524,10 @@ test("persistent root results require explicit prompt identity and never auto-re
   } finally {await f.cleanup();}
 });
 
-test("autonomous Claude messages and unstamped results cannot inherit an active app turn", async () => {
+test("autonomous Claude messages and unstamped results cannot inherit an admitted app prompt before its reply stamp", async () => {
   const f = await fixture();
   try {
-    const pending = f.send("waiting", "wait");
+    const pending = f.send("waiting", "wait-unstamped");
     await until(() => f.prompts.length === 1);
     f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start"}});
     f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "autonomous"}}});

@@ -45,6 +45,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #unconfirmedWork = false;
   #active: Root | undefined;
   #boundRoot: Root | undefined;
+  #replyRoot: Root | undefined;
   #stream: Query | undefined;
   #process: NativeProcess | undefined;
   #pump: Promise<void> | undefined;
@@ -201,7 +202,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     const root: Root = {input, emit, ids: new Set(), lifetime: new AbortController(), context: unavailableContext(selection, "new_native_request"),
       streamed: false, compacted: false, completion, resolve, reject,
       interactions: new NativeInteractions(input.startPayload, input.payload, {threadId: this.nativeId, turnId: () => input.payload.turn_id}, event => this.#session(event))};
-    this.#active = root; this.#boundRoot = undefined; this.#roots.add(root);
+    this.#active = root; this.#boundRoot = undefined; this.#replyRoot = undefined; this.#roots.add(root);
     const abort = () => {void this.#interrupt(root);};
     signal.addEventListener("abort", abort, {once: true});
     try {
@@ -230,6 +231,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       input.registerActiveTurnControls?.(undefined);
       if (this.#active === root) this.#active = undefined;
       if (this.#boundRoot === root) this.#boundRoot = undefined;
+      if (this.#replyRoot === root) this.#replyRoot = undefined;
     }
   }
   #permissionMode(mode: "execute" | "plan"): NonNullable<Options["permissionMode"]> {
@@ -332,19 +334,26 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       return;
     }
     const parent = "parent_tool_use_id" in message ? message.parent_tool_use_id : null;
+    // A typed SDK turn stamps its first reply only, including across API tool rounds.
+    // Its single query reply lane ends at the native result, not at message_stop.
+    // Admission alone cannot create this lane; a parentless reply must echo our prompt.
+    if (!parent && ["assistant", "stream_event"].includes(message.type) && ids.length)
+      this.#replyRoot = this.#active && ids.some(id => this.#active!.ids.has(id)) ? this.#active : undefined;
     if (!parent && (message.type === "assistant" || message.type === "stream_event" && message.event.type === "message_start")) {
-      // The SDK stamps only the first reply frame. Later blocks of that exact native
-      // message keep its proven owner; another message cannot inherit that lane.
+      // Known message identities retain their old owner on replay. New API messages
+      // can join only the already stamped, still active SDK turn's reply lane.
       const nativeMessage = message.type === "assistant" ? message.message.id : message.event.type === "message_start" ? message.event.message?.id : undefined;
       const nativeMessageId = z.string().min(1).max(512).safeParse(nativeMessage);
       const stamped = this.#active && ids.some(id => this.#active!.ids.has(id)) ? this.#active : undefined;
       const known = nativeMessageId.success ? this.#messageRoots.get(nativeMessageId.data) : undefined;
-      if (stamped && nativeMessageId.success) {
-        if (known && known !== stamped) throw error("native_message_binding", "A native message identity belongs to another admitted root.");
+      const lane = this.#replyRoot === this.#active ? this.#replyRoot : undefined;
+      const owner = stamped ?? known ?? lane;
+      if (stamped && known && known !== stamped) throw error("native_message_binding", "A native message identity belongs to another admitted root.");
+      if (owner && nativeMessageId.success) {
         if (!known && this.#messageRoots.size >= 4096) throw error("native_message_limit", "Native message correlation exceeded its bounded registry.");
-        this.#messageRoots.set(nativeMessageId.data, stamped);
+        this.#messageRoots.set(nativeMessageId.data, owner);
       }
-      this.#boundRoot = stamped ?? known;
+      this.#boundRoot = owner;
     }
     const root = parent ? this.#launches.get(parent)?.root : this.#boundRoot;
     if (message.type === "assistant" && !parent && !root && !ids.length) this.#unattributedAssistant(message);
@@ -387,7 +396,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     if (message.type === "result") {
       // An unstamped result may be an autonomous background wake. It cannot complete an app's root.
       if (!ids.length) {
-        if (this.#active && (this.#boundRoot === this.#active || this.#active.pendingCompactContext))
+        if (this.#active && (this.#boundRoot === this.#active || this.#replyRoot === this.#active || this.#active.pendingCompactContext))
           throw error("native_result_binding_unconfirmed", "Persistent results require the admitted user-message identity.");
         return;
       }
@@ -395,7 +404,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       const parsed = claudeResultSchema.safeParse(message);
       if (!parsed.success || parsed.data.api_error_status != null && parsed.data.api_error_status >= 400
           || parsed.success && (parsed.data.terminal_reason !== undefined && parsed.data.terminal_reason !== "completed" || parsed.data.stop_reason != null && !["end_turn", "stop_sequence"].includes(parsed.data.stop_reason)))
-        {root.reject(error("claude_result_error", "Claude returned an unsuccessful or malformed native root result.")); this.#active = undefined; this.#boundRoot = undefined; return;}
+        {root.reject(error("claude_result_error", "Claude returned an unsuccessful or malformed native root result.")); this.#active = undefined; this.#boundRoot = undefined; this.#replyRoot = undefined; return;}
       if (root.input.payload.action === "compact" && root.pendingCompactContext
           && z.object({local_command: z.literal("compact")}).safeParse(message).success) {
         root.compacted = true; root.context = root.pendingCompactContext;
@@ -412,7 +421,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
         ...(result.modelUsage ? {input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens,
           cached_input_tokens: usages.reduce((sum, usage) => sum + usage.cacheReadInputTokens, 0),
           cache_creation_input_tokens: usages.reduce((sum, usage) => sum + usage.cacheCreationInputTokens, 0)} : {}), ...(result.total_cost_usd !== undefined ? {cost_usd: result.total_cost_usd} : {})}});
-      this.#active = undefined; this.#boundRoot = undefined;
+      this.#active = undefined; this.#boundRoot = undefined; this.#replyRoot = undefined;
     }
   }
   #task(message: SDKMessage): void {
