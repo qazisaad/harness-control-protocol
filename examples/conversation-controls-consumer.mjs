@@ -176,6 +176,21 @@ try {
   assert.equal(adapter.instructionsSeen.system, start.instructions.system);
   await peer.stopSession({session_id: "context"}); await peer.retireConversation("context");
   console.log("Public SDK prompt context, app provenance and original instruction authority passed");
+  const policySource = {...start, session_id: "policy-source", continuation_group_key: "policy-conversation"};
+  await peer.startSession(policySource);
+  await peer.sendTurn({session_id: policySource.session_id, turn_id: "policy-seed", input: "Retained policy context"});
+  await until(() => events.some(event => event.session_id === policySource.session_id && event.event_type === "turn.completed"));
+  const beforePolicy = (await peer.readConversation(policySource.session_id)).payload.history;
+  await peer.stopSession({session_id: policySource.session_id});
+  await peer.startSession({...policySource, session_id: "policy-target", continue_session: true, approval_policy: "ask",
+    conversation_transition: {transition_id: "public-policy-transition", expected_history_hash: beforePolicy.history_hash}});
+  await until(() => events.some(event => event.session_id === "policy-target" && event.event_type === "session.configured"));
+  assert.deepEqual(events.find(event => event.session_id === "policy-target" && event.event_type === "session.configured").data.native_policy_readback,
+    {source: "native", execution_profile: "interactive", approval_policy: "ask", sandbox_mode: "read_only"});
+  assert.equal((await peer.readConversation("policy-target")).payload.history.history_hash, beforePolicy.history_hash);
+  assert.equal(events.some(event => event.session_id === "policy-target" && event.turn_id), false);
+  await peer.stopSession({session_id: "policy-target"}); await peer.retireConversation("policy-target");
+  console.log("Public SDK no-model policy transition, native readback and retained conversation passed");
   console.log("Public SDK controls, session observations, native adapter hooks, content chunks, mutation receipts and fork resume passed");
 } finally {
   await runner?.close(); for (const socket of server.clients) socket.terminate();

@@ -15,7 +15,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly liveHistoryRead = true;
   readonly sessionEvents = true;
   readonly nativeWork = true;
-  readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const}];
+  readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const,
+    empty_conversation: true, idle_configuration_transition: true}];
   readonly requests = new Map<string, {id: string; turnId?: string}>();
   inputsReceived = 0;
   nativeCancellations = 0;
@@ -42,10 +43,10 @@ export class ControlHarnessAdapter implements HarnessAdapter {
         portable_history: true,
         history_pagination: true, conversation_fork: true, conversation_rollback: true, active_steering: true,
         manual_compaction: true, content_retrieval: true, configuration_inheritance: this.configurationInheritance,
-        approval_policies: ["full_access" as const], sandbox_modes: ["read_only" as const]}};
+        approval_policies: ["full_access" as const, "ask" as const, "auto_edits" as const], sandbox_modes: ["read_only" as const]}};
   }
   async validateStart({payload}: HarnessAdapterStartInput) {
-    if (payload.sandbox_mode !== "read_only" || payload.approval_policy !== "full_access" || payload.model_selection.model !== "fixture")
+    if (payload.sandbox_mode !== "read_only" || payload.model_selection.model !== "fixture")
       throw new HarnessAdapterError("unsupported_configuration", "Use the advertised fixture profile.");
   }
   async startSession(input: HarnessAdapterStartInput) {
@@ -69,7 +70,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     const nativeId = input.nativeConversation?.native_thread_id ?? randomUUID();
     if (!input.nativeConversation) this.histories.set(nativeId, []);
     if (!this.histories.has(nativeId)) throw new HarnessAdapterError("history_unavailable", "Fixture history is unavailable.");
-    return {adapter_session_id: nativeId, native_thread_id: nativeId};
+    return {adapter_session_id: nativeId, native_thread_id: nativeId, native_policy_readback: {source: "native" as const,
+      execution_profile: input.payload.execution_profile ?? "isolated", approval_policy: input.payload.approval_policy, sandbox_mode: input.payload.sandbox_mode}};
   }
   emitObservation(sessionId: string, phase: string) {
     this.observations.get(sessionId)!({event_type: "extension.example.observation", data: {summary: "Native observation", fields: {phase}}});

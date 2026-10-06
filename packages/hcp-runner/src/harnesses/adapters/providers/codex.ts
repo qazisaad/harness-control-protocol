@@ -41,7 +41,7 @@ import {readCodexSettingsNotification} from "./codex-settings.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true, native_work_history: "live_owner"},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true, native_work_history: "live_owner", idle_configuration_transition: true},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
@@ -244,7 +244,10 @@ export class CodexHarnessAdapter implements HarnessAdapter {
           ...(input.mcpServers ? {mcpServers: input.mcpServers} : {}), ...(input.mcpToolsets ? {mcpToolsets: input.mcpToolsets} : {})},
           input.payload.model_selection, rpc, lease);
         if (!input.nativeConversation) await materializeEmptyCodexConversation(rpc, started.thread.id, input.payload.cwd);
-        return {adapter_session_id: input.payload.session_id, native_thread_id: started.thread.id};
+        return {adapter_session_id: input.payload.session_id, native_thread_id: started.thread.id,
+          native_policy_readback: {source: "native", execution_profile: "interactive",
+            approval_policy: ({untrusted: "ask", "on-request": "auto_edits", never: "full_access"} as const)[started.approvalPolicy as "untrusted" | "on-request" | "never"],
+            sandbox_mode: ({readOnly: "read_only", workspaceWrite: "workspace_write", dangerFullAccess: "danger_full_access"} as const)[started.sandbox.type as "readOnly" | "workspaceWrite" | "dangerFullAccess"]}};
       } finally {clearTimeout(timer);}
     }
     return { adapter_session_id: input.payload.session_id };

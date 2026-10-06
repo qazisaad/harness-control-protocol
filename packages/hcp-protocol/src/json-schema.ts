@@ -182,6 +182,11 @@ export function createHcpMessageJsonSchema(): JsonSchema {
   }
 
   const expandedMessageSchemas: JsonSchema[] = messageSchemas.flatMap((messageSchema: JsonSchema): JsonSchema[] => {
+    if (hasMessageTypeConst(messageSchema, "harness.session.start")) {
+      const payload = getObjectProperty(messageSchema, "payload", "session start");
+      payload.allOf = [{if: {required: ["conversation_transition"]}, then: {
+        required: ["continuation_group_key"], properties: {continue_session: {const: true}}, not: {required: ["first_turn"]}}}];
+    }
     if (hasMessageTypeConst(messageSchema, "harness.event")) {
       return createHarnessEventMessageSchemas(messageSchema);
     }

@@ -1,5 +1,5 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
-import { harnessPromptContextSchema, nativeConversationHistorySchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
+import { harnessPromptContextSchema, harnessNativePolicyReadbackSchema, nativeConversationHistorySchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import {harnessNativeWorkObservationSchema, harnessNativeWorkRecordSchema, isNativeWorkTerminal,
   type HarnessNativeWorkRecord} from "@harness-control/protocol";
 import type {NativeWorkState} from "../state/index.js";
@@ -462,6 +462,8 @@ export class HarnessSessionManager {
         throw new HarnessAdapterError("native_conversation_unavailable", "Live history requires explicit read support; conversation changes require an idle retained owner.");
       if (request.operation.kind !== "read" && Object.values(conversation.injections ?? {}).some(receipt => receipt.phase === "pending"))
         throw new HarnessAdapterError("native_injection_unknown", "An earlier context injection may have dispatched; automatic repetition or another mutation is forbidden.");
+      if (request.operation.kind !== "read" && conversation.configuration_transitions?.some(receipt => receipt.phase === "pending"))
+        throw new HarnessAdapterError("native_configuration_unknown", "A configuration transition requires reconciliation before another mutation or retirement.");
       if (request.operation.kind !== "read" && conversation.fork?.phase === "pending")
         throw new HarnessAdapterError("native_fork_unknown", "A prior native fork may have dispatched; automatic repetition, mutation and retirement require reconciliation.");
       if (request.operation.kind !== "read" && conversation.rollback?.phase === "pending" &&
@@ -707,6 +709,7 @@ export class HarnessSessionManager {
         result: "passed",
       }),
       this.#event(payload.session_id, undefined, "session.configured", {
+        ...(session.adapterSession.native_policy_readback ? {native_policy_readback: session.adapterSession.native_policy_readback} : {}),
         execution_profile: payload.execution_profile ?? "isolated",
         ...(configuredAdapter.emptyConversation || configuredAdapter.executionProfiles?.find(profile => profile.id === (payload.execution_profile ?? "isolated"))?.empty_conversation
           ? {native_conversation_ready: true} : {}),
@@ -765,6 +768,8 @@ export class HarnessSessionManager {
   }
 
   async #prepareSession(payload: HcpSessionStartPayload): Promise<{session: HarnessSession; discoveredTools: HarnessMcpToolDiscovery[]; activateEvents: () => HcpHarnessEventPayload[]}> {
+    if (payload.conversation_transition && (!payload.continue_session || !payload.continuation_group_key || payload.first_turn))
+      throw new HarnessAdapterError("native_configuration_transition_invalid", "A transition requires explicit continuation without a model turn.");
     const provider: ProviderInstanceConfig = this.#requireProvider(payload.provider_instance_id, payload.driver_kind);
     await this.#assertWorkspaceAllowed(payload.workspace_id, payload.cwd);
     payload = {...payload, cwd: await realpath(payload.cwd)};
@@ -774,6 +779,8 @@ export class HarnessSessionManager {
     );
     const adapter: HarnessAdapter = this.#adapterRegistry.require(provider.driver_kind);
     const profile = adapter.executionProfiles?.find(profile => profile.id === (payload.execution_profile ?? "isolated"));
+    if (payload.conversation_transition && !profile?.idle_configuration_transition)
+      throw new HarnessAdapterError("native_configuration_transition_unsupported", "The target execution profile does not declare confirmed idle configuration replacement.");
     if (payload.execution_profile && !profile)
       throw new HarnessAdapterError("execution_profile_unsupported", "This adapter has not declared the selected execution profile.");
     if (profile?.native_work && (!adapter.nativeWork || !adapter.sessionEvents || !adapter.cancelNativeWork
@@ -784,7 +791,7 @@ export class HarnessSessionManager {
       throw new HarnessAdapterError("execution_profile_configuration_required", "The selected profile requires its advertised explicit configuration inheritance.");
     if (profile?.mcp_attachments === false && payload.mcp_servers.length)
       throw new HarnessAdapterError("execution_profile_mcp_unsupported", "The selected profile does not support MCP attachments.");
-    validateConfigurationInheritance(payload, adapter.configurationInheritance, adapter.configurationInheritanceOptions);
+    const configuredInheritance = validateConfigurationInheritance(payload, adapter.configurationInheritance, adapter.configurationInheritanceOptions);
     validateInstructionRoles(payload, adapter.instructionRoles);
     await adapter.validateStart({ payload, provider });
     if (payload.continuation_group_key && [...this.#sessions.values()].some(session => session.startPayload.continuation_group_key === payload.continuation_group_key))
@@ -857,7 +864,14 @@ export class HarnessSessionManager {
       let retainedConversation: import("../state/index.js").NativeConversation | undefined;
       if (payload.continue_session) {
         const conversation = this.#stateStore.getNativeConversation(payload.continuation_group_key!);
-        if (!conversation || conversation.binding_hash !== nativeBindingHash(payload, provider, mcpAttachments.toolsets))
+        if (!conversation || conversation.provider_binding_hash !== eventProviderHash || conversation.provider_instance_id !== provider.id
+          || conversation.workspace_id !== payload.workspace_id || conversation.cwd !== payload.cwd)
+          throw new HarnessAdapterError("native_continuation_binding", "The original provider and canonical workspace must own this continuation.");
+        if (conversation.configuration_transitions?.some(receipt => receipt.phase === "pending"))
+          throw new HarnessAdapterError("native_configuration_unknown", "A prior configuration transition has no confirmed outcome; it cannot be repeated by starting another owner.");
+        if (conversation.configuration_base_hash && conversation.configuration_base_hash !== nativeConfigurationBaseHash(payload, provider, mcpAttachments.toolsets, configuredInheritance))
+          throw new HarnessAdapterError("native_configuration_transition_binding", "Retained instructions, inheritance, tools and local authority must remain in the original configuration scope.");
+        if (!payload.conversation_transition && conversation.binding_hash !== nativeBindingHash(payload, provider, mcpAttachments.toolsets))
           throw new HarnessAdapterError("native_continuation_binding", "Native conversation is missing or its workspace, provider, tools, instructions, or policy changed.");
         if (conversation.rollback?.phase === "pending") throw new HarnessAdapterError("native_rollback_unknown", "The previous rollback needs reconciliation; starting another turn is unsafe.");
         if (conversation.fork?.phase === "pending") throw new HarnessAdapterError("native_fork_unknown", "A previous fork has an unknown outcome; reconcile it before resuming.");
@@ -867,6 +881,34 @@ export class HarnessSessionManager {
         if (priorWork?.closure_unconfirmed || Object.values(priorWork?.items ?? {}).some(work => !isNativeWorkTerminal(work.status)))
           throw new HarnessAdapterError("native_work_shutdown_unknown", "Earlier native work has unconfirmed closure; resuming cannot reclaim its execution owner.");
         retainedConversation = conversation;
+        if (payload.conversation_transition) {
+          const transition = payload.conversation_transition;
+          if (!payload.continuation_group_key || payload.first_turn || !profile?.idle_configuration_transition
+            || !adapter.liveHistoryRead || !adapter.conversationOperation || !adapter.conversationOperations?.includes("read"))
+            throw new HarnessAdapterError("native_configuration_transition_unsupported", "An explicit no-model transition requires a declared confirmed native continuation owner.");
+          if (this.#lastSavedEvent(conversation.last_session_id)?.event_type !== "session.exited")
+            throw new HarnessAdapterError("native_configuration_transition_busy", "The original execution lease must confirm shutdown before configuration replacement.");
+          const base = nativeConfigurationBaseHash(payload, provider, mcpAttachments.toolsets, configuredInheritance);
+          if (!conversation.configuration_base_hash || conversation.configuration_base_hash !== base)
+            throw new HarnessAdapterError("native_configuration_transition_binding", "Only policy and execution profile may change; retain the verified provider, workspace, instructions, inheritance and tools.");
+          if (conversation.configuration_transitions?.some(receipt => receipt.transition_id === transition.transition_id))
+            throw new HarnessAdapterError("native_configuration_transition_exists", "This transition identity is already retained; inspect its target instead of repeating startup.");
+          if ((conversation.configuration_transitions?.length ?? 0) >= 1024)
+            throw new HarnessAdapterError("native_configuration_transition_limit", "The conversation reached its bounded transition receipt limit.");
+          const source = await adapter.conversationOperation({commandId: transition.transition_id,
+            request: {session_id: conversation.last_session_id, operation: {kind: "read"}}, conversation: structuredClone(conversation), provider,
+            save: () => {throw new HarnessAdapterError("native_history_read_only", "Transition preflight cannot mutate history.");}});
+          if (source.history?.history_hash !== transition.expected_history_hash)
+            throw new HarnessAdapterError("native_history_changed", "Read current native history before changing the execution configuration.");
+          retainedConversation = {...conversation, configuration_transitions: [...(conversation.configuration_transitions ?? []), {
+            transition_id: transition.transition_id, source_binding_hash: conversation.binding_hash,
+            target_binding_hash: nativeBindingHash(payload, provider, mcpAttachments.toolsets), expected_history_hash: transition.expected_history_hash,
+            target_session_id: payload.session_id, phase: "pending"}]};
+          this.#stateStore.saveNativeConversation(payload.continuation_group_key, retainedConversation);
+          const fenced = this.#stateStore.getNativeConversation(payload.continuation_group_key)?.configuration_transitions?.at(-1);
+          if (fenced?.phase !== "pending" || fenced.transition_id !== transition.transition_id || fenced.target_session_id !== payload.session_id)
+            throw new HarnessAdapterError("native_configuration_fence_missing", "The configuration dispatch fence was not retained.");
+        }
       } else if (payload.continuation_group_key && this.#stateStore.getNativeConversation(payload.continuation_group_key)) {
         throw new HarnessAdapterError("native_continuation_exists", "An existing native conversation requires explicit continuation.");
       }
@@ -904,18 +946,43 @@ export class HarnessSessionManager {
         adapterSession.native_thread_id = retainedConversation.native_thread_id;
         if (retainedConversation.fresh) adapterSession.native_fresh = true;
       }
-      if (adapter.emptyConversation || profile?.empty_conversation) {
+      if (adapterSession.native_policy_readback) {
+        const observed = harnessNativePolicyReadbackSchema.parse(adapterSession.native_policy_readback);
+        if (observed.approval_policy !== payload.approval_policy || observed.sandbox_mode !== payload.sandbox_mode
+          || observed.execution_profile !== (payload.execution_profile ?? "isolated"))
+          throw new HarnessAdapterError("native_policy_unconfirmed", "Native startup policy differs from the authorized execution configuration.");
+      }
+      if (payload.conversation_transition) {
+        if (!adapterSession.native_policy_readback || !retainedConversation || !adapter.conversationOperation)
+          throw new HarnessAdapterError("native_policy_unconfirmed", "The transition has no effective native policy evidence.");
+        const verified = await adapter.conversationOperation({commandId: payload.conversation_transition.transition_id,
+          request: {session_id: payload.session_id, operation: {kind: "read"}},
+          conversation: structuredClone({...retainedConversation, approval_policy: adapterSession.native_policy_readback.approval_policy}), provider,
+          save: () => {throw new HarnessAdapterError("native_history_read_only", "Transition verification cannot mutate history.");}});
+        if (verified.history?.history_hash !== payload.conversation_transition.expected_history_hash)
+          throw new HarnessAdapterError("native_configuration_history_unknown", "The resumed native owner did not preserve the selected conversation history.");
+        retainedConversation = {...retainedConversation, configuration_transitions: retainedConversation.configuration_transitions!.map(receipt =>
+          receipt.transition_id === payload.conversation_transition!.transition_id ? {...receipt, phase: "completed" as const} : receipt)};
+      }
+      // A lazy resumed owner can retain its already verified conversation mapping
+      // before the next prompt. This does not certify a fresh empty conversation
+      // or effective root settings; those remain separate adapter proofs.
+      if (adapter.emptyConversation || profile?.empty_conversation || payload.conversation_transition
+        || retainedConversation && adapterSession.native_thread_id === retainedConversation.native_thread_id) {
         if (!adapterSession.native_thread_id)
           throw new HarnessAdapterError("native_conversation_unconfirmed", "The adapter did not establish its advertised empty native conversation.");
         if (payload.continuation_group_key) {
           const binding = {...(retainedConversation ?? {}), native_thread_id: adapterSession.native_thread_id,
+            configuration_base_hash: nativeConfigurationBaseHash(payload, provider, mcpAttachments.toolsets, configuredInheritance),
             binding_hash: nativeBindingHash(payload, provider, mcpAttachments.toolsets), updated_at: new Date().toISOString(),
             approval_policy: payload.approval_policy, last_session_id: payload.session_id, provider_instance_id: provider.id,
             workspace_id: payload.workspace_id, cwd: payload.cwd, provider_binding_hash: eventProviderHash};
           this.#stateStore.saveNativeConversation(payload.continuation_group_key, binding);
           const persisted = this.#stateStore.getNativeConversation(payload.continuation_group_key);
           if (persisted?.native_thread_id !== binding.native_thread_id || persisted.binding_hash !== binding.binding_hash ||
-            persisted.last_session_id !== payload.session_id)
+            persisted.last_session_id !== payload.session_id || persisted.configuration_base_hash !== binding.configuration_base_hash
+            || payload.conversation_transition && (persisted.configuration_transitions?.at(-1)?.phase !== "completed"
+              || persisted.configuration_transitions.at(-1)?.transition_id !== payload.conversation_transition.transition_id))
             throw new HarnessAdapterError("native_conversation_fence_missing", "The empty native conversation binding was not retained.");
         }
       }
@@ -1277,6 +1344,9 @@ export class HarnessSessionManager {
           ...(previous?.rollback ? {rollback: previous.rollback} : {}),
           ...(previous?.fork ? {fork: previous.fork} : {}),
           ...(previous?.injections ? {injections: previous.injections} : {}),
+          ...(previous?.configuration_transitions ? {configuration_transitions: previous.configuration_transitions} : {}),
+          configuration_base_hash: nativeConfigurationBaseHash(session.startPayload, this.#requireProvider(session.providerInstanceId, session.driverKind), session.mcpToolsets,
+            validateConfigurationInheritance(session.startPayload, session.adapter.configurationInheritance, session.adapter.configurationInheritanceOptions)),
           native_thread_id: threadId, binding_hash: session.nativeBindingHash!, updated_at: new Date().toISOString(),
           approval_policy: session.startPayload.approval_policy,
           last_session_id: session.sessionId, provider_instance_id: session.providerInstanceId, workspace_id: session.workspaceId, cwd: session.cwd,
@@ -1882,6 +1952,16 @@ function nativeProviderHash(provider: ProviderInstanceConfig): string {
   return createHash("sha256").update(JSON.stringify({id: provider.id, driver: provider.driver_kind,
     ...(provider.launch_args.length ? {launch_args: provider.launch_args} : {}),
     executable: provider.executable_path ?? provider.driver_kind, home: provider.home, env: Object.fromEntries(Object.entries(provider.env).sort(([a], [b]) => a.localeCompare(b)))})).digest("hex");
+}
+function nativeConfigurationBaseHash(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig, toolsets: HarnessMcpToolset[],
+  inheritance: import("@harness-control/protocol").HarnessConfigurationInheritance | undefined): string {
+  const lease = payload.local_capability_lease;
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, canonical(child)])) : value;
+  return createHash("sha256").update(JSON.stringify({binding: nativeBindingHash({...payload, sandbox_mode: "read_only", approval_policy: "ask", execution_profile: "isolated"}, provider, toolsets),
+    inheritance: Object.fromEntries(Object.entries(inheritance ?? {}).sort(([a], [b]) => a.localeCompare(b))),
+    local_capability_lease: lease ? canonical({actor_id: lease.actor_id, execution_host_id: lease.execution_host_id, policy_version: lease.policy_version,
+      capabilities: lease.capabilities.map(grant => ({...grant, scopes: grant.scopes.slice().sort()})).sort((a, b) => a.id.localeCompare(b.id))}) : null})).digest("hex");
 }
 function nativeBindingHash(payload: HcpSessionStartPayload, provider: ProviderInstanceConfig, toolsets: HarnessMcpToolset[]): string {
   const scope = {provider: {id: provider.id, driver: provider.driver_kind, executable: provider.executable_path ?? provider.driver_kind,

@@ -300,9 +300,16 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   root_settings_readback: z.boolean().optional(),
   /** Read-only child transcripts require the current native execution owner. */
   native_work_history: z.literal("live_owner").optional(),
+  /** Explicit idle continuation policy/profile replacement, confirmed before any model turn. */
+  idle_configuration_transition: z.boolean().optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;
+
+export const harnessNativePolicyReadbackSchema = z.object({source: z.literal("native"),
+  execution_profile: harnessExecutionProfileIdSchema, approval_policy: z.enum(["ask", "auto_edits", "full_access"]),
+  sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"])}).strict();
+export type HarnessNativePolicyReadback = z.infer<typeof harnessNativePolicyReadbackSchema>;
 
 export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.boolean().optional(), project_settings: z.boolean().optional(),
   hooks: z.boolean().optional(), mcp_servers: z.boolean().optional(), plugins: z.boolean().optional()}).strict();
@@ -471,6 +478,7 @@ export type RunnerStdioMcpProfileAttachment = {
 export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
+  conversation_transition?: {transition_id: string; expected_history_hash: string};
   execution_profile?: string;
   instructions?: HarnessInstructions;
   configuration_inheritance?: HarnessConfigurationInheritance;
@@ -1418,6 +1426,7 @@ const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(im
 
 export const hcpSessionStartPayloadSchema = z
   .object({
+    conversation_transition: z.object({transition_id: z.string().min(1).max(512), expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/)}).strict().optional(),
     instructions: harnessInstructionsSchema.optional(),
     execution_profile: harnessExecutionProfileIdSchema.optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
@@ -1444,7 +1453,10 @@ export const hcpSessionStartPayloadSchema = z
       context: harnessPromptContextSchema.optional(),
     }).strict().optional(),
   })
-  .strict();
+  .strict().superRefine((value, ctx) => {
+    if (value.conversation_transition && (!value.continue_session || !value.continuation_group_key || value.first_turn))
+      ctx.addIssue({code: "custom", message: "A conversation transition requires explicit continuation and cannot include a model turn."});
+  });
 
 export const hcpSessionSnapshotRequestPayloadSchema = z
   .object({
@@ -2366,6 +2378,7 @@ export const hcpRawDiagnosticPayloadSchema = z
 
 const sessionEventDataSchema = z
   .object({
+    native_policy_readback: harnessNativePolicyReadbackSchema.optional(),
     mode: z.enum(["execute", "plan"]).optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     execution_profile: harnessExecutionProfileIdSchema.optional(),

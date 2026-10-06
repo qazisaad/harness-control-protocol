@@ -17,6 +17,7 @@ import {NativeEventOwner} from "./native-event-owner.js";
 import {OpenCodeOwnedWork} from "./opencode-work.js";
 import {OpenCodeWorkCallbacks} from "./opencode-work-callbacks.js";
 import {readOpenCodeOwnedHistory} from "./opencode-conversation.js";
+import {permissionRules, assertOpenCodeSessionPolicy, type OpenCodePolicy} from "./opencode-policy.js";
 import {unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, type ContentPublisher} from "./content-projection.js";
 
@@ -52,12 +53,13 @@ import {
   validateInstructionRoles,
 } from "./shared.js";
 
-const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
-const DEFAULT_SERVER_START_TIMEOUT_MS = 10_000;
+const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
+const DEFAULT_SERVER_START_TIMEOUT_MS = 30_000;
 const DEFAULT_EVENT_SETTLE_TIMEOUT_MS = 5_000;
 const executionProfiles = [
   {id: "isolated", runtime_lifetime: "session", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false, root_interrupt_effect: "owned_work"},
+  {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false, root_interrupt_effect: "owned_work",
+    empty_conversation: true, idle_configuration_transition: true},
   {id: "background", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "owned_work",
     required_configuration_inheritance: controlledOpenCodeInheritance, mcp_attachments: false, native_work_history: "live_owner"},
 ] as const;
@@ -113,6 +115,7 @@ const eventSchema = z
   .passthrough();
 
 type OpenCodeRuntimeStartInput = {
+  policyTransition?: {sourcePolicy: OpenCodePolicy};
   interactive?: true;
   workOwner?: HarnessAdapterStartInput;
   backgroundPermissions?: true;
@@ -148,6 +151,7 @@ export type OpenCodeRuntimeTurnInput = {
 };
 
 export type OpenCodeRuntime = {
+  readonly confirmedApprovalPolicy?: OpenCodePolicy;
   readonly backgroundPermissions?: true;
   readonly work?: OpenCodeOwnedWork;
   stopNativeWork?(): Promise<void>;
@@ -245,6 +249,9 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     validateConfigurationInheritance(input.payload, this.configurationInheritance, this.configurationInheritanceOptions);
     validateInstructionRoles(input.payload, this.instructionRoles);
+    if (input.payload.conversation_transition && (input.payload.execution_profile !== "interactive"
+      || Object.entries(controlledOpenCodeInheritance).some(([key, value]) => input.payload.configuration_inheritance?.[key as keyof typeof controlledOpenCodeInheritance] !== value)))
+      throw new HarnessAdapterError("native_configuration_transition_unsupported", "Idle policy replacement requires the explicitly controlled interactive configuration owner.");
     if (input.payload.execution_profile === "background") {
       if (Object.entries(controlledOpenCodeInheritance).some(([key,value]) => input.payload.configuration_inheritance?.[key as keyof typeof controlledOpenCodeInheritance] !== value))
         throw new HarnessAdapterError("execution_profile_configuration_required", "Background work requires the explicitly controlled configuration owner.");
@@ -263,6 +270,17 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
     if (!input.conversation.approval_policy)
       throw new HarnessAdapterError("native_policy_unknown", "Resume this retained conversation to establish its authorized permission policy before reading or changing it.");
     const controlled = readControlledOpenCodeReference(input.conversation.native_thread_id);
+    const live = this.#runtimes.get(input.request.session_id);
+    if (live && input.request.operation.kind === "read") {
+      if (nativeReference(live) !== input.conversation.native_thread_id)
+        throw new HarnessAdapterError("native_history_binding", "The live OpenCode owner belongs to another retained conversation.");
+      if (controlled) {
+        const {controlledOpenCodeConversation} = await import("./opencode-controlled-conversation.js");
+        return controlledOpenCodeConversation(input, live);
+      }
+      const {openCodeConversation} = await import("./opencode-conversation.js");
+      return openCodeConversation(input, live);
+    }
     const runtime = await this.#runtimeFactory({executable: input.provider.executable_path ?? "opencode",
       launchArgs: input.provider.launch_args, cwd: input.conversation.cwd, env: providerEnvironment(input.provider),
       mcpServers: {}, nativeThreadId: controlled?.session_id ?? input.conversation.native_thread_id, approvalPolicy: input.conversation.approval_policy,
@@ -292,6 +310,9 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
     const inheritance = validateConfigurationInheritance(input.payload, this.configurationInheritance, this.configurationInheritanceOptions);
     const controlled = inheritance?.user_settings === false;
     const retained = input.nativeConversation ? readControlledOpenCodeReference(input.nativeConversation.native_thread_id) : undefined;
+    if (input.payload.conversation_transition && (!input.nativeConversation?.approval_policy
+      || !!retained?.native_work !== (input.payload.execution_profile === "background")))
+      throw new HarnessAdapterError("native_configuration_transition_unsupported", "An idle transition must retain the native child execution contract and its verified source policy.");
     const model = parseModel(input.payload.model_selection.model)!;
     if (retained && (!controlled || retained.provider_id !== model.providerID) || controlled && input.nativeConversation && !retained)
       throw new HarnessAdapterError("native_continuation_binding", "Resume must preserve the controlled native provider and configuration owner.");
@@ -312,6 +333,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       ...(controlled ? {controlled: {providerId: model.providerID, ...(retained ? {expectedAccountBinding: retained.account_binding} : {}),
         ...(this.#controlledStorageRoot ? {ownershipRoot: this.#controlledStorageRoot} : {})}} : {}),
       approvalPolicy: input.payload.approval_policy,
+      ...(input.payload.conversation_transition ? {policyTransition: {sourcePolicy: input.nativeConversation!.approval_policy!}} : {}),
     });
     if (controlled && (!runtime.ownedAccount || runtime.ownedAccount.providerId !== model.providerID)) {
       await runtime.close(); throw new HarnessAdapterError("native_configuration_mismatch", "The runtime did not establish the requested controlled owner.");
@@ -323,7 +345,10 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       await runtime.close(); throw new HarnessAdapterError("native_profile_mismatch", "The native runtime did not establish background ownership.");
     }
     this.#runtimes.set(input.payload.session_id, runtime);
-    return { adapter_session_id: runtime.sessionId, native_thread_id: nativeReference(runtime) };
+    return { adapter_session_id: runtime.sessionId, native_thread_id: nativeReference(runtime),
+      ...(runtime.confirmedApprovalPolicy ? {native_policy_readback: {source: "native" as const,
+        approval_policy: runtime.confirmedApprovalPolicy, sandbox_mode: "danger_full_access" as const,
+        execution_profile: input.payload.execution_profile ?? "isolated"}} : {}) };
   }
 
   async sendTurn(input: HarnessAdapterTurnInput): Promise<HarnessAdapterEvent[]> {
@@ -503,8 +528,23 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
         new URL(`/session/${encodeURIComponent(input.nativeThreadId)}?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}));
       if (retained.id !== input.nativeThreadId || await realpath(retained.directory) !== await realpath(input.cwd))
         throw new HarnessAdapterError("native_continuation_binding", "OpenCode retained history belongs to another directory or conversation.");
-      if (!input.approvalPolicy || JSON.stringify(retained.permission) !== JSON.stringify(permissionRules(input.approvalPolicy, input.backgroundPermissions)))
-        throw new HarnessAdapterError("native_policy_mismatch", "OpenCode retained permissions differ from the runner-authorized policy.");
+      if (!input.approvalPolicy) throw new HarnessAdapterError("native_policy_unknown", "A retained conversation requires its authorized policy.");
+      assertOpenCodeSessionPolicy(retained.permission, input.policyTransition?.sourcePolicy ?? input.approvalPolicy, input.backgroundPermissions);
+      if (input.policyTransition) {
+        if (!input.controlled || !input.interactive || input.backgroundPermissions)
+          throw new HarnessAdapterError("native_configuration_transition_unsupported", "Policy replacement requires a controlled interactive owner without native child work.");
+        const updated = z.object({id: z.string(), directory: z.string(), permission: z.unknown()}).parse(await fetchJson(
+          new URL(`/session/${encodeURIComponent(retained.id)}?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {
+            method: "PATCH", headers: {"content-type": "application/json"}, body: JSON.stringify({permission: permissionRules(input.approvalPolicy)})}));
+        if (updated.id !== retained.id || await realpath(updated.directory) !== await realpath(input.cwd))
+          throw new HarnessAdapterError("native_continuation_binding", "OpenCode changed its conversation ownership during policy replacement.");
+        assertOpenCodeSessionPolicy(updated.permission, input.approvalPolicy);
+        const confirmed = z.object({id: z.string(), directory: z.string(), permission: z.unknown()}).parse(await fetchJson(
+          new URL(`/session/${encodeURIComponent(retained.id)}?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}));
+        if (confirmed.id !== retained.id || await realpath(confirmed.directory) !== await realpath(input.cwd))
+          throw new HarnessAdapterError("native_continuation_binding", "OpenCode did not preserve its conversation after policy replacement.");
+        assertOpenCodeSessionPolicy(confirmed.permission, input.approvalPolicy);
+      }
       return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, retained.id, input.approvalPolicy, owner, controlled?.cleanup, input.interactive, input.backgroundPermissions, input.workOwner);
     }
     const session: z.infer<typeof sessionSchema> = sessionSchema.parse(
@@ -527,16 +567,8 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
   }
 }
 
-function permissionRules(policy: "ask" | "auto_edits" | "full_access", background = false) {
-  return [
-    {permission: "*", pattern: "*", action: policy === "full_access" ? "allow" : "ask"},
-    ...(policy === "auto_edits" ? [{permission: "edit", pattern: "*", action: "allow"}] : []),
-    {permission: "question", pattern: "*", action: policy === "full_access" ? "deny" : "allow"},
-    {permission: "task", pattern: "*", action: background ? "allow" : "deny"},
-  ];
-}
-
 class HttpOpenCodeRuntime implements OpenCodeRuntime {
+  readonly confirmedApprovalPolicy: OpenCodePolicy;
   readonly backgroundPermissions?: true;
   readonly work?: OpenCodeOwnedWork;
   readonly sessionPermissions?: true;
@@ -573,6 +605,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     this.#cwd = cwd;
     this.sessionId = sessionId;
     this.#approvalPolicy = approvalPolicy;
+    this.confirmedApprovalPolicy = approvalPolicy;
     if (owner) this.ownedAccount = owner;
     if (interactive) this.sessionPermissions = true;
     this.#cleanup = cleanup;
@@ -774,8 +807,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
   }
 
   #verifyPermissions(actual: unknown) {
-    if (JSON.stringify(actual) !== JSON.stringify(permissionRules(this.#approvalPolicy, this.backgroundPermissions)))
-      throw new HarnessAdapterError("native_policy_mismatch", "OpenCode retained permissions differ from the runner-authorized policy.");
+    assertOpenCodeSessionPolicy(actual, this.#approvalPolicy, this.backgroundPermissions);
   }
 
   async close(): Promise<void> {

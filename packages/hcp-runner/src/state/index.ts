@@ -90,6 +90,12 @@ const nativeWorkStateSchema = z.object({scope: z.object({provider_instance_id: z
 export type NativeWorkState = z.infer<typeof nativeWorkStateSchema>;
 
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  configuration_base_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  configuration_transitions: z.array(z.object({transition_id: z.string().min(1).max(512),
+    source_binding_hash: z.string().regex(/^[a-f0-9]{64}$/), target_binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/), target_session_id: z.string().min(1).max(512),
+    phase: z.enum(["pending", "completed"])}).strict()).max(1024).refine(value => new Set(value.map(item => item.transition_id)).size === value.length,
+      "Configuration transitions must have unique identities.").optional(),
   updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
   fresh: z.literal(true).optional(),
   approval_policy: z.enum(["ask", "auto_edits", "full_access"]).optional(),
@@ -281,10 +287,26 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     const provenReplacement = previous?.rollback?.phase === "completed" &&
       previous.rollback.replacement_native_thread_id === conversation.native_thread_id &&
       JSON.stringify(previous.rollback) === JSON.stringify(conversation.rollback) && previous.rollback.native_fresh === conversation.fresh;
-    if (previous && (previous.binding_hash !== conversation.binding_hash ||
+    const provenTransition = previous?.configuration_base_hash !== undefined && previous.configuration_base_hash === conversation.configuration_base_hash
+      && previous.configuration_transitions?.some(receipt => receipt.phase === "pending" && receipt.source_binding_hash === previous.binding_hash
+        && receipt.target_binding_hash === conversation.binding_hash && receipt.target_session_id === conversation.last_session_id
+        && conversation.configuration_transitions?.some(next => next.phase === "completed"
+          && JSON.stringify({...next, phase: "pending"}) === JSON.stringify(receipt))) === true;
+    if (previous?.configuration_base_hash && previous.configuration_base_hash !== conversation.configuration_base_hash)
+      throw new Error("Native conversation configuration base changed.");
+    for (const receipt of previous?.configuration_transitions ?? []) {
+      const next = conversation.configuration_transitions?.find(item => item.transition_id === receipt.transition_id);
+      if (!next || JSON.stringify({...next, phase: receipt.phase}) !== JSON.stringify(receipt)
+        || receipt.phase === "completed" && next.phase !== "completed" || receipt.phase === "pending" && next.phase === "completed" && !provenTransition)
+        throw new Error("Native configuration transition evidence cannot be erased or rewritten.");
+    }
+    if (previous && conversation.configuration_transitions?.some(receipt => receipt.phase === "completed"
+      && !previous.configuration_transitions?.some(prior => prior.transition_id === receipt.transition_id)))
+      throw new Error("Native configuration completion requires its prior durable dispatch fence.");
+    if (previous && ((!provenTransition && previous.binding_hash !== conversation.binding_hash) ||
         previous.provider_binding_hash !== conversation.provider_binding_hash || previous.provider_instance_id !== conversation.provider_instance_id ||
         previous.workspace_id !== conversation.workspace_id || previous.cwd !== conversation.cwd ||
-        (previous.approval_policy !== undefined && previous.approval_policy !== conversation.approval_policy) ||
+        (!provenTransition && previous.approval_policy !== undefined && previous.approval_policy !== conversation.approval_policy) ||
         (previous.native_thread_id !== conversation.native_thread_id && !provenReplacement)))
       throw new Error("Native conversation identity or execution scope changed.");
     if (!previous && Object.keys(this.data.nativeConversations).length >= 1024)

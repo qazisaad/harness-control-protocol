@@ -51,6 +51,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #stopping: Promise<void> | undefined;
   #selection: HarnessAdapterTurnInput["startPayload"]["model_selection"] | undefined;
   #mode: "execute" | "plan" | undefined;
+  #policyProof: {mode: NonNullable<Options["permissionMode"]>; resolve: () => void; reject: (failure: unknown) => void} | undefined;
 
   constructor(readonly start: HarnessAdapterStartInput, readonly factory: ClaudeQueryFactory = query) {
     this.nativeId = start.nativeConversation?.native_thread_id ?? randomUUID();
@@ -60,6 +61,30 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     start.registerSessionInteractions(this);
   }
   owns(id: string): boolean {return this.#sessionInputs.owns(id) || [...this.#roots].some(root => root.interactions.owns(id));}
+  async confirmIdlePolicy(): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback> {
+    if (!this.start.nativeConversation || this.start.nativeConversation.fresh || this.#stream || this.#lost)
+      throw error("native_configuration_transition_unsupported", "Idle policy confirmation requires the retained native conversation and a fresh execution owner.");
+    if (adapterMcpServers(this.start.mcpServers, this.start.payload).length)
+      throw error("native_configuration_transition_unsupported", "Idle Claude MCP reattachment has not been verified.");
+    this.#selection = this.start.payload.model_selection; this.#mode = "execute";
+    try {
+      this.#open();
+      await bounded(this.#stream!.initializationResult());
+      const confirm = async (mode: NonNullable<Options["permissionMode"]>) => {
+        const observed = new Promise<void>((resolve, reject) => {this.#policyProof = {mode, resolve, reject};});
+        try {await bounded(Promise.all([this.#stream!.setPermissionMode(mode), observed]));}
+        finally {this.#policyProof = undefined;}
+      };
+      const desired = this.#permissionMode("execute");
+      // A no-op control may have no status frame. Establish an observed opposite
+      // state, then restore the requested state before any user input is offered.
+      await confirm(desired === "acceptEdits" ? "default" : "acceptEdits");
+      await confirm(desired);
+      if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The native owner was lost during policy confirmation.");
+      return {source: "native", execution_profile: "interactive", approval_policy: this.start.payload.approval_policy,
+        sandbox_mode: "danger_full_access"};
+    } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
+  }
   respondApproval(response: Parameters<HarnessNativeInteractions["respondApproval"]>[0]): void {
     const root = [...this.#roots].find(root => root.interactions.owns(response.request_id));
     if (!root || this.#lost) throw error("native_response_binding", "The persistent native request owner is unavailable.");
@@ -89,6 +114,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #lose(reason: "native_exit" | "transport_lost" | "runtime_error", failure: unknown): void {
     if (this.#lost) return;
     this.#lost = true;
+    this.#policyProof?.reject(failure);
     this.#sessionLifetime.abort(); this.#sessionInputs.close();
     for (const root of this.#roots) {root.lifetime.abort(); root.interactions.close();}
     this.#active?.reject(failure);
@@ -218,6 +244,11 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   async #handle(message: SDKMessage): Promise<void> {
     if ("session_id" in message && message.session_id !== this.nativeId) throw error("native_continuation_binding", "Claude emitted another native session identity.");
+    if (message.type === "system" && message.subtype === "status" && this.#policyProof) {
+      if (!z.object({session_id: z.literal(this.nativeId), permissionMode: z.literal(this.#policyProof.mode)}).safeParse(message).success)
+        throw error("policy_mismatch", "Claude reported another effective permission mode during idle replacement.");
+      this.#policyProof.resolve(); return;
+    }
     const lifecycle = z.object({type: z.literal("command_lifecycle"), command_uuid: z.string(), state: z.enum(["queued", "started"])}).safeParse(message);
     if (lifecycle.success) {
       // CLI admission frames precede system/init. They prove neither policy nor execution results.

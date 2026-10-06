@@ -5519,6 +5519,9 @@
                               "type": "string",
                               "const": "live_owner"
                             },
+                            "idle_configuration_transition": {
+                              "type": "boolean"
+                            },
                             "root_interrupt_effect": {
                               "type": "string",
                               "enum": [
@@ -6286,6 +6289,25 @@
         "payload": {
           "type": "object",
           "properties": {
+            "conversation_transition": {
+              "type": "object",
+              "properties": {
+                "transition_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "expected_history_hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "transition_id",
+                "expected_history_hash"
+              ],
+              "additionalProperties": false
+            },
             "instructions": {
               "type": "object",
               "properties": {
@@ -6899,7 +6921,31 @@
             "model_selection",
             "mcp_servers"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "conversation_transition"
+                ]
+              },
+              "then": {
+                "required": [
+                  "continuation_group_key"
+                ],
+                "properties": {
+                  "continue_session": {
+                    "const": true
+                  }
+                },
+                "not": {
+                  "required": [
+                    "first_turn"
+                  ]
+                }
+              }
+            }
+          ]
         },
         "metadata": {
           "type": "object",
@@ -12812,6 +12858,42 @@
             "data": {
               "type": "object",
               "properties": {
+                "native_policy_readback": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "native"
+                    },
+                    "execution_profile": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    },
+                    "approval_policy": {
+                      "type": "string",
+                      "enum": [
+                        "ask",
+                        "auto_edits",
+                        "full_access"
+                      ]
+                    },
+                    "sandbox_mode": {
+                      "type": "string",
+                      "enum": [
+                        "read_only",
+                        "workspace_write",
+                        "danger_full_access"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "execution_profile",
+                    "approval_policy",
+                    "sandbox_mode"
+                  ],
+                  "additionalProperties": false
+                },
                 "mode": {
                   "type": "string",
                   "enum": [
@@ -13042,6 +13124,42 @@
             "data": {
               "type": "object",
               "properties": {
+                "native_policy_readback": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "native"
+                    },
+                    "execution_profile": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    },
+                    "approval_policy": {
+                      "type": "string",
+                      "enum": [
+                        "ask",
+                        "auto_edits",
+                        "full_access"
+                      ]
+                    },
+                    "sandbox_mode": {
+                      "type": "string",
+                      "enum": [
+                        "read_only",
+                        "workspace_write",
+                        "danger_full_access"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "execution_profile",
+                    "approval_policy",
+                    "sandbox_mode"
+                  ],
+                  "additionalProperties": false
+                },
                 "mode": {
                   "type": "string",
                   "enum": [
@@ -13612,6 +13730,42 @@
             "data": {
               "type": "object",
               "properties": {
+                "native_policy_readback": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "native"
+                    },
+                    "execution_profile": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    },
+                    "approval_policy": {
+                      "type": "string",
+                      "enum": [
+                        "ask",
+                        "auto_edits",
+                        "full_access"
+                      ]
+                    },
+                    "sandbox_mode": {
+                      "type": "string",
+                      "enum": [
+                        "read_only",
+                        "workspace_write",
+                        "danger_full_access"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "execution_profile",
+                    "approval_policy",
+                    "sandbox_mode"
+                  ],
+                  "additionalProperties": false
+                },
                 "mode": {
                   "type": "string",
                   "enum": [
@@ -13842,6 +13996,42 @@
             "data": {
               "type": "object",
               "properties": {
+                "native_policy_readback": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "native"
+                    },
+                    "execution_profile": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    },
+                    "approval_policy": {
+                      "type": "string",
+                      "enum": [
+                        "ask",
+                        "auto_edits",
+                        "full_access"
+                      ]
+                    },
+                    "sandbox_mode": {
+                      "type": "string",
+                      "enum": [
+                        "read_only",
+                        "workspace_write",
+                        "danger_full_access"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "execution_profile",
+                    "approval_policy",
+                    "sandbox_mode"
+                  ],
+                  "additionalProperties": false
+                },
                 "mode": {
                   "type": "string",
                   "enum": [

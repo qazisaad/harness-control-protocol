@@ -81,7 +81,8 @@ test("native instruction roles reach Codex start/resume and changed instructions
     await manager.startSession(start); await manager.sendFirstTurn(start, () => {}); await manager.stopSession("first", "idle");
     manager = f.manager();
     const resume = {...f.payload("second", "followup", true), instructions};
-    await assert.rejects(manager.startSession({...resume, session_id: "changed", instructions: {...instructions, developer: "Changed"}}), /instructions.*policy changed/);
+    await assert.rejects(manager.startSession({...resume, session_id: "changed", instructions: {...instructions, developer: "Changed"}}),
+      {code: "native_configuration_transition_binding"});
     await manager.startSession(resume); await manager.sendFirstTurn(resume, () => {}); await manager.stopSession("second", "done");
     const requests = (await f.requests()).filter(request => ["thread/start", "thread/resume"].includes(request.method));
     assert.equal(requests.length, 2);

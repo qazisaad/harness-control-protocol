@@ -194,6 +194,9 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
     validateNativeStart(input, "claude");
+    if (input.payload.conversation_transition && (input.payload.execution_profile !== "interactive"
+      || adapterMcpServers(input.mcpServers, input.payload).length))
+      throw new HarnessAdapterError("native_configuration_transition_unsupported", "Idle Claude policy replacement requires the interactive owner without unverified MCP reattachment.");
   }
   async conversationOperation(input: HarnessAdapterConversationInput) {
     return claudeConversation(input, this.#sessionHelper);
@@ -210,7 +213,9 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       if (this.#persistent.has(input.payload.session_id)) throw new HarnessAdapterError("session_exists", "The interactive Claude session already has a native owner.");
       const runtime = new PersistentClaudeSession(input, this.#queryFactory);
       this.#persistent.set(input.payload.session_id, runtime);
-      return {adapter_session_id: input.payload.session_id, native_thread_id: runtime.nativeId};
+      const native_policy_readback = input.payload.conversation_transition ? await runtime.confirmIdlePolicy() : undefined;
+      return {adapter_session_id: input.payload.session_id, native_thread_id: runtime.nativeId,
+        ...(native_policy_readback ? {native_policy_readback} : {})};
     }
     return { adapter_session_id: input.payload.session_id };
   }

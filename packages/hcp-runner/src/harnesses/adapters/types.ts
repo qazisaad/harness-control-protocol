@@ -34,6 +34,7 @@ export type HarnessAdapterEvent = {
 };
 
 export type HarnessAdapterSession = {
+  native_policy_readback?: import("@harness-control/protocol").HarnessNativePolicyReadback;
   adapter_session_id: string;
   native_thread_id?: string;
   native_fresh?: true;

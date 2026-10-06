@@ -222,7 +222,8 @@ for (const controlled of [false, true]) test(`OpenCode ${controlled ? "controlle
     if (controlled) {
       assert.ok(readControlledOpenCodeReference(rollback.native_reference!)?.account_binding);
       assert.equal((await readFile(stateFile, "utf8")).includes("fixture-only-key"), false);
-      await assert.rejects(runner.startSession({...start, session_id: "different-owner", continue_session: true, configuration_inheritance: {hooks: true}}), /preserve.*controlled/);
+      await assert.rejects(runner.startSession({...start, session_id: "different-owner", continue_session: true, configuration_inheritance: {hooks: true}}),
+        {code: "native_configuration_transition_binding"});
       const env = config.provider_instances[0]!.env;
       const originalAuth = env.OPENCODE_AUTH_CONTENT!;
       env.OPENCODE_AUTH_CONTENT = JSON.stringify({anthropic: {type: "api", key: "another-fixture-account"}});
