@@ -130,6 +130,8 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  /** Start establishes a confirmed native conversation before any model turn. */
+  readonly emptyConversation?: true;
   readonly executionProfiles?: readonly import("@harness-control/protocol").HarnessExecutionProfileCapabilities[];
   readonly portableHistory?: true;
   /** Read-only, revision-checked native history can coexist with this adapter's live session owner. */

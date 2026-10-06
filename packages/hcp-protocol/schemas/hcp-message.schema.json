@@ -3757,6 +3757,9 @@
                       "native_history": {
                         "type": "boolean"
                       },
+                      "empty_conversation": {
+                        "type": "boolean"
+                      },
                       "live_history_read": {
                         "type": "boolean"
                       },

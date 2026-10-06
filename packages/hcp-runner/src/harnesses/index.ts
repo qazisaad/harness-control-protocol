@@ -648,6 +648,7 @@ export class HarnessSessionManager {
       }),
       this.#event(payload.session_id, undefined, "session.configured", {
         execution_profile: payload.execution_profile ?? "isolated",
+        ...(configuredAdapter.emptyConversation ? {native_conversation_ready: true} : {}),
         ...(configuredInheritance ? {configuration_inheritance: configuredInheritance} : {}),
         model_selection: payload.model_selection,
         mcp_server_count: payload.mcp_servers.length,
@@ -840,6 +841,21 @@ export class HarnessSessionManager {
           throw new HarnessAdapterError("native_continuation_binding", "The adapter resumed another native conversation.");
         adapterSession.native_thread_id = retainedConversation.native_thread_id;
         if (retainedConversation.fresh) adapterSession.native_fresh = true;
+      }
+      if (adapter.emptyConversation) {
+        if (!adapterSession.native_thread_id)
+          throw new HarnessAdapterError("native_conversation_unconfirmed", "The adapter did not establish its advertised empty native conversation.");
+        if (payload.continuation_group_key) {
+          const binding = {...(retainedConversation ?? {}), native_thread_id: adapterSession.native_thread_id,
+            binding_hash: nativeBindingHash(payload, provider, mcpAttachments.toolsets), updated_at: new Date().toISOString(),
+            approval_policy: payload.approval_policy, last_session_id: payload.session_id, provider_instance_id: provider.id,
+            workspace_id: payload.workspace_id, cwd: payload.cwd, provider_binding_hash: eventProviderHash};
+          this.#stateStore.saveNativeConversation(payload.continuation_group_key, binding);
+          const persisted = this.#stateStore.getNativeConversation(payload.continuation_group_key);
+          if (persisted?.native_thread_id !== binding.native_thread_id || persisted.binding_hash !== binding.binding_hash ||
+            persisted.last_session_id !== payload.session_id)
+            throw new HarnessAdapterError("native_conversation_fence_missing", "The empty native conversation binding was not retained.");
+        }
       }
     } catch (error: unknown) {
       eventsClosed = true;

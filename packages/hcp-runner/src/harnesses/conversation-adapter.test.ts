@@ -11,7 +11,7 @@ import {
 } from "./index.js";
 import type { HcpConversationResultPayload, HcpSessionStartPayload } from "@harness-control/protocol";
 
-async function fixture() {
+async function fixture(emptyConversation = false) {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-custom-conversation-"));
   const state = new MemoryRunnerStateStore();
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:8787",
@@ -25,10 +25,11 @@ async function fixture() {
   };
   const adapter: HarnessAdapter = {
     driverKind: "example.chat", conversationOperations: ["read", "rollback"],
+    ...(emptyConversation ? {emptyConversation: true as const} : {}),
     conversationOperation: input => operation(input),
     async probe() {return {driver_kind: "example.chat", installed: true, available: true, models: []};},
     async validateStart() {},
-    async startSession() {return {adapter_session_id: "native-session"};},
+    async startSession() {return {adapter_session_id: "native-session", ...(emptyConversation ? {native_thread_id: "native-conversation"} : {})};},
     async sendTurn(input) {
       input.persistNativeThread?.("native-conversation");
       return [{event_type: "turn.completed", turn_id: input.payload.turn_id, data: {final_output: {final_text: "retained"}}}];
@@ -41,10 +42,51 @@ async function fixture() {
     continuation_group_key: "conversation", model_selection: {model: "custom"}, mcp_servers: []};
   const first = manager();
   await first.startSession(start);
-  await first.sendTurn({session_id: "session", turn_id: "turn", input: "hello"});
+  if (!emptyConversation) await first.sendTurn({session_id: "session", turn_id: "turn", input: "hello"});
   return {adapter, state, calls, config, first, manager, start, setOperation: (next: typeof operation) => {operation = next;},
     cleanup: () => rm(cwd, {recursive: true, force: true})};
 }
+
+test("an empty native conversation is retained and resumed before any model turn", async () => {
+  const f = await fixture(true);
+  let turns = 0;
+  f.adapter.sendTurn = async () => {turns++; throw new Error("No model turn was requested");};
+  try {
+    assert.equal(f.state.getNativeConversation("conversation")?.native_thread_id, "native-conversation");
+    await f.first.stopSession("session", "empty");
+    const runner = f.manager();
+    const read = await runner.conversationOperation("empty-read", {session_id: "session", operation: {kind: "read"}});
+    assert.equal(read.operation, "read");
+    const startNative = f.adapter.startSession;
+    f.adapter.startSession = async input => {
+      assert.equal(input.nativeConversation?.native_thread_id, "native-conversation");
+      return startNative(input);
+    };
+    const events = await runner.startSession({...f.start, session_id: "resumed-empty", continue_session: true});
+    assert.equal((events.find(event => event.event_type === "session.configured")!.data as Record<string, unknown>).native_conversation_ready, true);
+    assert.equal(f.state.getNativeConversation("conversation")?.last_session_id, "resumed-empty");
+    assert.equal(turns, 0);
+    await runner.stopSession("resumed-empty", "done");
+  } finally {await f.first.stopSession("session", "cleanup"); await f.cleanup();}
+});
+
+for (const failure of ["missing-native-id", "lost-binding"] as const) test(`empty conversation startup fails closed on ${failure}`, async () => {
+  const f = await fixture(true);
+  let stops = 0;
+  try {
+    await f.first.stopSession("session", "done");
+    f.adapter.stopSession = async () => {stops++; return [];};
+    if (failure === "missing-native-id") f.adapter.startSession = async () => ({adapter_session_id: "native-session"});
+    else f.state.saveNativeConversation = () => {};
+    const runner = f.manager();
+    await assert.rejects(runner.startSession({...f.start, session_id: "new-empty", continuation_group_key: "new-empty"}),
+      (error: unknown) => error instanceof HarnessAdapterError && error.code ===
+        (failure === "missing-native-id" ? "native_conversation_unconfirmed" : "native_conversation_fence_missing"));
+    assert.equal(runner.activeSessionCount(), 0);
+    assert.equal(f.state.getNativeConversation("new-empty"), undefined);
+    assert.equal(stops, 1);
+  } finally {await f.cleanup();}
+});
 
 test("context injection confirms its exact payload once and retains multiple receipts across manager restart", async () => {
   const f = await fixture();

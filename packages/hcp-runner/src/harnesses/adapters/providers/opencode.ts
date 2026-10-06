@@ -64,7 +64,7 @@ const executionCapabilities: HarnessExecutionCapabilities = {
   instruction_roles: ["system"],
   configuration_inheritance: {user_settings: true, project_settings: true, hooks: true, mcp_servers: true, plugins: true},
   streaming: true, multi_turn: true, session_continuation: true, plan_mode: true, manual_compaction: true, content_retrieval: true, context_usage: true,
-  native_history: true, portable_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
+  native_history: true, empty_conversation: true, portable_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
   live_history_read: true,
   native_history_injection: false,
   sandbox_modes: ["danger_full_access"], approval_policies: ["ask", "auto_edits", "full_access"],
@@ -166,6 +166,7 @@ export type OpenCodeHarnessAdapterOptions = {
 };
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
+  readonly emptyConversation = true;
   readonly nativeWork = true;
   readonly sessionEvents = true;
   readonly executionProfiles = executionProfiles;
@@ -488,6 +489,11 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
         body: JSON.stringify({ title: "HCP session", permission: permissionRules(input.approvalPolicy ?? "ask", input.backgroundPermissions) }),
       }),
     );
+    const created = z.object({id: z.string(), directory: z.string(), permission: z.array(z.object({permission: z.string(), pattern: z.string(), action: z.enum(["allow", "ask", "deny"])}))}).parse(await fetchJson(
+      new URL(`/session/${encodeURIComponent(session.id)}?directory=${encodeURIComponent(input.cwd)}`, baseUrl), {method: "GET"}));
+    if (created.id !== session.id || await realpath(created.directory) !== await realpath(input.cwd) ||
+        JSON.stringify(created.permission) !== JSON.stringify(permissionRules(input.approvalPolicy ?? "ask", input.backgroundPermissions)))
+      throw new HarnessAdapterError("native_policy_mismatch", "OpenCode did not confirm its new native conversation, workspace and permissions.");
     return new HttpOpenCodeRuntime(processHandle, baseUrl, input.cwd, session.id, input.approvalPolicy ?? "ask", owner, controlled?.cleanup, input.interactive, input.backgroundPermissions, input.workOwner);
   } catch (error: unknown) {
     await processHandle.stop();

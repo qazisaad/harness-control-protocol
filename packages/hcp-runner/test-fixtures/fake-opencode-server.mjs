@@ -10,6 +10,7 @@ if (process.argv.includes("--version")) {
 const streams = new Set();
 const pending = new Map();
 let rememberedPermission = false;
+let sessionPermission;
 const admittedMessages = new Map();
 const requestMessages = new Map();
 const emit = value => {for (const stream of streams) sendEvent(stream, value);};
@@ -68,6 +69,7 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === "POST" && url.pathname === "/session") {
     const permissions = payload.permission;
+    sessionPermission = permissions;
     const expected = ["full_access", "ask", "auto_edits"].map(policy => [
       {permission: "*", pattern: "*", action: policy === "full_access" ? "allow" : "ask"},
       ...(policy === "auto_edits" ? [{permission: "edit", pattern: "*", action: "allow"}] : []),
@@ -82,7 +84,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/session/fake-opencode-session") {
-    writeJson(response, {id: "fake-opencode-session", directory: process.cwd(), permission: [
+    writeJson(response, {id: "fake-opencode-session", directory: process.cwd(), permission: sessionPermission ?? [
       {permission: "*", pattern: "*", action: "ask"},
       {permission: "question", pattern: "*", action: "allow"},
       {permission: "task", pattern: "*", action: "deny"},

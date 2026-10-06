@@ -266,6 +266,7 @@ export type HarnessExecutionCapabilities = {
   session_continuation: boolean;
   plan_mode?: boolean;
   native_history?: boolean;
+  empty_conversation?: boolean;
   live_history_read?: boolean;
   native_history_injection?: boolean;
   history_pagination?: boolean;
@@ -1129,6 +1130,7 @@ export const harnessProviderSnapshotSchema = z
       session_continuation: z.boolean(),
       plan_mode: z.boolean().optional(),
       native_history: z.boolean().optional(),
+      empty_conversation: z.boolean().optional(),
       live_history_read: z.boolean().optional(),
       native_history_injection: z.boolean().optional(),
       history_pagination: z.boolean().optional(),
