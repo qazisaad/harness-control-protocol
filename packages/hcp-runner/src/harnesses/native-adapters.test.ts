@@ -94,23 +94,26 @@ function verifyTranscript(events: HarnessAdapterEvent[]): void {
 const fixture = String.raw`#!/usr/bin/env node
 const fs = require('node:fs');
 const readline = require('node:readline');
-if (process.argv.includes('--version')) { console.log('codex-cli fixture'); process.exit(0); }
+if (process.argv.includes('--version')) { console.log(process.env.VERSION ?? 'codex-cli fixture'); process.exit(0); }
 if (process.argv.includes('login')) process.exit(0);
 const send = (x) => process.stdout.write(JSON.stringify(x)+'\n');
 const notify = (method, params) => send({method,params});
-let selectedTool; let finishTool;
+let selectedTool; let finishTool; let turns = 0;
 readline.createInterface({input:process.stdin}).on('line', line => {
  const m=JSON.parse(line); if (!m.id) return;
- fs.appendFileSync(process.env.RECORD,JSON.stringify(m)+'\n');
+ fs.appendFileSync(process.env.RECORD,JSON.stringify({...m,nativePid:process.pid})+'\n');
  if(m.id==='native-call') { if(!m.result?.success) throw new Error('Native MCP failed'); finishTool(); return; }
  if(m.method==='initialize') send({id:m.id,result:{}});
  if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
- if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never'}}); }
+ if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never',approvalsReviewer:process.env.MODE==='reviewer'?'auto_review':m.params.approvalsReviewer}}); }
+ if(m.method==='turn/interrupt') {send({id:m.id,result:{}}); notify('turn/completed',{threadId:m.params.threadId,turn:{id:m.params.turnId,status:'interrupted',error:null}});}
  if(m.method==='turn/start') {
-  const params={threadId:'native-thread',turnId:'native-turn'};
-  notify('turn/started',{threadId:'native-thread',turn:{id:'native-turn'}});
-  send({id:m.id,result:{turn:{id:'native-turn'}}});
+  const turnId=turns++?'native-turn-'+turns:'native-turn';
+  const params={threadId:'native-thread',turnId};
+  notify('turn/started',{threadId:'native-thread',turn:{id:turnId}});
+  send({id:m.id,result:{turn:{id:turnId}}});
+  if(process.env.MODE==='retained' && m.params.input[0].text==='wait') return;
   if(process.env.MODE==='exit') return process.exit(0);
   if(process.env.MODE==='request') return send({id:'approval-1',method:'item/commandExecution/requestApproval',params});
   if(process.env.MODE==='malformed') return process.stdout.write('not json\n');
@@ -126,7 +129,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
    if(process.env.MODE==='sleep') return;
    setTimeout(()=>{
     notify('item/completed',{...params,item:{id:'message',type:'agentMessage',phase:'final_answer',text:'x'.repeat(80000)}});
-    notify('turn/completed',{threadId:'native-thread',turn:{id:'native-turn',status:process.env.MODE==='failed'?'failed':'completed',error:null}});
+    notify('turn/completed',{threadId:'native-thread',turn:{id:turnId,status:process.env.MODE==='failed'?'failed':'completed',error:null}});
    },30);
   },5);
   };
@@ -234,6 +237,78 @@ for (const mode of [
       );
   });
 }
+
+it("Codex interactive roots reuse one native transport and interrupt only their admitted turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-retained-codex-"));
+  const executable = join(cwd, "codex.cjs"), record = join(cwd, "requests.jsonl");
+  await writeFile(executable, fixture); await chmod(executable, 0o755);
+  const selected = provider("codex", executable);
+  selected.env = {MODE: "retained", VERSION: "codex-cli 0.160.0", RECORD: record};
+  const payload = {...start("codex", cwd), execution_profile: "interactive" as const};
+  const adapter = new CodexHarnessAdapter();
+  const session = await adapter.startSession({payload, provider: selected});
+  try {
+    for (const id of ["first", "second"]) {
+      const events = await adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: payload.session_id, turn_id: id, input: "hello"}});
+      assert.equal(events.at(-1)?.event_type, "turn.completed", JSON.stringify(events.at(-1)?.data));
+    }
+    const cancelled = adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: payload.session_id, turn_id: "cancelled", input: "wait"}});
+    for (let count = 0; count < 100; count++) {
+      const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      if (requests.filter(request => request.method === "turn/start").length === 3) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    await adapter.cancelTurn({sessionId: payload.session_id, turnId: "cancelled"});
+    assert.equal((await cancelled).at(-1)?.event_type, "turn.cancelled");
+    const followup = await adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: payload.session_id, turn_id: "followup", input: "hello"}});
+    assert.equal(followup.at(-1)?.event_type, "turn.completed");
+    const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(new Set(requests.map(request => request.nativePid)).size, 1);
+    assert.equal(requests.filter(request => request.method === "initialize").length, 1);
+    assert.equal(requests.filter(request => request.method === "thread/start").length, 1);
+    assert.equal(requests.some(request => request.method === "thread/resume"), false);
+    assert.equal(requests.find(request => request.method === "turn/interrupt")?.params.turnId, "native-turn-3");
+    assert.equal(requests.find(request => request.method === "thread/start")?.params.approvalsReviewer, "user");
+  } finally {await adapter.stopSession({sessionId: payload.session_id}); await rm(cwd, {recursive: true, force: true});}
+});
+
+for (const mode of ["reviewer", "exit"]) {
+  it(`Codex persistent owner fences ${mode} failure without recreating its native process`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hcp-retained-fence-"));
+    const executable = join(cwd, "codex.cjs"), record = join(cwd, "requests.jsonl");
+    await writeFile(executable, fixture); await chmod(executable, 0o755);
+    const selected = provider("codex", executable);
+    selected.env = {MODE: mode, VERSION: "codex-cli 0.160.0", RECORD: record};
+    const payload = {...start("codex", cwd), execution_profile: "interactive" as const};
+    const adapter = new CodexHarnessAdapter();
+    const session = await adapter.startSession({payload, provider: selected});
+    try {
+      for (const id of ["first", "after-failure"]) {
+        const events = await adapter.sendTurn({...turn(payload, selected), session,
+          payload: {session_id: payload.session_id, turn_id: id, input: "hello"}});
+        assert.equal(events.at(-1)?.event_type, "turn.failed");
+      }
+      const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(new Set(requests.map(request => request.nativePid)).size, 1);
+      assert.equal(requests.filter(request => request.method === "thread/start").length, 1);
+      assert.equal(requests.filter(request => request.method === "turn/start").length, mode === "reviewer" ? 0 : 1);
+    } finally {await adapter.stopSession({sessionId: payload.session_id}); await rm(cwd, {recursive: true, force: true});}
+  });
+}
+
+it("Codex persistent profile rejects unverified native versions before launching an app-server", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-retained-version-"));
+  const executable = join(cwd, "codex.cjs"), record = join(cwd, "requests.jsonl");
+  await writeFile(executable, fixture); await chmod(executable, 0o755);
+  const selected = provider("codex", executable);
+  selected.env = {VERSION: "codex-cli 0.159.0", RECORD: record};
+  const adapter = new CodexHarnessAdapter();
+  try {
+    await assert.rejects(adapter.startSession({payload: {...start("codex", cwd), execution_profile: "interactive"}, provider: selected}),
+      (error: unknown) => error instanceof HarnessAdapterError && error.code === "native_profile_unsupported");
+    await assert.rejects(readFile(record), {code: "ENOENT"});
+  } finally {await adapter.stopSession({sessionId: "session"}); await rm(cwd, {recursive: true, force: true});}
+});
 
 function fakeQuery(
   messages: unknown[],

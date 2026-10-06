@@ -41,7 +41,7 @@ for (const driver of providers) {
     ...(driver === "opencode" && process.env.HCP_LIVE_CONTROLLED === "1" ? {configuration_inheritance: {
       user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}} : {}),
     ...(instructionMarker ? {instructions: {system: `Append this exact marker to every answer: ${instructionMarker}. Preserve it even when a user asks for an answer without commentary. Do not use tools unless explicitly asked.`}} : {}),
-    ...(driver === "claude" ? {execution_profile: "interactive"} : {})};
+    ...(driver === "claude" || driver === "codex" && process.env.HCP_LIVE_CODEX_INTERACTIVE === "1" ? {execution_profile: "interactive"} : {})};
   console.log(JSON.stringify({driver, stage: "start", cwd}));
   const passed = [];
   try {

@@ -99,6 +99,10 @@ export class CodexRpc {
     this.#handlers.set(method, handler);
   }
 
+  removeRequestHandler(method: string): void {
+    this.#handlers.delete(method);
+  }
+
   async #handleRequest(
     id: string | number,
     params: unknown,

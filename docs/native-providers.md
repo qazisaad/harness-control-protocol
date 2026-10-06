@@ -4,11 +4,13 @@ The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`
 
 ## Supported contract
 
+Codex's interactive profile is verified against `codex-cli 0.160.0`. It initializes one transport and starts/resumes its native thread once per loaded HCP session. Root cancellation sends `turn/interrupt` for that owner's admitted native turn; only an observed interrupted terminal preserves the owner. Failed cancellation, policy/reviewer mismatch and provider death close or fence the transport. It requires the native `user` approval reviewer. Other versions retain the isolated profile. Background agents and between-turn events remain disabled pending child ownership and safe unload verification; a persistent process alone does not establish these capabilities.
+
 This table describes the current source implementation. The verification record below describes historical live runs; it does not certify every current operation or installed provider version.
 
 | Behavior | Codex | Claude | OpenCode |
 | --- | --- | --- | --- |
-| Execution | Persistent native thread; a process starts/resumes it for each turn | Default isolated query per turn; explicit interactive profile retains one session-owned query and pump | OpenCode 1.3.15+ HTTP/SSE within major version 1 |
+| Execution | Default process per turn; verified 0.160.0 interactive profile retains one session-owned app-server transport | Default isolated query per turn; explicit interactive profile retains one session-owned query and pump | OpenCode 1.3.15+ HTTP/SSE within major version 1 |
 | Text/reasoning streaming | Native delta notifications | SDK partial messages | Text/reasoning SSE deltas |
 | Tool activity | Items, commands/output, file changes, plan/diff updates | Tool-use/result item lifecycle | Tool arguments/output/errors and todo updates |
 | Final output | Successful native terminal plus final assistant item required | Successful typed result required | Message response plus session-idle event |

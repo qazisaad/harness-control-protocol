@@ -26,7 +26,14 @@ const startedSchema = z.object({
     excludeSlashTmp: z.boolean().optional(),
   }),
   approvalPolicy: z.string(),
+  approvalsReviewer: z.string().optional(),
 });
+/** A retained transport belongs to one admitted HCP session, never a process-global pool. */
+export type CodexRuntimeLease = {
+  rpc: CodexRpc;
+  initialized: boolean;
+  started?: z.infer<typeof startedSchema>;
+};
 const deltaSchema = z.object({
   threadId: z.string(),
   turnId: z.string(),
@@ -59,15 +66,22 @@ const terminalSchema = z.object({
   }),
 });
 
-export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
+export const runCodexTurn: NativeTurn = (input, signal, emit) => executeCodexTurn(input, signal, emit);
+export const runRetainedCodexTurn = (input: Parameters<NativeTurn>[0], signal: AbortSignal,
+  emit: Parameters<NativeTurn>[2], lease: CodexRuntimeLease) => executeCodexTurn(input, signal, emit, lease);
+async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortSignal, emit: Parameters<NativeTurn>[2], lease?: CodexRuntimeLease) {
   let interactions: NativeInteractions | undefined;
+  let nativeTurnId: string | undefined;
+  let interrupt: Promise<void> | undefined;
+  let interruptDeadline: ReturnType<typeof setTimeout> | undefined;
+  let interrupted = false;
   signal.throwIfAborted();
   const selection =
     input.payload.model_selection ?? input.startPayload.model_selection;
   let context: HarnessContextUsage = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "new_native_request");
   emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
   const effort = selectedEffort(selection, "codex");
-  const rpc = new CodexRpc(
+  const rpc = lease?.rpc ?? new CodexRpc(
     input.provider.executable_path ?? "codex",
     input.startPayload.cwd,
     {
@@ -77,16 +91,24 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     },
   );
   const abort = (): void => {
-    void rpc.process.stop();
+    if (lease?.started && nativeTurnId) {
+      interruptDeadline = setTimeout(() => {void rpc.process.stop();}, 10_000);
+      interrupt = rpc.request("turn/interrupt", {threadId: lease.started.thread.id, turnId: nativeTurnId}).then(() => undefined,
+        () => rpc.process.stop());
+      void interrupt.catch(() => {});
+    } else void rpc.process.stop();
   };
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
   try {
+    if (!lease?.initialized) {
     await rpc.request("initialize", {
       clientInfo: { name: "hcp-runner", version: "0.0.0" },
       capabilities: { experimentalApi: true },
     });
     rpc.notify("initialized");
+    if (lease) lease.initialized = true;
+    }
     const configResult = z.object({ config: object }).parse(
       await rpc.request("config/read", {
         cwd: input.startPayload.cwd,
@@ -108,7 +130,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     const sandbox = input.startPayload.sandbox_mode.replaceAll("_", "-");
     const approvalPolicy = {ask: "untrusted", auto_edits: "on-request", full_access: "never"}[input.startPayload.approval_policy];
     const resumeThread = input.mcpContinuation?.native_thread_id ?? input.session.native_thread_id;
-    const started = startedSchema.parse(
+    const started = lease?.started ?? startedSchema.parse(
       await rpc.request(resumeThread ? "thread/resume" : "thread/start", {
         ...(resumeThread ? {threadId: resumeThread} : {
           ephemeral: false,
@@ -118,6 +140,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
         model: selection.model,
         sandbox,
         approvalPolicy,
+        approvalsReviewer: "user",
         ...(input.startPayload.instructions?.system ? {baseInstructions: input.startPayload.instructions.system} : {}),
         ...(input.startPayload.instructions?.developer ? {developerInstructions: input.startPayload.instructions.developer} : {}),
 
@@ -141,7 +164,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     }[input.startPayload.sandbox_mode];
     if (
       started.sandbox.type !== expectedSandbox ||
-      started.approvalPolicy !== approvalPolicy
+      started.approvalPolicy !== approvalPolicy || lease && started.approvalsReviewer !== "user"
     ) {
       throw new HarnessAdapterError(
         "policy_mismatch",
@@ -169,6 +192,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
     if (resumeThread && threadId !== resumeThread) {
       throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
     }
+    if (lease) lease.started = started;
     input.session.native_thread_id = threadId;
     input.persistNativeThread?.(threadId);
     if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true}});
@@ -207,7 +231,6 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       }
       cursor = inventory.nextCursor ?? undefined;
     } while (cursor);
-    let nativeTurnId: string | undefined;
     let live = true;
     input.registerActiveTurnControls?.({async steer(text) {
       if (!live || !nativeTurnId || signal.aborted)
@@ -370,6 +393,7 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
           return;
         settled = true;
         live = false;
+        interrupted = event.turn.status === "interrupted";
         if (
           event.turn.status !== "completed" ||
           event.turn.error != null ||
@@ -412,14 +436,24 @@ export const runCodexTurn: NativeTurn = async (input, signal, emit) => {
       );
     nativeTurnId = turn.turn.id;
     return await terminal;
+  } catch (failure) {
+    if (lease && !(signal.aborted && interrupted)) await rpc.process.stop();
+    throw failure;
   } finally {
     input.registerActiveTurnControls?.(undefined);
     interactions?.close();
     input.registerNativeInteractions?.(undefined);
     signal.removeEventListener("abort", abort);
-    await rpc.process.stop();
+    await interrupt;
+    if (interruptDeadline) clearTimeout(interruptDeadline);
+    if (!lease) await rpc.process.stop();
+    rpc.onNotification = () => {};
+    rpc.onFailure = () => {};
+    for (const method of ["item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+      "item/permissions/requestApproval", "item/tool/requestUserInput", "item/tool/call"])
+      rpc.removeRequestHandler(method);
   }
-};
+}
 
 function boundedText(value: string): string {
   if (Buffer.byteLength(value) <= 32 * 1024) return value;

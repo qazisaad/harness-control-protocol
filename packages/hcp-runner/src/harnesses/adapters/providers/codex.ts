@@ -34,7 +34,13 @@ import {
   nativeExecutionCapabilities,
   validateNativeStart,
 } from "./native-turn.js";
-import { runCodexTurn } from "./codex-runtime.js";
+import { runCodexTurn, runRetainedCodexTurn, type CodexRuntimeLease } from "./codex-runtime.js";
+import {CodexRpc} from "./codex-rpc.js";
+const retainedProfiles = [
+  {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
+  {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false},
+] as const;
+function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
@@ -42,6 +48,8 @@ export type CodexHarnessAdapterOptions = {
   processKillGraceMs?: number;
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
+  readonly executionProfiles = retainedProfiles;
+  readonly #leases = new Map<string, CodexRuntimeLease>();
   readonly portableHistory = true;
   readonly liveHistoryRead = true;
   readonly instructionRoles = ["system", "developer"] as const;
@@ -177,7 +185,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     return {
       provider_instance_id: provider.id,
       driver_kind: "codex",
-      execution_capabilities: nativeExecutionCapabilities("codex"),
+      execution_capabilities: {...nativeExecutionCapabilities("codex"), ...(retainedVersion(version) ? {execution_profiles: [...retainedProfiles]} : {})},
       installed: true,
       available: true,
       status: "ready",
@@ -196,6 +204,15 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     await this.validateStart(input);
     if (input.payload.continue_session && !input.nativeConversation)
       throw new HarnessAdapterError("native_continuation_binding", "Codex resume requires the runner-authorized retained binding.");
+    if (input.payload.execution_profile === "interactive") {
+      if (this.#leases.has(input.payload.session_id)) throw new HarnessAdapterError("codex_session_exists", "This session already has a retained native owner.");
+      const version = await this.#runProcess(input.provider.executable_path ?? "codex", ["--version"],
+        {cwd: input.payload.cwd, env: providerEnvironment(input.provider)}, this.#probeTimeoutMs);
+      if (version.timedOut || version.exitCode !== 0 || !retainedVersion(firstLine(version.stdout)))
+        throw new HarnessAdapterError("native_profile_unsupported", "Persistent Codex requires the verified 0.160.0 app-server protocol.");
+      this.#leases.set(input.payload.session_id, {initialized: false, rpc: new CodexRpc(input.provider.executable_path ?? "codex", input.payload.cwd,
+        {...process.env, ...providerEnvironment(input.provider)})});
+    }
     return { adapter_session_id: input.payload.session_id };
   }
   async sendTurn(
@@ -206,6 +223,11 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         payload: request.startPayload,
         provider: request.provider,
       });
+      if (request.startPayload.execution_profile === "interactive") {
+        const lease = this.#leases.get(request.payload.session_id);
+        if (!lease) throw new HarnessAdapterError("native_session_unavailable", "The persistent native owner is unavailable.");
+        return runRetainedCodexTurn(request, signal, emit, lease);
+      }
       return runCodexTurn(request, signal, emit);
     });
   }
@@ -217,7 +239,11 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   async stopSession(
     input: HarnessAdapterStopInput,
   ): Promise<HarnessAdapterEvent[]> {
-    return this.#turns.stop(input.sessionId);
+    const events = await this.#turns.stop(input.sessionId);
+    const lease = this.#leases.get(input.sessionId);
+    this.#leases.delete(input.sessionId);
+    await lease?.rpc.process.stop();
+    return events;
   }
   #runProcess(
     executable: string,
