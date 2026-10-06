@@ -106,6 +106,57 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
     closeNative: () => output.close(), get closes() {return closes;}, cleanup};
 }
 
+test("Claude completed blocks retain their exact stamped native message lane without admitting another message", async () => {
+  const f = await fixture();
+  try {
+    const running = f.send("first", "wait"); await until(() => f.prompts.length === 1);
+    const prompt = f.prompts[0]!;
+    f.emit({type: "stream_event", user_message_uuid: prompt.uuid, parent_tool_use_id: null,
+      event: {type: "message_start", message: {id: "api-owned"}}});
+    f.emit({type: "assistant", uuid: "owned-block", parent_tool_use_id: null,
+      message: {id: "api-owned", content: [{type: "tool_use", id: "owned-tool", name: "Read", input: {file_path: "fixture"}}], usage: {input_tokens: 10, output_tokens: 2}}});
+    await until(() => f.events.some(event => event.event_type === "item.started" && (event.data as {item_id: string}).item_id === "owned-tool"));
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-unowned"}}});
+    f.emit({type: "assistant", uuid: "unowned-block", parent_tool_use_id: null, message: {id: "api-unowned", content: [{type: "text", text: "Uncorrelated"}]}});
+    await until(() => f.events.some(event => event.event_type === "native.output.updated"));
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start", message: {id: "api-owned"}}});
+    f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "Owned continuation"}}});
+    await until(() => f.events.some(event => event.event_type === "content.delta" && (event.data as {delta: string}).delta === "Owned continuation"));
+    assert.equal(f.events.find(event => event.event_type === "content.delta")!.turn_id, "first");
+    assert.equal(f.events.find(event => event.event_type === "native.output.updated")!.turn_id, undefined);
+    f.result(prompt, "done"); await running;
+  } finally {await f.cleanup();}
+});
+
+test("native Claude asynchronous output is retrievable with session ownership and never creates a root", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "ordinary");
+    const message = {type: "assistant", uuid: "wake-message", parent_tool_use_id: null,
+      message: {content: [{type: "text", text: "Native background response"}]}};
+    f.emit(message);
+    await until(() => f.events.some(event => event.event_type === "native.output.updated"));
+    const event = f.events.find(event => event.event_type === "native.output.updated")!;
+    const {output} = event.data as {output: {scope: string; correlation: string; item_id: string; content_ref: {content_id: string}}};
+    assert.equal(event.turn_id, undefined); assert.equal(output.scope, "session"); assert.equal(output.correlation, "unattributed");
+    assert.equal(output.item_id, "wake-message");
+    const read = await f.manager.conversationOperation("wake-content", {session_id: "session", operation: {kind: "content", content_id: output.content_ref.content_id, offset: 0, limit: 65536}});
+    assert.deepEqual(JSON.parse(Buffer.from(read.content!.data_base64, "base64").toString()), {role: "assistant", blocks: message.message.content});
+    f.emit(message); await f.send("second", "ordinary");
+    assert.equal(f.events.filter(event => event.event_type === "native.output.updated").length, 1);
+    assert.deepEqual(f.events.filter(event => event.event_type === "turn.completed").map(event => event.turn_id), ["first", "second"]);
+  } finally {await f.cleanup();}
+});
+test("native session output cannot cross a Claude conversation identity", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "ordinary");
+    f.emit({type: "assistant", uuid: "foreign-message", session_id: "foreign", parent_tool_use_id: null, message: {content: [{type: "text", text: "Foreign"}]}});
+    await until(() => f.events.some(event => event.event_type === "native.work.owner_lost"));
+    assert.equal(f.events.filter(event => event.event_type === "native.output.updated").length, 0);
+  } finally {await f.cleanup();}
+});
+
 test("native Claude quota observations retain session scope between roots without completing work", async () => {
   const f = await fixture();
   try {
@@ -412,7 +463,7 @@ test("autonomous Claude messages and unstamped results cannot inherit an active 
     await until(() => f.prompts.length === 1);
     f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "message_start"}});
     f.emit({type: "stream_event", parent_tool_use_id: null, event: {type: "content_block_delta", delta: {type: "text_delta", text: "autonomous"}}});
-    f.emit({type: "assistant", parent_tool_use_id: null, message: {content: [], usage: {input_tokens: 10, output_tokens: 2}}});
+    f.emit({type: "assistant", uuid: "native-wake", parent_tool_use_id: null, message: {content: [], usage: {input_tokens: 10, output_tokens: 2}}});
     f.emit({type: "result", subtype: "success", is_error: false, result: "autonomous", modelUsage: {}});
     f.assistant(f.prompts[0]!.uuid!); f.result(f.prompts[0]!, "app-owned");
     const result = await pending;

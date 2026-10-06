@@ -143,6 +143,14 @@ try {
     passed.push("observed-parent-continuation");
   }
   passed.push("background-after-root", "followup-with-background", "observed-child-completion");
+  if (driver === "claude" && process.env.HCP_LIVE_ASYNC_OUTPUT === "1") {
+    const output = await until(async () => events.find(event => event.event_type === "native.output.updated"), 60000);
+    assert.equal(output.turn_id, undefined); assert.equal(output.data.output.correlation, "unattributed");
+    const content = await manager.conversationOperation("native-async-output", {session_id: "work", operation: {
+      kind: "content", content_id: output.data.output.content_ref.content_id, offset: 0, limit: 65536}});
+    assert.equal(JSON.parse(Buffer.from(content.content.data_base64, "base64").toString()).role, "assistant");
+    passed.push("native-session-output", "unattributed-output-content");
+  }
   if (childHistoryAcceptance) {await readChildHistory(completionChild.work_id, true); passed.push("completed-child-history");}
   const launchedSecond = await spawn("background-cancel", 60);
   const second = await until(async () => (await work()).items.find(item => item.work.work_id === launchedSecond.work_id && item.work.supports_cancel)?.work);
@@ -158,8 +166,8 @@ try {
   console.log(JSON.stringify({driver, passed, cwd, event_count: events.length}));
 } catch (error) {
   process.exitCode = 1;
-  console.error(JSON.stringify({driver, passed, cwd, failed: error instanceof Error ? error.message : String(error)}));
+  console.error(JSON.stringify({driver, passed, cwd, failed: true, code: error?.code ?? "acceptance_failure"}));
 } finally {
-  if (manager.activeSessionCount()) try {await manager.stopSession("work", "live-work-cleanup");} catch (error) {console.error(error.message); process.exitCode = 1;}
+  if (manager.activeSessionCount()) try {await manager.stopSession("work", "live-work-cleanup");} catch {console.error(JSON.stringify({driver, cleanup_failed: true})); process.exitCode = 1;}
   unsubscribe(); await writeFile(join(cwd, "events.json"), JSON.stringify(events, null, 2));
 }

@@ -888,7 +888,11 @@ export class HarnessSessionManager {
         adapter.executionProfiles?.find(profile => profile.id === payload.execution_profile)?.account_limit_observations !== "native_session"
         || event.data.provider_instance_id !== provider.id || !event.data.observation || !eventOwner?.adapterSession.native_thread_id))
         throw new HarnessAdapterError("native_account_observation_binding", "Native quota observations require their declared initialized provider session owner.");
-      if (!interaction && (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated", "native.work.owner_lost", "account.rate_limits.updated"].includes(event.event_type)
+      if (event.event_type === "native.output.updated" && (
+        adapter.executionProfiles?.find(profile => profile.id === payload.execution_profile)?.native_async_output !== "session"
+        || !eventOwner?.adapterSession.native_thread_id || eventOwner.nativeWorkOwnerAvailable === false))
+        throw new HarnessAdapterError("native_output_owner_unavailable", "Asynchronous native output requires its declared initialized live session owner.");
+      if (!interaction && (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated", "native.work.owner_lost", "account.rate_limits.updated", "native.output.updated"].includes(event.event_type)
           && !event.event_type.startsWith("provider.") && !event.event_type.startsWith("extension."))
         )
         throw new HarnessAdapterError("native_session_event_unsupported", "Session observations cannot publish root turns or interaction requests.");

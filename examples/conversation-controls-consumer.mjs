@@ -6,7 +6,7 @@ import {join} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
 import {WebSocketServer} from "ws";
 import {HcpHostConnection} from "@harness-control/sdk";
-import {harnessRateLimitObservationSchema} from "@harness-control/protocol";
+import {harnessRateLimitObservationSchema, harnessNativeOutputObservationSchema} from "@harness-control/protocol";
 import {RunnerConnection} from "@harness-control/runner/connection";
 import {RunnerConfigSchema} from "@harness-control/runner/config";
 import {HarnessSessionManager, HarnessAdapterRegistry} from "@harness-control/runner/harnesses";
@@ -121,6 +121,14 @@ try {
   const observedQuota = events.find(event => event.event_type === "account.rate_limits.updated");
   assert.equal(observedQuota.turn_id, undefined);
   assert.deepEqual(harnessRateLimitObservationSchema.parse(observedQuota.data.observation), quota);
+  const output = {source: "native", native_source: "example.native.assistant", scope: "session", correlation: "unattributed",
+    item_id: "native-background-output", item_type: "assistant_message", content_ref: reference};
+  assert.throws(() => adapter.observations.get("session")({event_type: "native.output.updated", turn_id: "turn", data: {output}}));
+  adapter.observations.get("session")({event_type: "native.output.updated", data: {output}});
+  await until(() => events.some(event => event.event_type === "native.output.updated"));
+  const observedOutput = events.find(event => event.event_type === "native.output.updated");
+  assert.equal(observedOutput.turn_id, undefined);
+  assert.deepEqual(harnessNativeOutputObservationSchema.parse(observedOutput.data.output), output);
   await peer.stopSession({session_id: "session"});
   const read = await peer.readConversation("session");
   assert.equal(read.payload.history.turns[0].portable_items[0].type, "message");

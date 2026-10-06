@@ -1,4 +1,4 @@
-import {randomUUID} from "node:crypto";
+import {randomUUID, createHash} from "node:crypto";
 import {realpath} from "node:fs/promises";
 import {query, type Query, type Options, type SDKMessage, type SDKUserMessage} from "@anthropic-ai/claude-agent-sdk";
 import {z} from "zod";
@@ -38,6 +38,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   readonly #tasks = new Map<string, Task>();
   readonly #launches = new Map<string, {root: Root; parent?: string}>();
   readonly #roots = new Set<Root>();
+  readonly #messageRoots = new Map<string, Root>();
   readonly #sessionLifetime = new AbortController();
   readonly #sessionInputs: NativeInteractions;
   #background = new Set<string>();
@@ -102,6 +103,23 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   #session(event: HarnessAdapterEvent): void {this.start.emitSessionEvent!(event);}
   #observe(task: Task): void {this.#session({event_type: "native.work.updated", data: {work: task.work}});}
+  readonly #sessionOutputIds = new Map<string, string>();
+  #unattributedAssistant(message: Extract<SDKMessage, {type: "assistant"}>): void {
+    const id = z.string().min(1).max(512).parse(message.uuid);
+    const blocks = z.array(z.record(z.string(), z.json())).max(1024).parse(message.message.content);
+    if (!blocks.length) return;
+    const content = {role: "assistant", blocks};
+    const digest = createHash("sha256").update(JSON.stringify(content)).digest("hex");
+    const prior = this.#sessionOutputIds.get(id);
+    if (prior === digest) return;
+    if (prior) throw error("native_output_binding", "Native output identity was reused with another message.");
+    if (this.#sessionOutputIds.size >= 1024) throw error("native_output_limit", "Native session output exceeded its bounded identity registry.");
+    if (!this.start.publishContent) throw error("native_output_owner_required", "Native asynchronous output requires an owned content store.");
+    const content_ref = this.start.publishContent(content);
+    this.#session({event_type: "native.output.updated", data: {output: {source: "native", native_source: "claude.sdk.assistant",
+      item_id: id, scope: "session", correlation: "unattributed", item_type: "assistant_message", content_ref}}});
+    this.#sessionOutputIds.set(id, digest);
+  }
   historyOwner(work: import("@harness-control/protocol").HarnessNativeWorkRecord): {sessionId: string; agentId: string} {
     const task = this.#tasks.get(work.work_id);
     if (this.#lost || this.#stopping || !this.#initialized || !task || task.work.kind !== "agent" || !task.launch
@@ -137,6 +155,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       if (root.interactions.outstanding || this.#pending().some(task => task.root === root)) continue;
       root.lifetime.abort(); root.interactions.close(); this.#roots.delete(root);
       for (const [id, launch] of this.#launches) if (launch.root === root) this.#launches.delete(id);
+      for (const [id, owner] of this.#messageRoots) if (owner === root) this.#messageRoots.delete(id);
       break;
     }
     if (this.#roots.size >= 128) throw error("native_session_turn_limit", "The persistent session reached its bounded live interaction ownership registry.");
@@ -292,10 +311,21 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     }
     const parent = "parent_tool_use_id" in message ? message.parent_tool_use_id : null;
     if (!parent && (message.type === "assistant" || message.type === "stream_event" && message.event.type === "message_start")) {
-      // Each root message starts a correlation lane. Autonomous wakes must not inherit the prior app prompt's lane.
-      this.#boundRoot = this.#active && ids.some(id => this.#active!.ids.has(id)) ? this.#active : undefined;
+      // The SDK stamps only the first reply frame. Later blocks of that exact native
+      // message keep its proven owner; another message cannot inherit that lane.
+      const nativeMessage = message.type === "assistant" ? message.message.id : message.event.type === "message_start" ? message.event.message?.id : undefined;
+      const nativeMessageId = z.string().min(1).max(512).safeParse(nativeMessage);
+      const stamped = this.#active && ids.some(id => this.#active!.ids.has(id)) ? this.#active : undefined;
+      const known = nativeMessageId.success ? this.#messageRoots.get(nativeMessageId.data) : undefined;
+      if (stamped && nativeMessageId.success) {
+        if (known && known !== stamped) throw error("native_message_binding", "A native message identity belongs to another admitted root.");
+        if (!known && this.#messageRoots.size >= 4096) throw error("native_message_limit", "Native message correlation exceeded its bounded registry.");
+        this.#messageRoots.set(nativeMessageId.data, stamped);
+      }
+      this.#boundRoot = stamped ?? known;
     }
     const root = parent ? this.#launches.get(parent)?.root : this.#boundRoot;
+    if (message.type === "assistant" && !parent && !root && !ids.length) this.#unattributedAssistant(message);
     if (message.type === "assistant") {
       if (root) for (const block of message.message.content) if (block.type === "tool_use") {
         if (this.#launches.size >= 10_000 && !this.#launches.has(block.id)) throw error("native_item_limit", "Claude exceeded the bounded tool ownership registry.");
