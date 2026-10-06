@@ -36,6 +36,7 @@ export class CodexRpc {
   readonly #activeRequests = new Set<string | number>();
   readonly #requestSignals = new Map<string | number, AbortController>();
   readonly #requestsAbort = new AbortController();
+  readonly #observers = new Set<(message: RpcMessage) => void>();
   onNotification: (message: RpcMessage) => void = () => {};
   onFailure: (error: Error) => void = () => {};
 
@@ -101,6 +102,11 @@ export class CodexRpc {
 
   removeRequestHandler(method: string): void {
     this.#handlers.delete(method);
+  }
+
+  observeNotifications(observer: (message: RpcMessage) => void): () => void {
+    this.#observers.add(observer);
+    return () => {this.#observers.delete(observer);};
   }
 
   async #handleRequest(
@@ -171,6 +177,7 @@ export class CodexRpc {
         const resolved = z.object({requestId: z.union([z.string(), z.number()])}).safeParse(message.params);
         if (resolved.success) this.#requestSignals.get(resolved.data.requestId)?.abort();
       }
+      for (const observer of this.#observers) observer(message);
       this.onNotification(message);
     } else if (typeof message.id === "number") {
       const pending = this.#pending.get(message.id);
