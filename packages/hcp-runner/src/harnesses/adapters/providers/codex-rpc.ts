@@ -33,6 +33,7 @@ export class CodexRpc {
   #buffer = "";
   readonly #decoder = new StringDecoder("utf8");
   readonly #handlers = new Map<string, RpcRequestHandler>();
+  readonly #sessionHandlers = new Map<string, RpcRequestHandler>();
   readonly #activeRequests = new Set<string | number>();
   readonly #requestSignals = new Map<string | number, AbortController>();
   readonly #requestTurns = new Map<string | number, {threadId: string; turnId: string}>();
@@ -105,6 +106,19 @@ export class CodexRpc {
     this.#handlers.delete(method);
   }
 
+  setSessionRequestHandler(method: string, handler: RpcRequestHandler): void {
+    if (this.#sessionHandlers.has(method)) throw new Error(`A session handler is already registered for ${method}.`);
+    this.#sessionHandlers.set(method, handler);
+  }
+
+  /** A persistent router can delegate an exact root request to the currently admitted turn. */
+  handleTurnRequest(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
+    signal.throwIfAborted();
+    const handler = this.#handlers.get(method);
+    if (!handler) throw new HarnessAdapterError("native_request_owner_missing", "No admitted root owns this native callback.");
+    return handler(params, signal);
+  }
+
   observeNotifications(observer: (message: RpcMessage) => void): () => void {
     this.#observers.add(observer);
     return () => {this.#observers.delete(observer);};
@@ -156,7 +170,7 @@ export class CodexRpc {
   #receive(message: RpcMessage): void {
     if (this.#failure) return;
     if (message.method && message.id !== undefined) {
-      const handler = this.#handlers.get(message.method);
+      const handler = this.#sessionHandlers.get(message.method) ?? this.#handlers.get(message.method);
       if (handler) {
         void this.#handleRequest(message.id, message.params, handler);
         return;

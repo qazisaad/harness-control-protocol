@@ -3,9 +3,10 @@ import {mkdtemp, writeFile, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {test} from "node:test";
-import type {HarnessAdapterEvent, HarnessAdapterStartInput} from "../types.js";
+import type {HarnessAdapterEvent, HarnessAdapterStartInput, HarnessAdapterTurnInput, HarnessNativeInteractions} from "../types.js";
 import {CodexRpc} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
+import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 
 async function fixture(mode = "normal") {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-codex-child-"));
@@ -30,19 +31,71 @@ createInterface({input:process.stdin}).on('line',line=>{
  else if(m.method==='unknown-child'){notify('turn/started',{threadId:'unowned',turn:{id:'unowned-turn'}});send({id:m.id,result:{}});}
  else if(m.method==='unknown-root'){notify('turn/started',{threadId:'root',turn:{id:'autonomous-turn'}});send({id:m.id,result:{}});}
  else if(m.method==='stats')send({id:m.id,result:{interrupts,subscriptions}});
+ else if(m.method==='ask-child') {send({id:'child-question',method:'item/tool/requestUserInput',params:{threadId:'child',turnId:'child-turn',itemId:'question-item',questions:[{id:'q',header:'Choice',question:'Choose a value',options:[{label:'Alpha',description:'First'},{label:'Beta',description:'Second'}]}]}});send({id:m.id,result:{}});}
+ else if(m.method==='ask-root') {send({id:'root-question',method:'item/tool/requestUserInput',params:{threadId:'root',turnId:'second-root',itemId:'root-item',questions:[]}});send({id:m.id,result:{}});}
+ else if(m.id==='child-question'||m.id==='root-question')notify('fixture/reply',{requestId:m.id,result:m.result});
 });
 `, {mode:0o700});
   const rpc = new CodexRpc(executable, cwd, {...process.env, MODE:mode});
   const events: HarnessAdapterEvent[] = [];
+  let sessionInteractions: HarnessNativeInteractions | undefined;
   const input: HarnessAdapterStartInput = {payload:{session_id:"session",workspace_id:"workspace",provider_instance_id:"codex",driver_kind:"codex",cwd,
     sandbox_mode:"workspace_write",approval_policy:"full_access",continue_session:false,execution_profile:"interactive",model_selection:{model:"fixture"},mcp_servers:[]},
     provider:{id:"codex",driver_kind:"codex",enabled:true,launch_args:[],env:{},models:[],hidden_models:[],model_order:[],favorite_models:[],local_capabilities:[]},
-    emitSessionEvent:event=>{events.push(event);}};
+    emitSessionEvent:event=>{events.push(event);}, registerSessionInteractions:value=>{sessionInteractions=value;}};
   const owner = new CodexOwnedWork(rpc,input); owner.attachRootThread("root");
   const launch = async () => {await rpc.request("launch",{}); owner.admitRoot("root","root-turn","app-root"); await owner.settled();};
   const work = () => [...events].reverse().find(event=>event.event_type==="native.work.updated")!.data.work as import("@harness-control/protocol").HarnessNativeWorkObservation;
-  return {rpc,owner,events,launch,work,close:async()=>{await rpc.process.stop();await rm(cwd,{recursive:true,force:true});}};
+  return {rpc,owner,events,input,launch,work,get sessionInteractions(){return sessionInteractions;},close:async()=>{await rpc.process.stop();await rm(cwd,{recursive:true,force:true});}};
 }
+
+function rootInput(start: HarnessAdapterStartInput): HarnessAdapterTurnInput {
+  return {startPayload:start.payload, provider:start.provider, session:{adapter_session_id:"native"},
+    payload:{session_id:"session",turn_id:"app-root",input:"spawn"},
+    reviewNativeWorkMcp:()=>({async request(){assert.fail("no MCP call expected");},async complete(){}})};
+}
+async function requested(events: HarnessAdapterEvent[]): Promise<HarnessAdapterEvent> {
+  const deadline=Date.now()+2000;
+  while(Date.now()<deadline) {
+    const event=[...events].reverse().find(event=>event.event_type==="user_input.requested");
+    if(event)return event;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  throw new Error("No child input arrived");
+}
+
+test("persistent Codex callback routing separates an old child from a newer root handler", {timeout:5000}, async()=>{
+  const f=await fixture();
+  try {
+    const callbacks=new CodexWorkCallbacks(f.rpc,f.owner,f.input);
+    await f.rpc.request("launch",{}); callbacks.admit(rootInput(f.input),"root","root-turn"); await f.owner.settled();
+    let rootCalls=0;
+    f.rpc.setRequestHandler("item/tool/requestUserInput",async params=>{rootCalls++;assert.equal((params as {turnId:string}).turnId,"second-root");return {root:true};});
+    const reply=new Promise<unknown>(resolve=>{f.rpc.onNotification=message=>{if(message.method==="fixture/reply"&&(message.params as {requestId:string}).requestId==="child-question")resolve((message.params as {result:unknown}).result);};});
+    await f.rpc.request("ask-child",{});
+    const event=await requested(f.events);
+    assert.equal(event.turn_id,"app-root");assert.equal(event.data.native_work_id,f.work().work_id);
+    const requestId=event.data.request_id as string;
+    assert.throws(()=>f.sessionInteractions!.respondInput({session_id:"session",turn_id:"new-root",request_id:requestId,actor_id:"user",value:{answers:{q:{answers:["Alpha"]}}}}),/another active session or turn/);
+    f.sessionInteractions!.respondInput({session_id:"session",turn_id:"app-root",request_id:requestId,actor_id:"user",value:{answers:{q:{answers:["Alpha"]}}}});
+    assert.deepEqual(await reply,{answers:{q:{answers:["Alpha"]}}});assert.equal(rootCalls,0);
+    await f.rpc.request("ask-root",{}); await f.rpc.request("stats",{});assert.equal(rootCalls,1);
+    await f.rpc.request("complete",{});await f.owner.settled();await f.owner.stop();callbacks.close();
+  }finally{await f.close();}
+});
+
+test("child terminal callback loss preserves its origin and does not kill the newer root transport", {timeout:5000},async()=>{
+  const f=await fixture();
+  try {
+    const callbacks=new CodexWorkCallbacks(f.rpc,f.owner,f.input);
+    await f.rpc.request("launch",{});callbacks.admit(rootInput(f.input),"root","root-turn");await f.owner.settled();
+    await f.rpc.request("ask-child",{});const request=await requested(f.events);
+    await f.rpc.request("complete",{});await f.owner.settled();await f.rpc.request("stats",{});
+    assert.ok(f.events.some(event=>event.event_type==="native.request.lost"&&event.turn_id==="app-root"&&event.data.native_work_id===f.work().work_id));
+    assert.throws(()=>f.sessionInteractions!.respondInput({session_id:"session",turn_id:"app-root",request_id:request.data.request_id as string,actor_id:"user",value:{answers:{q:{answers:["Alpha"]}}}}),/unavailable/);
+    await f.owner.stop();callbacks.close();assert.equal(f.sessionInteractions,undefined);
+  }finally{await f.close();}
+});
 
 test("native Codex child ownership survives root completion and retains the admitted origin", {timeout:5000}, async () => {
   const f = await fixture();
