@@ -382,3 +382,17 @@ test("local capability leases use HCP identity without product workflow fields",
     assert.throws(() => parseLocalCapabilityLease({ ...lease, [field]: "product-only" }));
   }
 });
+
+test("session instructions preserve content and enforce their size limit", () => {
+  const payload: HcpSessionStartPayload = {session_id: "instructions", workspace_id: "repo",
+    provider_instance_id: "codex", driver_kind: "codex", cwd: "/tmp", sandbox_mode: "read_only",
+    approval_policy: "ask", continue_session: false, model_selection: {model: "test"}, mcp_servers: []};
+  for (const instructions of [undefined, "", "Review security", "x".repeat(131072)]) {
+    const message = createEnvelope("harness.session.start", {...payload, ...(instructions === undefined ? {} : {instructions})});
+    const parsed = parseHcpMessage(message);
+    assert.equal(parsed.type, "harness.session.start");
+    if (parsed.type === "harness.session.start") assert.equal(parsed.payload.instructions, instructions);
+  }
+  assert.equal(hcpMessageSchema.safeParse(createEnvelope("harness.session.start", {...payload, instructions: "x".repeat(131073)})).success, false);
+  assert.equal(hcpMessageSchema.safeParse(createEnvelope("harness.session.start", {...payload, instructions: null})).success, false);
+});

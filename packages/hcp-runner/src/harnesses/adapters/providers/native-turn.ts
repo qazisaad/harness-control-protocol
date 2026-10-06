@@ -94,6 +94,11 @@ export type NativeTurn = (
 
 /** Owns terminal decisions after the provider runtime has finished cleanup. */
 export class NativeTurns {
+  #closed = false;
+  async close(): Promise<void> {
+    this.#closed = true;
+    await Promise.all([...this.#active.keys()].map(id => this.stop(id)));
+  }
   readonly #active = new Map<string, RunningTurn>();
   readonly #usedSessions = new Set<string>();
 
@@ -107,6 +112,7 @@ export class NativeTurns {
     execute: NativeTurn,
   ): Promise<HarnessAdapterEvent[]> {
     const { session_id: sessionId, turn_id: turnId } = input.payload;
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "Native turn owner is closed.");
     if (input.payload.action === "compact" && !["codex", "claude", "opencode"].includes(this.driver))
       throw new HarnessAdapterError("compaction_unsupported", "This provider profile does not implement manual compaction.");
     if (input.payload.action === "compact" && (input.payload.input !== "" || input.payload.images?.length || input.payload.mode === "plan"))

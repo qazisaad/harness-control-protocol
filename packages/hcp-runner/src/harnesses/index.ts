@@ -167,6 +167,19 @@ const terminalTurnEvents = new Set(["turn.completed", "turn.failed", "turn.cance
 const memoryInputFiles = new WeakMap<RunnerStateStore, OwnedHarnessInputFileStore>();
 
 export class HarnessSessionManager {
+  #closed = false;
+  #closing: Promise<void> | undefined;
+  async close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    for (const startup of this.#startingSessions.values()) startup.cancelled = true;
+    this.#closing = this.#serializeWorkspace(async () => {
+      try {
+        await Promise.all([...this.#sessions.keys()].map(id => this.#stopSession(id, "Runner shutdown")));
+      } finally {await this.#adapterRegistry.close();}
+    });
+    return this.#closing;
+  }
   readonly #nativeInteractions = new Map<string, HarnessNativeInteractions>();
   readonly #sessionInteractions = new Map<string, HarnessNativeInteractions>();
   readonly #activeTurnControls = new Map<string, {turnId: string; controls: HarnessActiveTurnControls}>();
@@ -691,6 +704,7 @@ export class HarnessSessionManager {
   }
 
   startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
+    if (this.#closed) throw new HarnessSessionError("runner_closed", "Runner session owner is closed.");
     if (this.#startingSessions.has(payload.session_id)) {
       throw new HarnessSessionError("session_exists", "Session startup is already in progress.");
     }

@@ -499,7 +499,7 @@ export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdi
 export type HcpSessionStartPayload = {
   conversation_transition?: {transition_id: string; expected_history_hash: string};
   execution_profile?: string;
-  instructions?: HarnessInstructions;
+  instructions?: HarnessInstructions | string;
   configuration_inheritance?: HarnessConfigurationInheritance;
   session_id: string;
   workspace_id: string;
@@ -1446,7 +1446,7 @@ const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(im
 export const hcpSessionStartPayloadSchema = z
   .object({
     conversation_transition: z.object({transition_id: z.string().min(1).max(512), expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/)}).strict().optional(),
-    instructions: harnessInstructionsSchema.optional(),
+    instructions: z.union([harnessInstructionsSchema, z.string().max(128 * 1024)]).optional(),
     execution_profile: harnessExecutionProfileIdSchema.optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     session_id: nonEmptyStringSchema,

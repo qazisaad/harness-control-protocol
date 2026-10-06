@@ -1,4 +1,5 @@
 import {randomUUID, createHash} from "node:crypto";
+import {isDeepStrictEqual} from "node:util";
 import {realpath} from "node:fs/promises";
 import {query, type Query, type Options, type SDKMessage, type SDKUserMessage} from "@anthropic-ai/claude-agent-sdk";
 import {z} from "zod";
@@ -13,7 +14,7 @@ import {claudeContextCapacity} from "./claude-context.js";
 import {claudeEffortControl} from "./claude-effort.js";
 import {claudeResultSchema, type ClaudeQueryFactory} from "./claude-runtime.js";
 import {NativeProcess} from "./native-process.js";
-import {adapterMcpServers, assertCliMcpAttachmentProxied} from "./shared.js";
+import {adapterMcpServers, assertCliMcpAttachmentProxied, nativeInstructions} from "./shared.js";
 import {selectedEffort} from "./native-turn.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
@@ -187,6 +188,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     return {type: "user", uuid, session_id: this.nativeId, parent_tool_use_id: null, message: {role: "user", content: text}};
   }
   async run(input: HarnessAdapterTurnInput, signal: AbortSignal, emit: (event: HarnessAdapterEvent) => void): Promise<HarnessTurnFinalOutput> {
+    if (!isDeepStrictEqual(input.provider, this.start.provider) || !isDeepStrictEqual(input.startPayload, this.start.payload))
+      throw error("native_continuation_binding", "The persistent Claude owner requires its original provider and execution configuration.");
     if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The persistent Claude owner cannot execute another turn.");
     if (this.#active) throw error("native_turn_busy", "A native root turn is already running.");
     if (input.payload.action === "compact" && (this.#pending().length || this.#background.size || this.#unconfirmedWork || this.#sessionInputs.outstanding))
@@ -280,7 +283,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       pathToClaudeCodeExecutable: this.start.provider.executable_path ?? "claude", cwd: this.start.payload.cwd,
       model: this.#selection!.model, ...(effort ? {effort} : {}),
       env: {...process.env, ...this.start.provider.env, ...(this.start.provider.home ? {CLAUDE_CONFIG_DIR: this.start.provider.home} : {})},
-      systemPrompt: this.start.payload.instructions?.system ?? {type: "preset", preset: "claude_code"}, settingSources: [], settings: {disableAllHooks: true},
+      systemPrompt: typeof this.start.payload.instructions === "string" ? {type: "preset", preset: "claude_code", append: this.start.payload.instructions}
+        : nativeInstructions(this.start.payload).system ?? {type: "preset", preset: "claude_code"}, settingSources: [], settings: {disableAllHooks: true},
       persistSession: true, ...(this.start.nativeConversation && !this.start.nativeConversation.fresh ? {resume: this.nativeId} : {sessionId: this.nativeId}),
       // This owner exposes stopTask through HCP work cancellation. Without this declaration,
       // native interrupt also kills independent background tasks on an open input stream.

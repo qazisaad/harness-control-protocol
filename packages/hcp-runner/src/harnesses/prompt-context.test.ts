@@ -42,7 +42,7 @@ test("manager prepares bounded context once in user input, preserves instruction
       byte_length: Buffer.byteLength(encoded), context_hash: createHash("sha256").update(encoded).digest("hex")});
     assert.equal(prepared.turn_id, "context");
     assert.equal(calls[0]!.payload.input.split(encoded).length, 2);
-    assert.equal(calls[0]!.startPayload.instructions?.system, "Authorized app instructions");
+    assert.deepEqual(calls[0]!.startPayload.instructions, {system: "Authorized app instructions"});
     assert.equal(calls[0]!.startPayload.approval_policy, "ask");
     assert.equal(calls[0]!.startPayload.sandbox_mode, "read_only");
     const unrelated = await manager.sendTurn({session_id: "session", turn_id: "plain", input: "Plain"});

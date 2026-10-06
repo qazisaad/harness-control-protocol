@@ -6439,20 +6439,28 @@
               "additionalProperties": false
             },
             "instructions": {
-              "type": "object",
-              "properties": {
-                "system": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 65536
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "system": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    },
+                    "developer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536
+                    }
+                  },
+                  "additionalProperties": false
                 },
-                "developer": {
+                {
                   "type": "string",
-                  "minLength": 1,
-                  "maxLength": 65536
+                  "maxLength": 131072
                 }
-              },
-              "additionalProperties": false
+              ]
             },
             "execution_profile": {
               "type": "string",

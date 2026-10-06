@@ -54,6 +54,12 @@ export type CodexHarnessAdapterOptions = {
   processKillGraceMs?: number;
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
+  #closed = false;
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.#turns.close();
+    await Promise.all([...this.#leases.keys()].map(sessionId => this.stopSession({sessionId})));
+  }
   readonly fileContextInputs = true;
   readonly promptContextInputs = true;
   readonly executionProfiles = retainedProfiles;
@@ -209,12 +215,14 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   }
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "Codex runtime owner is closed.");
     validateNativeStart(input, "codex");
   }
   async startSession(
     input: HarnessAdapterStartInput,
   ): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "Codex runtime owner closed during startup.");
     if (input.payload.continue_session && !input.nativeConversation)
       throw new HarnessAdapterError("native_continuation_binding", "Codex resume requires the runner-authorized retained binding.");
     if (input.payload.execution_profile === "interactive") {
@@ -223,6 +231,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         {cwd: input.payload.cwd, env: providerEnvironment(input.provider)}, this.#probeTimeoutMs);
       if (version.timedOut || version.exitCode !== 0 || !retainedVersion(firstLine(version.stdout)))
         throw new HarnessAdapterError("native_profile_unsupported", "Persistent Codex requires the verified 0.160.0 app-server protocol.");
+      if (this.#closed) throw new HarnessAdapterError("runner_closed", "Codex runtime owner closed during its version probe.");
       if (!input.emitSessionEvent || !input.registerSessionInteractions)
         throw new HarnessAdapterError("native_session_owner_required", "Interactive Codex requires registered session observation and interaction owners.");
       const rpc = new CodexRpc(input.provider.executable_path ?? "codex", input.payload.cwd,

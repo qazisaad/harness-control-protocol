@@ -8,6 +8,8 @@ if (process.argv.includes("--version")) {
 }
 
 const streams = new Set();
+const record = value => {if (process.env.REUSE_RECORD) appendFileSync(process.env.REUSE_RECORD, JSON.stringify({pid:process.pid,...value})+'\n');};
+record({kind:"server"});
 const pending = new Map();
 let rememberedPermission = false;
 let sessionPermission;
@@ -73,6 +75,11 @@ const server = createServer(async (request, response) => {
       writeFileSync(file, JSON.stringify(histories));
     }
   }
+  if (request.method === "DELETE" && /^\/session\/[^/]+$/.test(url.pathname)) {
+    record({kind: "delete"});
+    if (process.env.FAIL_DELETE) {response.writeHead(500).end();return;}
+    writeJson(response, true); return;
+  }
   if (request.method === "POST" && url.pathname === "/session") {
     const permissions = payload.permission;
     sessionPermission = permissions;
@@ -115,6 +122,12 @@ const server = createServer(async (request, response) => {
     const text = payload.parts[0].text;
     response.hcpMessageId = payload.messageID;
     admittedMessages.set(payload.messageID, {...payload, hcpSessionId: executionId});
+    if (process.env.HOLD_TURN) {
+      const messageID = `held-${payload.messageID}`;
+      emit({type: "message.updated", properties: {info: {id: messageID, sessionID: executionId, role: "assistant", parentID: payload.messageID}}});
+      emit({type: "message.part.updated", properties: {part: {id: "held-text", messageID, sessionID: executionId, type: "text"}, delta: "waiting"}});
+      return;
+    }
     if (text === "approval" || text === "question") {
       if (text === "approval" && rememberedPermission) {finish(response); return;}
       pending.set(text, response);

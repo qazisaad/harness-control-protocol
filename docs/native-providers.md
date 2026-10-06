@@ -1,5 +1,7 @@
 # Native provider support
 
+Current integration and remaining work: [generic harness migration handoff](harness-migration-handoff.md). The dated acceptance entries below are historical evidence; statements that the feature branch was unpushed describe those checkpoints. Integrating source into main does not publish new npm packages or complete the T3 replacement.
+
 The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`. This replaces completion-only CLI output parsing. HCP still owns command receipts, session events, replay, and snapshots; provider runtimes own native execution. An ACP bridge is not included.
 
 ## Supported contract

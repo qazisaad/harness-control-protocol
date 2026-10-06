@@ -48,6 +48,12 @@ export type ClaudeHarnessAdapterOptions = {
   modelCatalog?: typeof claudeModelCatalog;
 };
 export class ClaudeHarnessAdapter implements HarnessAdapter {
+  #closed = false;
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.#turns.close();
+    await Promise.all([...this.#persistent.keys()].map(sessionId => this.stopSession({sessionId})));
+  }
   readonly fileContextInputs = true;
   readonly promptContextInputs = true;
   readonly executionProfiles = nativeExecutionCapabilities("claude").execution_profiles!;
@@ -193,6 +199,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
   }
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "Claude runtime owner is closed.");
     validateNativeStart(input, "claude");
     if (input.payload.conversation_transition && input.payload.execution_profile !== "interactive")
       throw new HarnessAdapterError("native_configuration_transition_unsupported", "Idle Claude policy replacement requires the interactive owner.");
@@ -204,6 +211,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     input: HarnessAdapterStartInput,
   ): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "Claude runtime owner closed during startup.");
     if (input.payload.continue_session && !input.nativeConversation)
       throw new HarnessAdapterError("native_continuation_binding", "Claude resume requires the runner-authorized retained binding.");
     for (const attachment of adapterMcpServers(input.mcpServers, input.payload))

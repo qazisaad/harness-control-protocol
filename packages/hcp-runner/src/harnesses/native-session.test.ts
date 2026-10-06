@@ -31,6 +31,8 @@ createInterface({input:process.stdin}).on('line', line => {
  if(request.id==='permissions') { complete(JSON.stringify(request.result)); return; }
  if(!request.id) return;
  if(request.method==='initialize') send({id:request.id,result:{}});
+ if(request.method==='thread/loaded/list') send({id:request.id,result:{data:[]}});
+ if(request.method==='thread/unsubscribe') {send({id:request.id,result:{status:'unsubscribed'}});notify('thread/closed',{threadId:'thread'});}
  if(request.method==='config/read') send({id:request.id,result:{config:{}}});
  if(request.method==='mcpServerStatus/list') send({id:request.id,result:{data:[],nextCursor:null}});
  if(request.method==='thread/start' || request.method==='thread/resume') send({id:request.id,result:{thread:{id:'thread'},sandbox:{type:request.params.sandbox==='danger-full-access'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:request.params.approvalPolicy}});
@@ -144,6 +146,7 @@ for (const mode of ["approval", "question"] as const) {
       assert.ok(events.some(event => event.event_type === "command.completed" && "exit_code" in event.data && event.data.exit_code === 0));
       assert.ok(events.some(event => event.event_type === "turn.plan.updated"));
       assert.ok(events.some(event => event.event_type === "turn.diff.updated"));
+      await manager.close();
       manager = f.manager();
       const next = f.payload("second","followup",true);
       await manager.startSession(next);
@@ -155,7 +158,7 @@ for (const mode of ["approval", "question"] as const) {
       assert.equal(requests.filter(request => request.method === "thread/start").length,1);
       assert.equal(requests.find(request => request.method === "thread/resume").params.threadId,"thread");
       assert.equal(requests.filter(request => request.id === mode).length,1);
-    } finally {for(const id of ["first","second"]) {if(manager.activeSessionCount()) await manager.stopSession(id,"cleanup");} await f.cleanup();}
+    } finally {await manager.close(); await f.cleanup();}
   });
 }
 
@@ -178,7 +181,29 @@ test("interruption during native approval settles once; changed policy cannot re
     const next = f.payload("third","followup",true);
     await manager.startSession(next); await manager.sendFirstTurn(next,()=>{}); await manager.stopSession(next.session_id,"Completed");
     assert.equal((await f.requests()).filter(request => request.method === "thread/start").length,1);
-  } finally {for(const id of ["first","second","third"]) {if(manager.activeSessionCount()) await manager.stopSession(id,"cleanup");} await f.cleanup();}
+  } finally {await manager.close(); await f.cleanup();}
+});
+
+test("isolated owners retain conversation history and close independently; runner close fences admission", {timeout:10_000}, async () => {
+  const f=await fixture(), manager=f.manager();
+  try {
+    for (const name of ["first","second"]) {
+      const payload=f.payload(name,"followup",name==="second");
+      await manager.startSession(payload);
+      const events:HcpHarnessEventPayload[]=[];
+      await manager.sendFirstTurn(payload,event=>events.push(event));
+      assert.equal(events.filter(e=>e.event_type==="turn.completed").length,1);
+      await manager.stopSession(name,"Completed");
+    }
+    const requests=await f.requests();
+    assert.equal(requests.filter(r=>r.method==="initialize").length,2);
+    assert.equal(requests.filter(r=>r.method==="thread/unsubscribe").length,0);
+    assert.equal(requests.filter(r=>r.method==="config/read").length,2);
+    assert.equal(requests.filter(r=>r.method==="thread/resume").length,1);
+    await manager.close();
+    await manager.close();
+    assert.throws(() => manager.startSession(f.payload("closed", "followup", true)), /closed/);
+  } finally {await manager.close();await f.cleanup();}
 });
 
 test("native steering targets the exact live turn and compaction preserves its conversation", {timeout:10_000}, async () => {

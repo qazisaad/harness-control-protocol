@@ -6,7 +6,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { HarnessAdapterError } from "../types.js";
-import { adapterMcpServers, assertCliMcpAttachmentProxied } from "./shared.js";
+import { adapterMcpServers, assertCliMcpAttachmentProxied, nativeInstructions } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
 import { NativeProcess } from "./native-process.js";
 import { randomUUID } from "node:crypto";
@@ -99,7 +99,9 @@ export function createClaudeTurn(
               ? { CLAUDE_CONFIG_DIR: input.provider.home }
               : {}),
           },
-          systemPrompt: input.startPayload.instructions?.system ?? { type: "preset", preset: "claude_code" },
+          systemPrompt: typeof input.startPayload.instructions === "string"
+            ? {type: "preset", preset: "claude_code", append: input.startPayload.instructions}
+            : nativeInstructions(input.startPayload).system ?? { type: "preset", preset: "claude_code" },
           settingSources: [],
           settings: {disableAllHooks: true},
           persistSession: true,

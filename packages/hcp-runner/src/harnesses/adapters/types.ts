@@ -161,6 +161,7 @@ export type HarnessAdapter = {
   readonly configurationInheritance?: import("@harness-control/protocol").HarnessConfigurationInheritance;
   readonly configurationInheritanceOptions?: readonly import("@harness-control/protocol").HarnessConfigurationInheritance[];
   readonly driverKind: string;
+  close?(): Promise<void>;
   readonly durableMcpContinuation?: true;
   readonly conversationOperations?: readonly HarnessConversationOperation[];
   conversationOperation?(input: HarnessAdapterConversationInput): Promise<HcpConversationResultPayload>;

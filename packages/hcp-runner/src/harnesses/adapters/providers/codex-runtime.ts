@@ -6,7 +6,7 @@ import type {
   HarnessContextUsage,
 } from "@harness-control/protocol";
 import { HarnessAdapterError } from "../types.js";
-import { adapterMcpServers } from "./shared.js";
+import { adapterMcpServers, nativeInstructions } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
 import { CodexRpc, type RpcMessage, type RpcRequestHandler } from "./codex-rpc.js";
 import { NativeMcpBridge } from "./native-mcp.js";
@@ -438,8 +438,8 @@ export async function initializeCodexConversation(input: CodexConversationInitia
         sandbox,
         approvalPolicy,
         approvalsReviewer: "user",
-        ...(input.startPayload.instructions?.system ? {baseInstructions: input.startPayload.instructions.system} : {}),
-        ...(input.startPayload.instructions?.developer ? {developerInstructions: input.startPayload.instructions.developer} : {}),
+        ...(nativeInstructions(input.startPayload).system ? {baseInstructions: nativeInstructions(input.startPayload).system} : {}),
+        developerInstructions: nativeInstructions(input.startPayload).developer ?? "",
 
         config: {
           mcp_servers: servers,

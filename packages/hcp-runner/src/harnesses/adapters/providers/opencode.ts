@@ -177,6 +177,12 @@ export type OpenCodeHarnessAdapterOptions = {
 };
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
+  #closed = false;
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.#turns.close();
+    await Promise.all([...this.#runtimes.keys()].map(sessionId => this.stopSession({sessionId})));
+  }
   readonly fileContextInputs = true;
   readonly promptContextInputs = true;
   readonly emptyConversation = true;
@@ -247,6 +253,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   }
 
   async validateStart(input: HarnessAdapterStartInput): Promise<void> {
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "OpenCode runtime owner is closed.");
     validateConfigurationInheritance(input.payload, this.configurationInheritance, this.configurationInheritanceOptions);
     validateInstructionRoles(input.payload, this.instructionRoles);
     if (input.payload.conversation_transition && (input.payload.execution_profile !== "interactive"
@@ -299,6 +306,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
     await this.validateStart(input);
+    if (this.#closed) throw new HarnessAdapterError("runner_closed", "OpenCode runtime owner closed during startup.");
     if (input.payload.execution_profile === "background" && (!input.emitSessionEvent || !input.registerSessionInteractions))
       throw new HarnessAdapterError("native_session_owner_required", "Background work requires registered native observation and interaction owners.");
     if (input.payload.continue_session && !input.nativeConversation)
@@ -335,6 +343,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       approvalPolicy: input.payload.approval_policy,
       ...(input.payload.conversation_transition ? {policyTransition: {sourcePolicy: input.nativeConversation!.approval_policy!}} : {}),
     });
+    if (this.#closed) {await runtime.close(); throw new HarnessAdapterError("runner_closed", "OpenCode runtime owner closed during startup.");}
     if (controlled && (!runtime.ownedAccount || runtime.ownedAccount.providerId !== model.providerID)) {
       await runtime.close(); throw new HarnessAdapterError("native_configuration_mismatch", "The runtime did not establish the requested controlled owner.");
     }
@@ -386,7 +395,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
         ...(runtime.sessionPermissions ? {allowSessionPermissions: true} : {}),
         input: input.payload.input,
         model: input.payload.model_selection?.model ?? input.startPayload.model_selection.model,
-        ...(input.startPayload.instructions?.system ? {systemInstructions: input.startPayload.instructions.system} : {}),
+        ...(typeof input.startPayload.instructions !== "string" && input.startPayload.instructions?.system ? {systemInstructions: input.startPayload.instructions.system} : {}),
         emitEvent: emit, signal, interactions,
         onUsage: value => {usage = value; emit({event_type: "usage.updated", turn_id: input.payload.turn_id, data: {...value}});},
         modelSelection: selection,

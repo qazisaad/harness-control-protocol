@@ -211,6 +211,7 @@ describe("OpenCodeHarnessAdapter", () => {
         context: streamed.filter(event => event.event_type === "context.updated").at(-1)?.data});
     } finally {
       if (started) await adapter.stopSession({ sessionId: "session-1" });
+      await adapter.close();
       await workspace.cleanup();
     }
   });

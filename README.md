@@ -352,6 +352,8 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting and supported securit
 
 ## Contributing
 
+For the current generic harness controls work, its validation and remaining migration tasks, start with the [implementation and agent handoff](docs/harness-migration-handoff.md).
+
 Contributions are welcome while the project is still taking shape. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and pull request expectations. The most useful contributions right now are small, focused pull requests that improve one of the core contracts:
 
 - Protocol schema clarity and test coverage.

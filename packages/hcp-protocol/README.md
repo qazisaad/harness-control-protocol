@@ -24,3 +24,9 @@ Import `mcpReviewActionSchema`, `mcpReviewGrantSchema`, `mcpReviewPolicySchema`,
 Non-TypeScript consumers use `@harness-control/protocol/mcp-review.json` and the shared `mcp-review-fixtures.json`. In addition to JSON Schema validation, enforce the manifest's UTF-8 byte limit and validate the grant's embedded action JSON against the action schema. The versioned key intentionally has no application-specific alias.
 
 Durable continuation is an adapter capability (`durableMcpContinuation: true`), not a restriction in the persisted operation contract. Only adapters that can restore their native execution context should declare it. The built-in Codex adapter currently does; other built-ins do not. Application authorization and supported-provider policy remain the control plane's responsibility. See `examples/mcp-review-consumer.mjs` for approval and restart recovery using public APIs with an independent adapter.
+
+### Native instructions
+
+`harness.session.start.instructions` accepts explicit native roles, such as `{system: "...", developer: "..."}`, separately from turn input. Discovery advertises supported roles; Codex supports system/developer, Claude and OpenCode support system. Unsupported roles refuse rather than become ordinary prompt text. Use matching protocol, SDK and runner/schema versions.
+
+For compatibility with published 0.4.12, the legacy string form (at most 131072 characters) remains accepted: Codex delivers it as native developer instructions, Claude appends it to its system preset, and OpenCode reports `instructions_unsupported` before launch. Explicit role objects are preferred for new consumers. Changed instruction authority cannot silently reuse a retained conversation binding. See the [migration handoff](../../docs/harness-migration-handoff.md) for current source and release status.

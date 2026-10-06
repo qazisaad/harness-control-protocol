@@ -22,10 +22,18 @@ export function validateConfigurationInheritance(payload: HcpSessionStartPayload
 }
 
 export function validateInstructionRoles(payload: HcpSessionStartPayload, roles?: readonly ("system" | "developer")[]): void {
-  for (const role of Object.keys(payload.instructions ?? {})) {
+  for (const role of Object.keys(nativeInstructions(payload))) {
     if (!roles?.includes(role as "system" | "developer"))
       throw new HarnessAdapterError("instruction_role_unsupported", `This adapter cannot deliver the requested '${role}' native instruction role.`);
   }
+}
+
+/** Preserve 0.4.12's legacy string delivery while preferring explicit roles. */
+export function nativeInstructions(payload: HcpSessionStartPayload): import("@harness-control/protocol").HarnessInstructions {
+  if (typeof payload.instructions !== "string") return payload.instructions ?? {};
+  if (payload.driver_kind === "codex") return {developer: payload.instructions};
+  if (payload.driver_kind === "claude") return {system: payload.instructions};
+  throw new HarnessAdapterError("instructions_unsupported", "Use explicit supported instruction roles for this native driver.");
 }
 
 export function normalizeProviderModels(models: ProviderInstanceConfig["models"]): HarnessModel[] {

@@ -26,6 +26,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (!message.id) return;
   const reply = result => send({ id: message.id, result });
   if (message.method === 'initialize') reply({});
+  if (message.method === 'thread/loaded/list') reply({data:[]});
+  if (message.method === 'thread/unsubscribe') {reply({status:'unsubscribed'});send({method:'thread/closed',params:{threadId:'native-thread'}});}
   if (message.method === 'config/read') reply({ config: {} });
   if (message.method === 'mcpServerStatus/list') reply({ data: [], nextCursor: null });
   if (message.method === 'thread/start') reply({ thread: { id: 'native-thread' }, sandbox: { type: 'workspaceWrite', writableRoots: [], excludeTmpdirEnvVar: true, excludeSlashTmp: true }, approvalPolicy: 'never' });

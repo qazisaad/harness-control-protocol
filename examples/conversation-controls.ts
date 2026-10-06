@@ -63,10 +63,14 @@ export class ControlHarnessAdapter implements HarnessAdapter {
         approval_policies: ["full_access" as const, "ask" as const, "auto_edits" as const], sandbox_modes: ["read_only" as const]}};
   }
   async validateStart({payload}: HarnessAdapterStartInput) {
+    if (typeof payload.instructions === "string")
+      throw new HarnessAdapterError("instructions_unsupported", "Fixture requires explicit instruction roles.");
     if (payload.sandbox_mode !== "read_only" || payload.model_selection.model !== "fixture")
       throw new HarnessAdapterError("unsupported_configuration", "Use the advertised fixture profile.");
   }
   async startSession(input: HarnessAdapterStartInput) {
+    if (typeof input.payload.instructions === "string")
+      throw new HarnessAdapterError("instructions_unsupported", "Fixture requires explicit instruction roles.");
     this.mcpNames.set(input.payload.session_id, new Set(input.payload.mcp_servers.map(server => server.name)));
     this.instructionsSeen = input.payload.instructions;
     this.observations.set(input.payload.session_id, input.emitSessionEvent!);

@@ -202,6 +202,7 @@ export class RunnerConnection {
     this.#accepted = false;
     this.#unsubscribeEvents?.(); this.#unsubscribeEvents = undefined;
     await this.#accountUsage.close();
+    await this.#harnessSessions.close();
     this.#stopHeartbeat();
     this.#stopReconnect();
     await new Promise<void>((resolve) => {
