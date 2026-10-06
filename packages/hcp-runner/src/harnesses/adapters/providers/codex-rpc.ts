@@ -120,7 +120,7 @@ export class CodexRpc {
       const result = await handler(params, AbortSignal.any([this.#requestsAbort.signal, controller.signal]));
       if (!this.#failure && !controller.signal.aborted) this.#write({ id, result });
     } catch {
-      if (!this.#failure) {
+      if (!this.#failure && !controller.signal.aborted) {
         this.#write({ id, error: { code: -32603, message: "The native tool request could not complete." } });
         this.#fail(new HarnessAdapterError("native_tool_request_failed", "The native tool request could not complete."));
         await this.process.stop();

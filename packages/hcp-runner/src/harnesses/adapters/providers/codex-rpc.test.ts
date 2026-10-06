@@ -18,6 +18,11 @@ createInterface({input: process.stdin}).on("line", line => {
     send({id:"tool-request", method:"item/tool/call", params:{value:42}});
   } else if (value.id === "tool-request") {
     send({method:"probe/result", params:value});
+  } else if (value.method === "resolve-request") {
+    send({method:"serverRequest/resolved",params:{requestId:"tool-request"}});
+    send({id:value.id,result:{resolved:true}});
+  } else if (value.method === "ping") {
+    send({id:value.id,result:{alive:true}});
   }
 });
 `, { mode: 0o700 });
@@ -67,4 +72,24 @@ test("native process loss aborts outstanding tool work", {timeout: 5000}, async 
     await rpc.process.stop();
     await aborted;
   } finally { await close(); }
+});
+
+test("native resolution fences a pending reply without killing its persistent owner", {timeout: 5000}, async () => {
+  const {rpc, close} = await fixture();
+  try {
+    let started!: () => void, aborted!: () => void;
+    const ready = new Promise<void>(resolve => {started = resolve;});
+    const resolved = new Promise<void>(resolve => {aborted = resolve;});
+    let failure: Error | undefined, reply = false;
+    rpc.onFailure = error => {failure = error;};
+    rpc.onNotification = message => {if (message.method === "probe/result") reply = true;};
+    rpc.setRequestHandler("item/tool/call", async (_, signal) => {
+      started();
+      await new Promise((_, reject) => signal.addEventListener("abort", () => {aborted(); reject(signal.reason);}, {once:true}));
+    });
+    await rpc.request("probe", {}); await ready;
+    await rpc.request("resolve-request", {}); await resolved;
+    assert.deepEqual(await rpc.request("ping", {}), {alive:true});
+    assert.equal(failure, undefined); assert.equal(reply, false);
+  } finally {await close();}
 });

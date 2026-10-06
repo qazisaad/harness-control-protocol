@@ -11,7 +11,7 @@ import {hcpHarnessEventPayloadSchema} from "@harness-control/protocol";
 if (process.env.HCP_NATIVE_LIVE !== "1") throw new Error("Set HCP_NATIVE_LIVE=1 to run authenticated native acceptance.");
 const providers = (process.env.HCP_LIVE_PROVIDERS ?? "claude,opencode").split(",");
 for (const driver of providers) {
-  assert.ok(["claude", "opencode"].includes(driver));
+  assert.ok(["codex", "claude", "opencode"].includes(driver));
   const cwd = await mkdtemp(join(tmpdir(), `hcp-live-interactions-${driver}-`));
   const config = RunnerConfigSchema.parse({runner_id: "interaction-acceptance", control_plane_url: "ws://localhost:8787",
     workspaces: [{id: "workspace", path: cwd}], provider_instances: [{id: driver, driver_kind: driver}]});
@@ -41,21 +41,24 @@ for (const driver of providers) {
       const details = action.details;
       // Approve only the exact controlled test write. Unexpected native actions are declined.
       const approved = stage === "approval" && (details.arguments?.command === command || details.metadata?.command === command
-        || details.arguments?.file_path === target && details.arguments?.content === marker);
+        || details.arguments?.file_path === target && details.arguments?.content === marker || details.command === command
+        || driver === "codex" && details.command === `/bin/bash -lc "${command}"`);
       track(manager.respondToMcpReview({session_id: session, turn_id: event.turn_id,
         request_id: event.data.request_id, action_hash: event.data.action_hash,
-        decision: approved ? (driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1" ? "accept_for_session" : "accept") : "decline", actor_id: "live-test"}, observe), event.turn_id);
+        decision: approved ? (driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1" ? "accept_for_session" : "accept") : event.data.allowed_decisions.includes("decline") ? "decline" : "cancel", actor_id: "live-test"}, observe), event.turn_id);
     }
     if (event.event_type === "user_input.requested") {
       assert.equal(stage, "question", "Unexpected native input outside the controlled question");
+      const fields = Object.keys(event.data.form_schema?.properties?.answers?.properties ?? {});
+      assert.equal(fields.length, 1, "Expected one controlled native question");
       track(manager.respondToMcpInput({session_id: session, turn_id: event.turn_id,
-        request_id: event.data.request_id, actor_id: "live-test", value: {answers: {"question-0": {answers: ["Green"]}}}}, observe), event.turn_id);
+        request_id: event.data.request_id, actor_id: "live-test", value: {answers: {[fields[0]]: {answers: ["Green"]}}}}, observe), event.turn_id);
     }
   };
   const unsubscribe = manager.subscribeEvents(observe);
   const run = async (turn_id, input, expected = "turn.completed") => {
     console.log(JSON.stringify({driver, stage, cwd}));
-    await manager.sendTurn({session_id: session, turn_id, input}, observe);
+    await manager.sendTurn({session_id: session, turn_id, input, ...(driver === "codex" && stage === "question" ? {mode: "plan"} : {})}, observe);
     await Promise.all(responses);
     const terminal = events.findLast(event => event.turn_id === turn_id && ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type));
     assert.equal(terminal?.event_type, expected, JSON.stringify(terminal?.data));
@@ -63,9 +66,9 @@ for (const driver of providers) {
   };
   try {
     await manager.startSession({session_id: session, workspace_id: "workspace", provider_instance_id: driver, driver_kind: driver, cwd,
-      model_selection: {model: driver === "claude" ? process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet" : process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/minimax-m2.7"},
+      model_selection: {model: driver === "codex" ? process.env.HCP_LIVE_CODEX_MODEL ?? (await manager.providerDriverStatuses()).find(status => status.driver_kind === driver)?.models.find(model => model.is_default)?.id : driver === "claude" ? process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet" : process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/minimax-m2.7"},
       sandbox_mode: "danger_full_access", approval_policy: "ask", continue_session: false, mcp_servers: [],
-      ...(driver === "claude" || driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1" ? {execution_profile: "interactive"} : {})});
+      ...(driver === "codex" || driver === "claude" || driver === "opencode" && process.env.HCP_LIVE_REMEMBER_OPENCODE === "1" ? {execution_profile: "interactive"} : {})});
     await run("approval", `Use the ${driver === "claude" ? "Bash" : "bash"} tool to run exactly this command, with no prefix or suffix: ${command}\nDo not use any other tool. Wait for permission if asked, then reply done.`);
     assert.ok(events.some(event => event.turn_id === "approval" && event.event_type === "approval.requested"), "No native approval was observed");
     assert.equal(await readFile(target, "utf8"), marker);
@@ -80,7 +83,7 @@ for (const driver of providers) {
       passed.push("remembered-session-decision", "repeated-authorized-effect");
     }
     stage = "question";
-    const answer = await run("question", `Use the ${driver === "claude" ? "AskUserQuestion" : "question"} tool to ask exactly one question: Which test color? Offer Green and Blue, allow one choice. Do not answer it yourself. After the user replies, respond with their color only. Do not use other tools.`);
+    const answer = await run("question", `Use the ${driver === "codex" ? "request_user_input" : driver === "claude" ? "AskUserQuestion" : "question"} tool to ask exactly one question: Which test color? Offer Green and Blue, allow one choice. Do not answer it yourself. After the user replies, respond with their color only. Do not use other tools.`);
     assert.ok(events.some(event => event.turn_id === "question" && event.event_type === "user_input.requested"), "No native question was observed");
     assert.match(JSON.stringify(answer.data.final_output), /Green/);
     passed.push("native-question", "question-response");
