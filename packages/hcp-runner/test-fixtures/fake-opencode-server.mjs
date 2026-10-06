@@ -11,6 +11,7 @@ const streams = new Set();
 const pending = new Map();
 let rememberedPermission = false;
 const admittedMessages = new Map();
+const requestMessages = new Map();
 const emit = value => {for (const stream of streams) sendEvent(stream, value);};
 const finish = response => {
   const messageID = `assistant-tools-${response.hcpMessageId}`;
@@ -31,6 +32,7 @@ const server = createServer(async (request, response) => {
   if (process.env.HCP_TEST_OPENCODE_RECORD) appendFileSync(process.env.HCP_TEST_OPENCODE_RECORD, JSON.stringify({method: request.method, path: url.pathname, payload}) + "\n");
   const admitted = /^\/session\/([^/]+)\/message\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && admitted) {
+    if(requestMessages.has(admitted[2])) {writeJson(response,requestMessages.get(admitted[2]));return;}
     const user = admittedMessages.get(admitted[2]);
     const info = {id: admitted[2], sessionID: user?.hcpSessionId, role: "user", system: user?.system};
     const drift = process.env.HCP_TEST_OPENCODE_INSTRUCTION_DRIFT;
@@ -108,8 +110,13 @@ const server = createServer(async (request, response) => {
     if (text === "approval" || text === "question") {
       if (text === "approval" && rememberedPermission) {finish(response); return;}
       pending.set(text, response);
+      const tool={messageID:`assistant-tools-${payload.messageID}`,callID:`call-${payload.messageID}`};
+      const drift=process.env.HCP_TEST_OPENCODE_REQUEST_ORIGIN_DRIFT;
+      requestMessages.set(tool.messageID,{info:{id:tool.messageID,sessionID:executionId,role:"assistant",parentID:drift==="parent"?"older-prompt":payload.messageID},
+        parts:[{type:"tool",sessionID:executionId,messageID:tool.messageID,callID:drift==="tool"?"foreign-call":tool.callID}]});
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "another-session", permission: "bash", questions: []}});
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "fake-opencode-session", permission: "bash",
+        ...(drift==="missing"?{}:{tool}),
         patterns: ["echo hello"], always: ["echo hello"], metadata: {}, questions: [{question: "Which scope?", header: "Scope", multiple: true, custom: false,
           options: [{label: "A", description: "first"}, {label: "B", description: "second"}]}]}});
       return;

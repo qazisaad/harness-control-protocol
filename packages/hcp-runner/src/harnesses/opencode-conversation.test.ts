@@ -89,6 +89,27 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
   } finally {for (const id of ["first-session", "second-session"]) if (runner.activeSessionCount()) await runner.stopSession(id, "cleanup"); await rm(cwd, {recursive: true, force: true});}
 });
 
+for(const drift of ["parent","tool","missing"])test(`OpenCode refuses an unconfirmed native callback origin (${drift}) before approval`,async()=>{
+  const cwd=await mkdtemp(join(tmpdir(),"hcp-opencode-request-origin-"));
+  const record=join(cwd,"native.jsonl");
+  const manager=new HarnessSessionManager(RunnerConfigSchema.parse({runner_id:"runner",control_plane_url:"ws://localhost:1",workspaces:[{id:"workspace",path:cwd}],
+    provider_instances:[{id:"opencode",driver_kind:"opencode",executable_path:process.execPath,
+      launch_args:[fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs",import.meta.url))],
+      env:{HCP_TEST_OPENCODE_RECORD:record,HCP_TEST_OPENCODE_REQUEST_ORIGIN_DRIFT:drift}}]}));
+  try {
+    await manager.startSession({session_id:"session",workspace_id:"workspace",cwd,provider_instance_id:"opencode",driver_kind:"opencode",model_selection:{model:"anthropic/claude"},
+      sandbox_mode:"danger_full_access",approval_policy:"ask",continue_session:false,mcp_servers:[]});
+    const events=await manager.sendTurn({session_id:"session",turn_id:"root",input:"approval"});
+    assert.equal(events.some(event=>event.event_type==="approval.requested"),false);
+    assert.equal(events.at(-1)?.event_type,"turn.failed");
+    assert.equal((events.at(-1)?.data as {error:{code:string}}).error.code,"native_request_origin_unconfirmed");
+    const requests=(await readFile(record,"utf8")).trim().split("\n").map(line=>JSON.parse(line));
+    assert.equal(requests.some(request=>request.path.startsWith("/permission/")),false);
+    const followup=await manager.sendTurn({session_id:"session",turn_id:"followup",input:"followup"});
+    assert.equal(followup.at(-1)?.event_type,"turn.failed");
+  }finally{await manager.stopSession("session","test complete");await rm(cwd,{recursive:true,force:true});}
+});
+
 test("OpenCode closes uncertain permission owners instead of retaining an unconfirmed remembered grant", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-opencode-uncertain-reply-"));
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],

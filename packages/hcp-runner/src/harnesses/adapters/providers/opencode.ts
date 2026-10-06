@@ -10,6 +10,7 @@ import {OpenCodeItems} from "./opencode-items.js";
 import {projectOpenCodeCatalog} from "./opencode-models.js";
 import {openCodeContext} from "./opencode-context.js";
 import {prepareControlledOpenCode, controlledOpenCodeInheritance, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory} from "./opencode-controlled.js";
+import {verifyOpenCodeRequestOrigin} from "./opencode-request-binding.js";
 import {unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, type ContentPublisher} from "./content-projection.js";
 
@@ -558,7 +559,7 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     } catch (failure) {
       // An unconfirmed reply may already have installed a volatile native grant.
       // Close its owner so later turns cannot inherit uncertain authority.
-      if (failure instanceof HarnessAdapterError && failure.code === "native_reply_unknown") await this.close();
+      if (failure instanceof HarnessAdapterError && ["native_reply_unknown","native_request_origin_unconfirmed"].includes(failure.code)) await this.close();
       throw failure;
     } finally {
       abortController.abort();
@@ -662,6 +663,9 @@ function createEventStream(
           if (!owner) throw new HarnessAdapterError("native_request_unavailable", "A native request requires its HCP owner.");
           const binding = {threadId: sessionId, turnId: input.turnId, itemId: id};
           const respond = async () => {
+            await verifyOpenCodeRequestOrigin(event.properties, sessionId, usage.promptId, messageId => fetchJson(
+              new URL(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(messageId)}?directory=${encodeURIComponent(cwd)}`,baseUrl),
+              {method:"GET",signal:AbortSignal.any([signal,AbortSignal.timeout(5000)])}));
             let path: string, body: unknown;
             if (event.type === "permission.asked") {
               const permission = z.string().parse(event.properties.permission);
