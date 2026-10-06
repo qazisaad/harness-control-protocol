@@ -1,5 +1,5 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
-import { hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
+import { harnessPromptContextSchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import {harnessNativeWorkObservationSchema, harnessNativeWorkRecordSchema, isNativeWorkTerminal,
   type HarnessNativeWorkRecord} from "@harness-control/protocol";
 import type {NativeWorkState} from "../state/index.js";
@@ -633,7 +633,7 @@ export class HarnessSessionManager {
       onEvent(cancelled);
       return this.stopSession(payload.session_id, "Combined startup cancelled before turn dispatch");
     }
-    return this.sendTurn({session_id: payload.session_id, turn_id: first.turn_id, input: first.input, ...(first.mode ? {mode: first.mode} : {}), ...(first.images ? {images: first.images} : {}), ...(first.files ? {files: first.files} : {})}, onEvent);
+    return this.sendTurn({session_id: payload.session_id, turn_id: first.turn_id, input: first.input, ...(first.mode ? {mode: first.mode} : {}), ...(first.images ? {images: first.images} : {}), ...(first.files ? {files: first.files} : {}), ...(first.context ? {context: first.context} : {})}, onEvent);
   }
 
   async #startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
@@ -1129,6 +1129,16 @@ export class HarnessSessionManager {
     try {
     await Promise.resolve();
     let nativeInput = payload.input;
+    let contextInput: {source: "app"; delivery: "prompt_context"; message_count: number; byte_length: number; context_hash: string} | undefined;
+    if (payload.context) {
+      if (payload.action === "compact" || !session.adapter.promptContextInputs)
+        throw new HarnessAdapterError("prompt_context_unsupported", "This execution path does not declare application-supplied prompt context.");
+      const context = harnessPromptContextSchema.parse(payload.context);
+      const encoded = JSON.stringify(context.messages.map(({role, content}) => ({role, content})));
+      nativeInput = `Conversation context supplied by the application:\n${encoded}\n\nCurrent user request:\n${nativeInput}`;
+      contextInput = {source: "app", delivery: "prompt_context", message_count: context.messages.length,
+        byte_length: Buffer.byteLength(encoded, "utf8"), context_hash: createHash("sha256").update(encoded).digest("hex")};
+    }
     if (payload.files?.length) {
       if (payload.action === "compact" || !session.adapter.fileContextInputs)
         throw new HarnessAdapterError("input_file_delivery_unsupported", "This execution path does not declare file-context input.");
@@ -1189,6 +1199,10 @@ export class HarnessSessionManager {
           throw new HarnessAdapterError("mcp_review_pending", "A retained MCP operation has an unresolved outcome; dispatch is fenced.");
       });
       this.#mcpDispatch.set(payload.session_id, dispatch);
+    }
+    if (contextInput && !continuation) {
+      const prepared = this.#event(payload.session_id, payload.turn_id, "context.input.prepared", contextInput);
+      if (onEvent) onEvent(prepared); else events.push(prepared);
     }
     const adapterEvents: HarnessAdapterEvent[] = await session.adapter.sendTurn({
       payload: {...payload, input: nativeInput},

@@ -127,7 +127,7 @@ function createHarnessEventMessageSchemas(baseMessageSchema: JsonSchema): JsonSc
       basePayloadSchema,
       createEventTypeSchema(eventType),
       dataSchema,
-      eventType.startsWith("local_capability.action.") || ["settings.effective", "settings.options.effective"].includes(eventType),
+      eventType.startsWith("local_capability.action.") || ["settings.effective", "settings.options.effective", "context.input.prepared"].includes(eventType),
     );
     if (["input.requested", "input.resolved", "user_input.requested", "user_input.resolved", "native.request.lost"].includes(eventType))
       payloadSchema.allOf = [{if: {properties: {data: {properties: {request_scope: {const: "session"}}, required: ["request_scope"]}}, required: ["data"]},
@@ -200,7 +200,7 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     if (hasMessageTypeConst(messageSchema, "harness.turn.send")) {
       const payload = getObjectProperty(messageSchema, "payload", "turn send");
       payload.allOf = [{if: {properties: {action: {const: "compact"}}, required: ["action"]},
-        then: {properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}, files: {maxItems: 0}}}}];
+        then: {not: {required: ["context"]}, properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}, files: {maxItems: 0}}}}];
     }
     return [messageSchema];
   });

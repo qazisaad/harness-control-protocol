@@ -9,6 +9,7 @@ const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(t
 /** A deterministic provider for public-package conformance; no native CLI or consumer-specific IDs. */
 export class ControlHarnessAdapter implements HarnessAdapter {
   readonly fileContextInputs = true;
+  readonly promptContextInputs = true;
   readonly driverKind = "example.controls";
   readonly portableHistory = true;
   readonly liveHistoryRead = true;
@@ -108,7 +109,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     const turns = this.histories.get(nativeId)!;
     if (input.payload.action === "compact") text = "compacted";
     turns.push({id: input.payload.turn_id, status: "completed", items: [{id: input.payload.turn_id, type: "text", text}]});
-    const full = input.payload.files?.length ? text : text.repeat(30_000);
+    const full = input.payload.files?.length || input.payload.context ? text : text.repeat(30_000);
     const reference = input.publishContent!(full);
     const context = {status: "measured" as const, source: "example.native.context", observed_at: new Date().toISOString(),
       selection: input.payload.model_selection ?? input.startPayload.model_selection, measurement_scope: "last_request" as const,

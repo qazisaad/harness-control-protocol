@@ -160,6 +160,17 @@ try {
   await peer.retireConversation("files");
   await assert.rejects(readFile(filePath), error => error.code === "ENOENT");
   console.log("Public SDK chunked file inputs, native context projection, background retention and retirement cleanup passed");
+  await peer.startSession({...start, session_id: "context", continuation_group_key: "context"});
+  const suppliedContext = {delivery: "prompt_context", messages: [{role: "user", content: "Earlier request"}, {role: "assistant", content: "Earlier answer"}]};
+  await peer.sendTurn({session_id: "context", turn_id: "context-turn", input: "Continue", context: suppliedContext});
+  await until(() => events.some(event => event.turn_id === "context-turn" && event.event_type === "turn.completed"));
+  const prepared = events.find(event => event.turn_id === "context-turn" && event.event_type === "context.input.prepared");
+  assert.equal(prepared.data.source, "app"); assert.equal(prepared.data.delivery, "prompt_context"); assert.equal(prepared.data.message_count, 2);
+  const contextualText = events.find(event => event.turn_id === "context-turn" && event.event_type === "turn.completed").data.final_output.final_text;
+  assert.ok(contextualText.includes(JSON.stringify(suppliedContext.messages)));
+  assert.equal(adapter.instructionsSeen.system, start.instructions.system);
+  await peer.stopSession({session_id: "context"}); await peer.retireConversation("context");
+  console.log("Public SDK prompt context, app provenance and original instruction authority passed");
   console.log("Public SDK controls, session observations, native adapter hooks, content chunks, mutation receipts and fork resume passed");
 } finally {
   await runner?.close(); for (const socket of server.clients) socket.terminate();

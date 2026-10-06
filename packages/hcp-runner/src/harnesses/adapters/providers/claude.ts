@@ -49,6 +49,7 @@ export type ClaudeHarnessAdapterOptions = {
 };
 export class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly fileContextInputs = true;
+  readonly promptContextInputs = true;
   readonly executionProfiles = nativeExecutionCapabilities("claude").execution_profiles!;
   readonly sessionEvents = true;
   readonly nativeWork = true;

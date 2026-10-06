@@ -1,0 +1,20 @@
+{
+  "payload": {
+    "created_at": "2026-01-01T00:00:00Z",
+    "turn_id": "turn",
+    "session_id": "session",
+    "event_type": "context.input.prepared",
+    "sequence": 4,
+    "data": {
+      "byte_length": 100,
+      "context_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "delivery": "prompt_context",
+      "source": "app",
+      "message_count": 2
+    }
+  },
+  "version": "hcp.v0",
+  "id": "fixture-prepared-prompt-context",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.event"
+}

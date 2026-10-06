@@ -65,6 +65,7 @@ const executionCapabilities: HarnessExecutionCapabilities = {
   instruction_roles: ["system"],
   configuration_inheritance: {user_settings: true, project_settings: true, hooks: true, mcp_servers: true, plugins: true},
   file_inputs: {delivery: ["file_context"], max_bytes: 32 * 1024 * 1024, max_files: 8},
+    prompt_context: true,
   streaming: true, multi_turn: true, session_continuation: true, plan_mode: true, manual_compaction: true, content_retrieval: true, context_usage: true,
   native_history: true, empty_conversation: true, portable_history: true, history_pagination: true, conversation_fork: true, conversation_rollback: true,
   live_history_read: true,
@@ -171,6 +172,7 @@ export type OpenCodeHarnessAdapterOptions = {
 
 export class OpenCodeHarnessAdapter implements HarnessAdapter {
   readonly fileContextInputs = true;
+  readonly promptContextInputs = true;
   readonly emptyConversation = true;
   readonly nativeWork = true;
   readonly sessionEvents = true;

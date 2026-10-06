@@ -9,6 +9,8 @@ export * from "./native-work.js";
 export * from "./portable-history.js";
 import {harnessTurnFilesSchema, harnessFileInputCapabilitiesSchema, type HarnessTurnFile} from "./input-file.js";
 export * from "./input-file.js";
+import {harnessPromptContextSchema, harnessPromptContextPreparedSchema, type HarnessPromptContext} from "./prompt-context.js";
+export * from "./prompt-context.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -124,6 +126,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "workspace.preflight.completed",
   "usage.updated",
   "context.updated",
+  "context.input.prepared",
   "native.work.updated",
   "native.work.retired",
   "native.work.owner_lost",
@@ -256,6 +259,7 @@ export type HarnessModel = {
 
 export type HarnessExecutionCapabilities = {
   file_inputs?: z.infer<typeof harnessFileInputCapabilitiesSchema>;
+  prompt_context?: boolean;
   execution_profiles?: HarnessExecutionProfileCapabilities[];
   portable_history?: boolean;
   context_usage?: boolean;
@@ -480,7 +484,7 @@ export type HcpSessionStartPayload = {
   workspace_preflight?: WorkspacePreflight;
   local_capability_lease?: LocalCapabilityLease;
   mcp_servers: McpServerAttachment[];
-  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[]; files?: HarnessTurnFile[] };
+  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[]; files?: HarnessTurnFile[]; context?: HarnessPromptContext };
 };
 
 export type HcpSessionSnapshotRequestPayload = {
@@ -495,6 +499,7 @@ export type HcpTurnSendPayload = {
   mode?: "execute" | "plan";
   images?: HcpImageInput[];
   files?: HarnessTurnFile[];
+  context?: HarnessPromptContext;
   model_selection?: HarnessModelSelection;
 };
 
@@ -1139,6 +1144,7 @@ export const harnessProviderSnapshotSchema = z
       native_history: z.boolean().optional(),
       empty_conversation: z.boolean().optional(),
       file_inputs: harnessFileInputCapabilitiesSchema.optional(),
+      prompt_context: z.boolean().optional(),
       live_history_read: z.boolean().optional(),
       native_history_injection: z.boolean().optional(),
       history_pagination: z.boolean().optional(),
@@ -1432,6 +1438,7 @@ export const hcpSessionStartPayloadSchema = z
       mode: z.enum(["execute", "plan"]).optional(),
       images: harnessImagesSchema.optional(),
       files: harnessTurnFilesSchema.optional(),
+      context: harnessPromptContextSchema.optional(),
     }).strict().optional(),
   })
   .strict();
@@ -1451,11 +1458,12 @@ export const hcpTurnSendPayloadSchema = z
     mode: z.enum(["execute", "plan"]).optional(),
     images: harnessImagesSchema.optional(),
     files: harnessTurnFilesSchema.optional(),
+    context: harnessPromptContextSchema.optional(),
     model_selection: harnessModelSelectionSchema.optional(),
   })
   .strict().superRefine((value, ctx) => {
-    if (value.action === "compact" && (value.input !== "" || value.images?.length || value.files?.length || value.mode === "plan"))
-      ctx.addIssue({code: "custom", message: "Compaction accepts no prompt, images, files or Plan mode."});
+    if (value.action === "compact" && (value.input !== "" || value.images?.length || value.files?.length || value.context || value.mode === "plan"))
+      ctx.addIssue({code: "custom", message: "Compaction accepts no prompt, images, files, context or Plan mode."});
   });
 
 export const hcpTurnCancelPayloadSchema = z
@@ -2739,6 +2747,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
     return harnessUsageSnapshotSchema;
   }
   if (eventType === "context.updated") return harnessContextUsageSchema;
+  if (eventType === "context.input.prepared") return harnessPromptContextPreparedSchema;
   if (eventType === "settings.effective") return harnessEffectiveSettingsSchema;
   if (eventType === "settings.options.effective") return harnessEffectiveModelOptionsSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
@@ -2821,8 +2830,8 @@ export const hcpHarnessEventPayloadSchema = z
   .strict()
   .superRefine((payload, context) => {
     const eventType: string = payload.event_type;
-    if (["settings.effective", "settings.options.effective"].includes(eventType) && payload.turn_id === undefined)
-      context.addIssue({code: "custom", path: ["turn_id"], message: "Effective root settings require their admitted HCP turn identity."});
+    if (["settings.effective", "settings.options.effective", "context.input.prepared"].includes(eventType) && payload.turn_id === undefined)
+      context.addIssue({code: "custom", path: ["turn_id"], message: "Root settings and prepared context require their admitted HCP turn identity."});
     const dataSchema: z.ZodType<unknown> = isKnownHcpEventType(eventType)
       ? knownHcpEventDataSchemas[eventType]
       : hcpExtensionEventDataSchema;

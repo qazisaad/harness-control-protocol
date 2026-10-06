@@ -23,6 +23,7 @@ export function nativeExecutionCapabilities(
     configuration_inheritance: driver === "codex" ? {mcp_servers: false, plugins: false} :
       {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false},
     file_inputs: {delivery: ["file_context"], max_bytes: 32 * 1024 * 1024, max_files: 8},
+    prompt_context: true,
     streaming: true,
     multi_turn: true,
     session_continuation: true,

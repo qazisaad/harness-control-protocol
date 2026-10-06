@@ -134,6 +134,8 @@ export type HarnessAdapterStopInput = {
 export type HarnessAdapter = {
   /** The manager may project verified owned workspace files into user-level input. */
   readonly fileContextInputs?: true;
+  /** The manager may project explicitly supplied user/assistant history into user-level prompt context. */
+  readonly promptContextInputs?: true;
   /** Start establishes a confirmed native conversation before any model turn. */
   readonly emptyConversation?: true;
   readonly executionProfiles?: readonly import("@harness-control/protocol").HarnessExecutionProfileCapabilities[];

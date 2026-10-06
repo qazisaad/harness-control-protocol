@@ -52,6 +52,7 @@ export type CodexHarnessAdapterOptions = {
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly fileContextInputs = true;
+  readonly promptContextInputs = true;
   readonly executionProfiles = retainedProfiles;
   readonly nativeWork = true;
   readonly sessionEvents = true;

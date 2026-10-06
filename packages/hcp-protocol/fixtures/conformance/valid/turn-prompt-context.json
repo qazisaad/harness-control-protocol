@@ -1,0 +1,24 @@
+{
+  "payload": {
+    "session_id": "session",
+    "input": "Continue",
+    "context": {
+      "delivery": "prompt_context",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Earlier request"
+        },
+        {
+          "role": "assistant",
+          "content": "Earlier answer"
+        }
+      ]
+    },
+    "turn_id": "turn"
+  },
+  "version": "hcp.v0",
+  "id": "fixture-turn-prompt-context",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.turn.send"
+}
