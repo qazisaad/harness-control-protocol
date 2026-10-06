@@ -108,6 +108,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never',approvalsReviewer:process.env.MODE==='reviewer'?'auto_review':m.params.approvalsReviewer}}); }
  if(m.method==='turn/interrupt') {send({id:m.id,result:{}}); notify('turn/completed',{threadId:m.params.threadId,turn:{id:m.params.turnId,status:'interrupted',error:null}});}
+ if(m.method==='thread/unsubscribe') send({id:m.id,result:{status:'unsubscribed'}});
  if(m.method==='turn/start') {
   const turnId=turns++?'native-turn-'+turns:'native-turn';
   const params={threadId:'native-thread',turnId};
@@ -254,7 +255,7 @@ it("Codex interactive roots reuse one native transport and interrupt only their 
   selected.env = {MODE: "retained", VERSION: "codex-cli 0.160.0", RECORD: record};
   const payload = {...start("codex", cwd), execution_profile: "interactive" as const};
   const adapter = new CodexHarnessAdapter();
-  const session = await adapter.startSession({payload, provider: selected});
+  const session = await adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}});
   try {
     for (const id of ["first", "second"]) {
       const events = await adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: payload.session_id, turn_id: id, input: "hello"}});
@@ -289,7 +290,7 @@ for (const mode of ["reviewer", "exit"]) {
     selected.env = {MODE: mode, VERSION: "codex-cli 0.160.0", RECORD: record};
     const payload = {...start("codex", cwd), execution_profile: "interactive" as const};
     const adapter = new CodexHarnessAdapter();
-    const session = await adapter.startSession({payload, provider: selected});
+    const session = await adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}});
     try {
       for (const id of ["first", "after-failure"]) {
         const events = await adapter.sendTurn({...turn(payload, selected), session,
@@ -300,7 +301,11 @@ for (const mode of ["reviewer", "exit"]) {
       assert.equal(new Set(requests.map(request => request.nativePid)).size, 1);
       assert.equal(requests.filter(request => request.method === "thread/start").length, 1);
       assert.equal(requests.filter(request => request.method === "turn/start").length, mode === "reviewer" ? 0 : 1);
-    } finally {await adapter.stopSession({sessionId: payload.session_id}); await rm(cwd, {recursive: true, force: true});}
+    } finally {
+      if (mode === "exit") await assert.rejects(adapter.stopSession({sessionId: payload.session_id}), /owner was lost/);
+      else await adapter.stopSession({sessionId: payload.session_id});
+      await rm(cwd, {recursive: true, force: true});
+    }
   });
 }
 

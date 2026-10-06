@@ -12,6 +12,8 @@ import { CodexRpc, type RpcMessage, type RpcRequestHandler } from "./codex-rpc.j
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
+import type {CodexOwnedWork} from "./codex-work.js";
+import type {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
 
@@ -33,6 +35,8 @@ export type CodexRuntimeLease = {
   rpc: CodexRpc;
   initialized: boolean;
   started?: z.infer<typeof startedSchema>;
+  work?: CodexOwnedWork;
+  callbacks?: CodexWorkCallbacks;
 };
 const deltaSchema = z.object({
   threadId: z.string(),
@@ -77,6 +81,8 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
   let interrupted = false;
   let rejectAdmission: ((error: Error) => void) | undefined;
   signal.throwIfAborted();
+  if (input.payload.action === "compact" && lease?.work?.busy)
+    throw new HarnessAdapterError("native_work_active", "Compaction requires resolved native child ownership.");
   const selection =
     input.payload.model_selection ?? input.startPayload.model_selection;
   let context: HarnessContextUsage = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "new_native_request");
@@ -151,7 +157,7 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
             Object.keys(inheritedPlugins).map((name) => [name, { enabled: false }]),
           ),
           "features.apps": false,
-          "features.multi_agent": false,
+          "features.multi_agent": !!lease?.work,
           "sandbox_workspace_write.writable_roots": [],
           "sandbox_workspace_write.exclude_tmpdir_env_var": true,
           "sandbox_workspace_write.exclude_slash_tmp": true,
@@ -190,6 +196,7 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
       }
     }
     const threadId = started.thread.id;
+    lease?.work?.attachRootThread(threadId);
     if (resumeThread && threadId !== resumeThread) {
       throw new HarnessAdapterError("mcp_continuation_thread_mismatch", "Codex resumed another MCP review thread.");
     }
@@ -243,6 +250,7 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
     input.registerNativeInteractions?.(interactions);
     let admit!: () => void;
     const admission = new Promise<void>((resolve, reject) => {admit = resolve; rejectAdmission = reject;});
+    lease?.callbacks?.pendingAdmission(admission);
     void admission.catch(() => {});
     if (input.payload.action === "compact") admit();
     const setTurnRequestHandler = (method: string, handler: RpcRequestHandler): void => {
@@ -291,8 +299,10 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         const event = z
           .object({ threadId: z.string(), turn: idObject })
           .parse(message.params);
-        if (event.threadId === threadId && input.payload.action === "compact" && nativeTurnId === undefined)
+        if (event.threadId === threadId && input.payload.action === "compact" && nativeTurnId === undefined) {
           nativeTurnId = event.turn.id;
+          lease?.callbacks?.admit(input, threadId, nativeTurnId);
+        }
       } else if (
         message.method === "item/agentMessage/delta" ||
         message.method === "item/reasoning/summaryTextDelta"
@@ -456,10 +466,13 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         "Codex returned conflicting turn identities.",
       );
     nativeTurnId = turn.turn.id;
+    lease?.callbacks?.admit(input, threadId, nativeTurnId);
     admissionPending = false;
     admit();
     for (const message of pendingNotifications) projectNotification(message);
-    return await terminal;
+    const output = await terminal;
+    await lease?.work?.settled();
+    return output;
   } catch (failure) {
     if (lease && !(signal.aborted && interrupted)) await rpc.process.stop();
     throw failure;

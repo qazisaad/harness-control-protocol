@@ -36,9 +36,11 @@ import {
 } from "./native-turn.js";
 import { runCodexTurn, runRetainedCodexTurn, type CodexRuntimeLease } from "./codex-runtime.js";
 import {CodexRpc} from "./codex-rpc.js";
+import {CodexOwnedWork} from "./codex-work.js";
+import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
@@ -49,6 +51,8 @@ export type CodexHarnessAdapterOptions = {
 };
 export class CodexHarnessAdapter implements HarnessAdapter {
   readonly executionProfiles = retainedProfiles;
+  readonly nativeWork = true;
+  readonly sessionEvents = true;
   readonly #leases = new Map<string, CodexRuntimeLease>();
   readonly portableHistory = true;
   readonly liveHistoryRead = true;
@@ -210,8 +214,13 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         {cwd: input.payload.cwd, env: providerEnvironment(input.provider)}, this.#probeTimeoutMs);
       if (version.timedOut || version.exitCode !== 0 || !retainedVersion(firstLine(version.stdout)))
         throw new HarnessAdapterError("native_profile_unsupported", "Persistent Codex requires the verified 0.160.0 app-server protocol.");
-      this.#leases.set(input.payload.session_id, {initialized: false, rpc: new CodexRpc(input.provider.executable_path ?? "codex", input.payload.cwd,
-        {...process.env, ...providerEnvironment(input.provider)})});
+      if (!input.emitSessionEvent || !input.registerSessionInteractions)
+        throw new HarnessAdapterError("native_session_owner_required", "Interactive Codex requires registered session observation and interaction owners.");
+      const rpc = new CodexRpc(input.provider.executable_path ?? "codex", input.payload.cwd,
+        {...process.env, ...providerEnvironment(input.provider)});
+      const work = new CodexOwnedWork(rpc, input);
+      const callbacks = new CodexWorkCallbacks(rpc, work, input);
+      this.#leases.set(input.payload.session_id, {initialized: false, rpc, work, callbacks});
     }
     return { adapter_session_id: input.payload.session_id };
   }
@@ -241,9 +250,16 @@ export class CodexHarnessAdapter implements HarnessAdapter {
   ): Promise<HarnessAdapterEvent[]> {
     const events = await this.#turns.stop(input.sessionId);
     const lease = this.#leases.get(input.sessionId);
+    await lease?.work?.stop();
+    lease?.callbacks?.close();
     this.#leases.delete(input.sessionId);
     await lease?.rpc.process.stop();
     return events;
+  }
+  async cancelNativeWork(input: Parameters<NonNullable<HarnessAdapter["cancelNativeWork"]>>[0]): Promise<void> {
+    const lease = this.#leases.get(input.sessionId);
+    if (!lease?.work) throw new HarnessAdapterError("native_work_owner_unavailable", "The native child owner is unavailable.");
+    await lease.work.cancel(input.work, input.signal);
   }
   #runProcess(
     executable: string,

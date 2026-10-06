@@ -19,6 +19,7 @@ const key = (thread: string, turn: string): string => `${thread}\0${turn}`;
 /** Native launch bookends and native parent readback establish ownership. Idle is never terminal proof. */
 export class CodexOwnedWork {
   readonly #roots = new Map<string, Origin>();
+  readonly #activeRoots = new Set<string>();
   readonly #rootThreads = new Set<string>();
   readonly #children = new Map<string, Child>();
   readonly #works = new Map<string, Child>();
@@ -43,7 +44,7 @@ export class CodexOwnedWork {
     if (this.#lost) return;
     this.#lost = true;
     try {this.start.emitSessionEvent!({event_type: "native.work.owner_lost", data: {reason,
-      ...(this.#pending.size || this.#unconfirmed.size ? {closure_unconfirmed: true} : {})}});} catch { /* Persistence failure cannot restore native ownership. */ }
+      ...(this.#pending.size || this.#unconfirmed.size || this.#activeRoots.size ? {closure_unconfirmed: true} : {})}});} catch { /* Persistence failure cannot restore native ownership. */ }
     if (reason === "runtime_error") void this.rpc.process.stop();
   }
   #publish(child: Child): void {this.start.emitSessionEvent!({event_type: "native.work.updated", data: {work: structuredClone(child.work)}});}
@@ -67,6 +68,7 @@ export class CodexOwnedWork {
     if (this.#roots.size >= 1024) throw new HarnessAdapterError("native_work_origin_limit", "The native owner exceeded its admitted origin registry.");
     this.#rootThreads.add(thread);
     this.#roots.set(key(thread, nativeTurn), {turn: appTurn});
+    this.#activeRoots.add(key(thread, nativeTurn));
     this.#enqueue(() => this.#replay(thread));
   }
   async settled(): Promise<void> {await this.#queue; if (this.#lost) throw new HarnessAdapterError("native_owner_unavailable", "The native work observation owner was lost.");}
@@ -127,7 +129,12 @@ export class CodexOwnedWork {
     if (!child) {
       if (this.#rootThreads.has(thread)) {
         const nativeTurn = typeof p.data.turnId === "string" ? p.data.turnId : (p.data.turn as {id?: unknown} | undefined)?.id;
-        if (typeof nativeTurn === "string" && !this.#roots.has(key(thread, nativeTurn))) this.#buffer(thread, message);
+        if (message.method === "turn/completed") {
+          const terminal = z.object({turn:z.object({id:identity,status:z.enum(["completed","interrupted","failed"])})}).parse(message.params);
+          this.#activeRoots.delete(key(thread, terminal.turn.id));
+        }
+        if (typeof nativeTurn === "string" && !this.#roots.has(key(thread, nativeTurn)) &&
+          ["turn/started", "turn/completed"].includes(message.method ?? "")) this.#buffer(thread, message);
         return;
       }
       if (["thread/status/changed", "turn/started", "turn/completed", "item/completed"].includes(message.method ?? "")) this.#buffer(thread, message);
@@ -137,6 +144,20 @@ export class CodexOwnedWork {
       const event = z.object({turn: z.object({id: identity})}).parse(message.params);
       if (isNativeWorkTerminal(child.work.status) || child.turn && child.turn !== event.turn.id) throw new Error("Native child turn lacks an admitted launch");
       child.turn = event.turn.id; child.work.supports_cancel = true; this.#publish(child);
+    } else if (message.method === "thread/status/changed" && !isNativeWorkTerminal(child.work.status)) {
+      const event = z.object({status:z.object({type:z.string(),activeFlags:z.array(z.enum(["waitingOnApproval","waitingOnUserInput"])).optional()})}).parse(message.params);
+      if (event.status.type === "active") {
+        const waiting = event.status.activeFlags?.length;
+        const status = waiting ? "waiting" : "running";
+        if (child.work.status !== status) {
+          child.work.status = status;
+          child.work.summary = waiting ? "Waiting for native approval or input" : "Native child work running";
+          this.#publish(child);
+        }
+      }
+    } else if (message.method === "item/started" && !isNativeWorkTerminal(child.work.status)) {
+      const event = binding.extend({item:z.object({type:z.string().min(1).max(128)})}).parse(message.params);
+      if (event.turnId === child.turn) {child.work.summary = `Native ${event.item.type} started`; this.#publish(child);}
     } else if (message.method === "item/completed" && item?.type === "agentMessage") {
       const event = binding.extend({item: z.object({type: z.literal("agentMessage"), text: z.string().max(4 * 1024 * 1024), phase: z.string().nullish()})}).parse(message.params);
       if (event.turnId === child.turn && event.item.phase !== "commentary") child.finalText = event.item.text;
@@ -165,6 +186,10 @@ export class CodexOwnedWork {
     // Acknowledgement is distinct from the later observed terminal work event.
   }
   async stop(): Promise<void> {
+    await this.#queue;
+    if (this.#lost && !this.busy && !this.#activeRoots.size) {
+      this.#closureCertified = true; this.#unsubscribe(); return;
+    }
     await this.settled();
     if (this.#pending.size || this.#unconfirmed.size) throw new HarnessAdapterError("native_work_closure_unknown", "Unconfirmed native child membership prevents safe unload.");
     this.#stopping = true;

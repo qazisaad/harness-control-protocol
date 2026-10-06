@@ -33,6 +33,9 @@ createInterface({input:process.stdin}).on('line',line=>{
  else if(m.method==='stats')send({id:m.id,result:{interrupts,subscriptions}});
  else if(m.method==='ask-child') {send({id:'child-question',method:'item/tool/requestUserInput',params:{threadId:'child',turnId:'child-turn',itemId:'question-item',questions:[{id:'q',header:'Choice',question:'Choose a value',options:[{label:'Alpha',description:'First'},{label:'Beta',description:'Second'}]}]}});send({id:m.id,result:{}});}
  else if(m.method==='ask-root') {send({id:'root-question',method:'item/tool/requestUserInput',params:{threadId:'root',turnId:'second-root',itemId:'root-item',questions:[]}});send({id:m.id,result:{}});}
+ else if(m.method==='progress') {notify('thread/status/changed',{threadId:'child',status:{type:'active',activeFlags:['waitingOnApproval']}});notify('item/started',{threadId:'child',turnId:'child-turn',item:{id:'command',type:'commandExecution'}});send({id:m.id,result:{}});}
+ else if(m.method==='idle') {notify('thread/status/changed',{threadId:'child',status:{type:'idle'}});send({id:m.id,result:{}});}
+ else if(m.method==='unowned-usage') {notify('thread/tokenUsage/updated',{threadId:'root',turnId:'old-turn',tokenUsage:{}});send({id:m.id,result:{}});}
  else if(m.id==='child-question'||m.id==='root-question')notify('fixture/reply',{requestId:m.id,result:m.result});
 });
 `, {mode:0o700});
@@ -109,6 +112,20 @@ test("native Codex child ownership survives root completion and retains the admi
     await f.owner.stop();
     assert.deepEqual(await f.rpc.request("stats",{}),{interrupts:0,subscriptions:["child","root"]});
   } finally {await f.close();}
+});
+
+test("native child progress has its own work identity and idle never fabricates completion", {timeout:5000}, async()=>{
+  const f=await fixture();
+  try {
+    await f.launch();const id=f.work().work_id;
+    await f.rpc.request("progress",{});await f.owner.settled();
+    assert.equal(f.work().work_id,id);assert.equal(f.work().origin_turn_id,"app-root");
+    assert.equal(f.work().status,"waiting");assert.equal(f.work().summary,"Native commandExecution started");
+    await f.rpc.request("idle",{});await f.owner.settled();assert.equal(f.work().status,"waiting");
+    await f.rpc.request("complete",{});await f.owner.settled();
+    await f.rpc.request("unowned-usage",{});await f.owner.settled();
+    assert.equal(f.owner.busy,false);await f.owner.stop();
+  }finally{await f.close();}
 });
 
 test("native Codex cancellation acknowledges its exact child turn and requires observed terminal proof", {timeout:5000}, async () => {
