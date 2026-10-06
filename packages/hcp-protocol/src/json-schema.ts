@@ -192,11 +192,12 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     }
     if (hasMessageTypeConst(messageSchema, "harness.conversation.result")) {
       const payload = getObjectProperty(messageSchema, "payload", "conversation result");
-      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"], ["inject", "injection"], ["input_file", "input_file"]]
+      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"], ["inject", "injection"], ["input_file", "input_file"], ["feedback", "feedback"]]
         .map(([operation, field]) => ({if: {properties: {operation: {const: operation}}, required: ["operation"]}, then: {required: [field]}})),
         {if: {required: ["native_fresh"]}, then: {properties: {operation: {enum: ["fork", "rollback"]}}}},
         {if: {required: ["injection"]}, then: {properties: {operation: {const: "inject"}}}},
-        {if: {required: ["input_file"]}, then: {properties: {operation: {const: "input_file"}}}}];
+        {if: {required: ["input_file"]}, then: {properties: {operation: {const: "input_file"}}}},
+        {if: {required: ["feedback"]}, then: {properties: {operation: {const: "feedback"}}}}];
       const file = getObjectProperty(payload, "input_file", "input file result");
       file.allOf = [{if: {properties: {action: {const: "release"}}, required: ["action"]}, then: {properties: {state: {const: "released"}}}},
         {if: {properties: {state: {const: "released"}}, required: ["state"]}, then: {properties: {action: {const: "release"}}}},

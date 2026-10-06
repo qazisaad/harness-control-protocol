@@ -1,0 +1,18 @@
+{
+  "sent_at": "2026-10-06T00:00:00Z",
+  "payload": {
+    "filesystem_undo": false,
+    "operation": "feedback",
+    "session_id": "session",
+    "command_id": "feedback",
+    "feedback": {
+      "diagnostics_requested": false,
+      "feedback_id": "provider-receipt",
+      "source": "native",
+      "classification": "bug"
+    }
+  },
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "id": "fixture-native-feedback-result"
+}

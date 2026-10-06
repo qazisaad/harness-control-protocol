@@ -108,6 +108,10 @@ try {
   const loadedRead = await peer.readConversation("session");
   assert.equal(loadedRead.payload.history.turn_count, 2);
   assert.equal(sessions.activeSessionCount(), 1);
+  const feedback = await peer.submitNativeFeedback("session", {classification: "bug", reason: "Fixture report", include_diagnostics: false}, {id: "fixture-feedback"});
+  assert.deepEqual(feedback.payload.feedback, {source: "native", feedback_id: "fixture-feedback-receipt", classification: "bug", diagnostics_requested: false});
+  assert.deepEqual((await peer.submitNativeFeedback("session", {classification: "bug", reason: "Fixture report", include_diagnostics: false}, {id: "fixture-feedback"})).payload, feedback.payload);
+  assert.equal(adapter.feedbackSubmissions, 1);
   await peer.stopSession({session_id: "session"});
   const read = await peer.readConversation("session");
   assert.equal(read.payload.history.turns[0].portable_items[0].type, "message");

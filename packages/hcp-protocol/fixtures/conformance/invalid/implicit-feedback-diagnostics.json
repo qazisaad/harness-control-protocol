@@ -1,0 +1,13 @@
+{
+  "sent_at": "2026-10-06T00:00:00Z",
+  "payload": {
+    "operation": {
+      "kind": "feedback",
+      "classification": "bug"
+    },
+    "session_id": "session"
+  },
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "id": "fixture-implicit-feedback-diagnostics"
+}

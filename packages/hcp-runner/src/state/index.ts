@@ -90,6 +90,14 @@ const nativeWorkStateSchema = z.object({scope: z.object({provider_instance_id: z
 export type NativeWorkState = z.infer<typeof nativeWorkStateSchema>;
 
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  feedback_submissions: z.array(z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    source_session_id: z.string().min(1).max(512), native_thread_id: z.string().min(1).max(512),
+    classification: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/), include_diagnostics: z.boolean(),
+    phase: z.enum(["pending", "completed"]), result: z.object({source: z.literal("native"), feedback_id: z.string().min(1).max(512),
+      classification: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/), diagnostics_requested: z.boolean()}).strict().optional(),
+  }).strict().refine(value => value.phase === "completed" ? value.result?.classification === value.classification
+    && value.result.diagnostics_requested === value.include_diagnostics : value.result === undefined, "Invalid feedback dispatch receipt."))
+    .max(1024).refine(value => new Set(value.map(item => item.command_id)).size === value.length, "Feedback dispatch identities must be unique.").optional(),
   configuration_base_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   configuration_transitions: z.array(z.object({transition_id: z.string().min(1).max(512),
     source_binding_hash: z.string().regex(/^[a-f0-9]{64}$/), target_binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -284,6 +292,18 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     if (!key || key.length > 512) throw new Error("Invalid native conversation key.");
     const conversation = nativeConversationSchema.parse(input);
     const previous = this.data.nativeConversations[key];
+    for (const receipt of previous?.feedback_submissions ?? []) {
+      const next = conversation.feedback_submissions?.find(item => item.command_id === receipt.command_id);
+      if (!next) throw new Error("Native feedback dispatch evidence cannot be erased.");
+      const {result: ignored, ...nextIntent} = next;
+      const {result: priorResult, ...priorIntent} = receipt;
+      if (JSON.stringify({...nextIntent, phase: receipt.phase}) !== JSON.stringify(priorIntent)
+        || receipt.phase === "completed" && JSON.stringify(next) !== JSON.stringify(receipt))
+        throw new Error("Native feedback dispatch evidence cannot be rewritten.");
+    }
+    if (conversation.feedback_submissions?.some(receipt => receipt.phase === "completed"
+      && !previous?.feedback_submissions?.some(prior => prior.command_id === receipt.command_id)))
+      throw new Error("Native feedback completion requires its prior durable dispatch fence.");
     const provenReplacement = previous?.rollback?.phase === "completed" &&
       previous.rollback.replacement_native_thread_id === conversation.native_thread_id &&
       JSON.stringify(previous.rollback) === JSON.stringify(conversation.rollback) && previous.rollback.native_fresh === conversation.fresh;

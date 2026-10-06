@@ -500,6 +500,33 @@
                     "request"
                   ],
                   "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "feedback"
+                    },
+                    "classification": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16384
+                    },
+                    "include_diagnostics": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "classification",
+                    "include_diagnostics"
+                  ],
+                  "additionalProperties": false
                 }
               ]
             }
@@ -569,12 +596,41 @@
                 "content",
                 "work",
                 "inject",
-                "input_file"
+                "input_file",
+                "feedback"
               ]
             },
             "filesystem_undo": {
               "type": "boolean",
               "const": false
+            },
+            "feedback": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "const": "native"
+                },
+                "feedback_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "classification": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                },
+                "diagnostics_requested": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "source",
+                "feedback_id",
+                "classification",
+                "diagnostics_requested"
+              ],
+              "additionalProperties": false
             },
             "input_file": {
               "type": "object",
@@ -4241,6 +4297,23 @@
             },
             {
               "if": {
+                "properties": {
+                  "operation": {
+                    "const": "feedback"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "feedback"
+                ]
+              }
+            },
+            {
+              "if": {
                 "required": [
                   "native_fresh"
                 ]
@@ -4280,6 +4353,20 @@
                 "properties": {
                   "operation": {
                     "const": "input_file"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "feedback"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "operation": {
+                    "const": "feedback"
                   }
                 }
               }
@@ -5521,6 +5608,33 @@
                             },
                             "idle_configuration_transition": {
                               "type": "boolean"
+                            },
+                            "native_feedback": {
+                              "type": "object",
+                              "properties": {
+                                "owner": {
+                                  "type": "string",
+                                  "const": "live_conversation"
+                                },
+                                "classifications": {
+                                  "minItems": 1,
+                                  "maxItems": 16,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                                  }
+                                },
+                                "diagnostics": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "owner",
+                                "classifications",
+                                "diagnostics"
+                              ],
+                              "additionalProperties": false
                             },
                             "root_interrupt_effect": {
                               "type": "string",

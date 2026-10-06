@@ -154,6 +154,9 @@ export class HcpHostConnection {
       if (operation.kind === "inject" && message.payload.injection?.outcome === "applied" &&
           message.payload.injection.message_count !== operation.messages.length) return;
       if (operation.kind === "steer" && operation.turn_id !== message.payload.turn_id) return;
+      if (operation.kind === "feedback" && (!message.payload.feedback
+        || message.payload.feedback.classification !== operation.classification
+        || message.payload.feedback.diagnostics_requested !== operation.include_diagnostics)) return;
       if (operation.kind === "input_file") {
         const request = operation.request, file = message.payload.input_file;
         if (!file || file.action !== request.action) return;
@@ -216,6 +219,10 @@ export class HcpHostConnection {
   }
   readConversation(sessionId: string, page: {cursor?: string; limit?: number} = {}, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "read", ...page}}, command, wait);
+  }
+  submitNativeFeedback(sessionId: string, feedback: Omit<Extract<Payload<"harness.conversation.request">["operation"], {kind: "feedback"}>, "kind">,
+    command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {...feedback, kind: "feedback"}}, command, wait);
   }
   forkConversation(sessionId: string, fork: Omit<Extract<Payload<"harness.conversation.request">["operation"], {kind: "fork"}>, "kind">,
     command?: CommandOptions, wait?: WaitOptions) {

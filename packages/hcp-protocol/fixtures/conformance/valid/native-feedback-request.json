@@ -1,0 +1,15 @@
+{
+  "sent_at": "2026-10-06T00:00:00Z",
+  "payload": {
+    "operation": {
+      "include_diagnostics": false,
+      "kind": "feedback",
+      "reason": "Explicit bug report",
+      "classification": "bug"
+    },
+    "session_id": "session"
+  },
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "id": "fixture-native-feedback-request"
+}

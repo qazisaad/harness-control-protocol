@@ -1,5 +1,5 @@
 import { codexModels } from "./codex-models.js";
-import type { HarnessModel } from "@harness-control/protocol";
+import type { HarnessModel, HarnessNativeFeedbackCapabilities } from "@harness-control/protocol";
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import type { ProviderDriverStatus } from "../../../host/provider-registry.js";
 import {
@@ -39,9 +39,12 @@ import {CodexRpc} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
 import {readCodexSettingsNotification} from "./codex-settings.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
+import {z} from "zod";
+const nativeFeedback: HarnessNativeFeedbackCapabilities = {owner: "live_conversation", classifications: ["bug"], diagnostics: true};
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true, native_work_history: "live_owner", idle_configuration_transition: true},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true, native_work_history: "live_owner", idle_configuration_transition: true,
+    native_feedback: nativeFeedback},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
@@ -297,6 +300,18 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     const history = await readCodexOwnedHistory(lease.rpc, nativeReference, input.signal, input.page, input.publishContent);
     await lease.work.verifyHistoryOwner(input.work, input.signal);
     return history;
+  }
+  async submitNativeFeedback(input: Parameters<NonNullable<HarnessAdapter["submitNativeFeedback"]>>[0]) {
+    const lease = this.#leases.get(input.sessionId);
+    if (!lease?.initialized || lease.started?.thread.id !== input.nativeThreadId || input.startPayload.execution_profile !== "interactive")
+      throw new HarnessAdapterError("native_feedback_owner_unavailable", "Native feedback requires the original live interactive Codex owner.");
+    if (input.request.classification !== "bug")
+      throw new HarnessAdapterError("native_feedback_unsupported", "This native Codex feedback contract supports bug reports.");
+    const response = z.object({threadId: z.string().min(1).max(512)}).parse(await lease.rpc.request("feedback/upload", {
+      classification: "bug", includeLogs: input.request.include_diagnostics, threadId: input.nativeThreadId,
+      ...(input.request.reason ? {reason: input.request.reason} : {}),
+    }, {signal: input.signal}));
+    return {feedback_id: response.threadId};
   }
   #runProcess(
     executable: string,

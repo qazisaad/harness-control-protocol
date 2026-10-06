@@ -12,6 +12,8 @@ import {harnessTurnFilesSchema, harnessFileInputCapabilitiesSchema, type Harness
 export * from "./input-file.js";
 import {harnessPromptContextSchema, harnessPromptContextPreparedSchema, type HarnessPromptContext} from "./prompt-context.js";
 export * from "./prompt-context.js";
+import {harnessNativeFeedbackCapabilitiesSchema} from "./feedback.js";
+export * from "./feedback.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -302,6 +304,8 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   native_work_history: z.literal("live_owner").optional(),
   /** Explicit idle continuation policy/profile replacement, confirmed before any model turn. */
   idle_configuration_transition: z.boolean().optional(),
+  /** An explicit app request may submit provider feedback through its live owner. */
+  native_feedback: harnessNativeFeedbackCapabilitiesSchema.optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;

@@ -1,0 +1,17 @@
+{
+  "sent_at": "2026-10-06T00:00:00Z",
+  "payload": {
+    "operation": {
+      "include_diagnostics": true,
+      "kind": "feedback",
+      "extraLogFiles": [
+        "/outside/secret"
+      ],
+      "classification": "bug"
+    },
+    "session_id": "session"
+  },
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "id": "fixture-feedback-arbitrary-files"
+}

@@ -14,6 +14,7 @@ const childRead = z.object({thread: z.object({id: identity, cwd: z.string().min(
   turns: z.array(z.object({id: identity, status: z.string()})).optional()})});
 type Origin = {turn: string; parent?: string};
 type Child = {thread: string; parent: string; launch: string; turn?: string; finalText?: string; work: HarnessNativeWorkObservation};
+type Command = {thread: string; turn: string; item: string; process?: string; work: HarnessNativeWorkObservation};
 const key = (thread: string, turn: string): string => `${thread}\0${turn}`;
 
 /** Native launch bookends and native parent readback establish ownership. Idle is never terminal proof. */
@@ -24,6 +25,7 @@ export class CodexOwnedWork {
   readonly #children = new Map<string, Child>();
   readonly #works = new Map<string, Child>();
   readonly #launches = new Map<string, Child>();
+  readonly #commands = new Map<string, Command>();
   readonly #pending = new Map<string, RpcMessage[]>();
   readonly #unconfirmed = new Set<string>();
   readonly #unsubscribe: () => void;
@@ -72,7 +74,67 @@ export class CodexOwnedWork {
     this.#enqueue(() => this.#replay(thread));
   }
   async settled(): Promise<void> {await this.#queue; if (this.#lost) throw new HarnessAdapterError("native_owner_unavailable", "The native work observation owner was lost.");}
-  get busy(): boolean {return this.#pending.size > 0 || this.#unconfirmed.size > 0 || [...this.#children.values()].some(child => !isNativeWorkTerminal(child.work.status));}
+  get busy(): boolean {return this.#pending.size > 0 || this.#unconfirmed.size > 0 || [...this.#children.values()].some(child => !isNativeWorkTerminal(child.work.status))
+    || [...this.#commands.values()].some(command => !isNativeWorkTerminal(command.work.status));}
+  #publishCommand(command: Command): void {
+    if (command.work.background) this.start.emitSessionEvent!({event_type: "native.work.updated", data: {work: structuredClone(command.work)}});
+  }
+  async #observeCommand(message: RpcMessage, thread: string): Promise<boolean> {
+    const event = binding.extend({item: z.object({id: identity, type: z.literal("commandExecution"),
+      command: z.string().max(128 * 1024), processId: identity.nullish(), status: z.enum(["inProgress", "completed", "failed", "declined"]),
+      exitCode: z.number().int().nullish(), aggregatedOutput: z.string().max(4 * 1024 * 1024).nullish()})}).parse(message.params);
+    const origin = this.#roots.get(key(thread, event.turnId));
+    if (!origin) {this.#buffer(thread, message); return true;}
+    const commandKey = key(key(thread, event.turnId), event.item.id);
+    let command = this.#commands.get(commandKey);
+    if (event.item.status === "inProgress") {
+      if (!command) {
+        if (this.#commands.size + this.#works.size >= 128) throw new Error("Native work registry limit");
+        command = {thread, turn: event.turnId, item: event.item.id, ...(event.item.processId ? {process: event.item.processId} : {}),
+          work: {work_id: `codex-command-${randomUUID()}`, native_reference: event.item.id, origin_turn_id: origin.turn,
+            kind: "command", background: !this.#activeRoots.has(key(thread, event.turnId)), status: "running", supports_cancel: false,
+            summary: event.item.command.slice(0, 2048)}};
+        this.#commands.set(commandKey, command);
+      } else if (isNativeWorkTerminal(command.work.status)) return true;
+      if (event.item.processId) {
+        if (command.process && command.process !== event.item.processId) throw new Error("Native command process identity changed");
+        command.process = event.item.processId;
+      }
+      command.work.supports_cancel = command.work.background && !!command.process;
+      this.#publishCommand(command); return true;
+    }
+    if (!command || isNativeWorkTerminal(command.work.status)) return true;
+    command.work.status = event.item.status === "declined" ? "cancelled" : event.item.status === "failed" || event.item.exitCode != null && event.item.exitCode !== 0 ? "failed" : "completed";
+    command.work.supports_cancel = false;
+    if (command.work.background && event.item.aggregatedOutput != null && this.start.publishContent)
+      command.work.content_ref = this.start.publishContent(event.item.aggregatedOutput);
+    this.#publishCommand(command);
+    if (!command.work.background) this.#commands.delete(commandKey);
+    return true;
+  }
+  async #cancelCommand(command: Command, signal?: AbortSignal): Promise<void> {
+    if (!command.process || isNativeWorkTerminal(command.work.status)) throw new HarnessAdapterError("native_work_owner_unavailable", "Native command has no active process identity.");
+    signal?.throwIfAborted();
+    let cursor: string | undefined;
+    const seen = new Set<string>(); let matched = false;
+    do {
+      const page = z.object({data: z.array(z.object({processId: identity, itemId: identity, cwd: z.string().min(1).max(4096)})).max(128), nextCursor: identity.nullish()})
+        .parse(await this.#request("thread/backgroundTerminals/list", {threadId: command.thread, ...(cursor ? {cursor} : {}), limit: 128}));
+      for (const terminal of page.data) if (terminal.processId === command.process) {
+        if (terminal.itemId !== command.item || await realpath(terminal.cwd) !== await realpath(this.start.payload.cwd))
+          throw new HarnessAdapterError("native_work_binding_unconfirmed", "Native command item or workspace changed.");
+        matched = true;
+      }
+      cursor = page.nextCursor ?? undefined;
+      if (cursor && (seen.has(cursor) || seen.size >= 16)) throw new HarnessAdapterError("native_work_inventory_unconfirmed", "Native command inventory is cyclic or exceeds its bound.");
+      if (cursor) seen.add(cursor);
+    } while (cursor);
+    if (!matched) throw new HarnessAdapterError("native_work_turn_unconfirmed", "The original native command is absent from its execution owner's inventory.");
+    signal?.throwIfAborted();
+    const response = z.object({terminated: z.boolean()}).parse(await this.#request("thread/backgroundTerminals/terminate", {threadId: command.thread, processId: command.process}));
+    if (!response.terminated) throw new HarnessAdapterError("native_work_cancel_unknown", "The provider did not confirm native command termination.");
+    if (!isNativeWorkTerminal(command.work.status)) {command.work.status = "cancelled"; command.work.supports_cancel = false; this.#publishCommand(command);}
+  }
   childOrigin(thread: string, turn: string): {origin_turn_id: string; work_id: string} | undefined {
     const child = this.#children.get(thread);
     return child && child.turn === turn && !this.#lost && !isNativeWorkTerminal(child.work.status)
@@ -109,6 +171,9 @@ export class CodexOwnedWork {
     if (!p.success || !p.data.threadId) return;
     const thread = p.data.threadId;
     const item = (p.data.item as {type?: unknown} | undefined);
+    if (this.#rootThreads.has(thread) && ["item/started", "item/completed"].includes(message.method ?? "") && item?.type === "commandExecution") {
+      await this.#observeCommand(message, thread); return;
+    }
     if ((message.method === "item/started" || message.method === "item/completed") && item?.type === "subAgentActivity") {
       const event = activity.parse(message.params);
       const parent = this.#children.get(thread);
@@ -146,6 +211,9 @@ export class CodexOwnedWork {
         if (message.method === "turn/completed") {
           const terminal = z.object({turn:z.object({id:identity,status:z.enum(["completed","interrupted","failed"])})}).parse(message.params);
           this.#activeRoots.delete(key(thread, terminal.turn.id));
+          for (const command of this.#commands.values()) if (command.thread === thread && command.turn === terminal.turn.id && !isNativeWorkTerminal(command.work.status)) {
+            command.work.background = true; command.work.supports_cancel = !!command.process; this.#publishCommand(command);
+          }
         }
         if (typeof nativeTurn === "string" && !this.#roots.has(key(thread, nativeTurn)) &&
           ["turn/started", "turn/completed"].includes(message.method ?? "")) this.#buffer(thread, message);
@@ -187,6 +255,12 @@ export class CodexOwnedWork {
   }
   async cancel(work: HarnessNativeWorkRecord, signal: AbortSignal): Promise<void> {
     await this.settled(); signal.throwIfAborted();
+    const command = [...this.#commands.values()].find(value => value.work.work_id === work.work_id);
+    if (command) {
+      if (command.work.native_reference !== work.native_reference || command.work.origin_turn_id !== work.origin_turn_id || this.#lost || this.#stopping)
+        throw new HarnessAdapterError("native_work_owner_unavailable", "The native command execution owner changed.");
+      await this.#cancelCommand(command, signal); return;
+    }
     const child = this.#works.get(work.work_id);
     if (!child || this.#children.get(child.thread) !== child || child.thread !== work.native_reference || !child.turn || isNativeWorkTerminal(child.work.status))
       throw new HarnessAdapterError("native_work_owner_unavailable", "The admitted native child cancellation owner is unavailable.");
@@ -208,6 +282,7 @@ export class CodexOwnedWork {
     if (this.#pending.size || this.#unconfirmed.size) throw new HarnessAdapterError("native_work_closure_unknown", "Unconfirmed native child membership prevents safe unload.");
     this.#stopping = true;
     try {
+      for (const command of this.#commands.values()) if (!isNativeWorkTerminal(command.work.status)) await this.#cancelCommand(command);
       for (const child of this.#children.values()) if (!isNativeWorkTerminal(child.work.status)) {
         if (!child.turn) throw new HarnessAdapterError("native_work_closure_unknown", "Native child has no confirmed interruptible turn.");
         z.object({}).strict().parse(await this.#request("turn/interrupt", {threadId: child.thread, turnId: child.turn}));

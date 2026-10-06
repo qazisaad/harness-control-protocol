@@ -15,10 +15,17 @@ async function fixture(mode = "normal") {
 import {createInterface} from 'node:readline';
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 const notify = (method,params) => send({method,params});
-let status='inProgress', interrupts=0, subscriptions=[];
+let status='inProgress', interrupts=0, subscriptions=[], terminations=0;
 createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);
- if(m.method==='launch') {
+ if(m.method==='command-launch') {
+  notify('item/started',{threadId:'root',turnId:'command-root',item:{id:'command-item',type:'commandExecution',command:'sleep fixture',processId:'owned-process',status:'inProgress'}});
+  send({id:m.id,result:{}});
+ } else if(m.method==='command-root-done') {notify('turn/completed',{threadId:'root',turn:{id:'command-root',status:'completed'}});send({id:m.id,result:{}});}
+ else if(m.method==='command-done') {notify('item/completed',{threadId:'root',turnId:'command-root',item:{id:'command-item',type:'commandExecution',command:'sleep fixture',processId:'owned-process',status:'completed',exitCode:0,aggregatedOutput:'Owned command output'}});send({id:m.id,result:{}});}
+ else if(m.method==='thread/backgroundTerminals/list')send({id:m.id,result:{data:[{processId:'owned-process',itemId:process.env.MODE==='wrong-command'?'foreign':'command-item',cwd:process.cwd()}],nextCursor:null}});
+ else if(m.method==='thread/backgroundTerminals/terminate'){terminations++;send({id:m.id,result:{terminated:process.env.MODE!=='command-ack-only'}});}
+ else if(m.method==='launch') {
   notify('thread/status/changed',{threadId:'child',status:{type:'active',activeFlags:[]}});
   notify('item/started',{threadId:'root',turnId:'root-turn',item:{id:'launch',type:'subAgentActivity',agentThreadId:'child',agentPath:'/root/child',kind:'started'}});
   notify('turn/started',{threadId:'child',turn:{id:'child-turn',status:'inProgress'}});
@@ -34,6 +41,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  else if(m.method==='unknown-child'){notify('turn/started',{threadId:'unowned',turn:{id:'unowned-turn'}});send({id:m.id,result:{}});}
  else if(m.method==='unknown-root'){notify('turn/started',{threadId:'root',turn:{id:'autonomous-turn'}});send({id:m.id,result:{}});}
  else if(m.method==='stats')send({id:m.id,result:{interrupts,subscriptions}});
+ else if(m.method==='command-stats')send({id:m.id,result:{terminations}});
  else if(m.method==='ask-child') {send({id:'child-question',method:'item/tool/requestUserInput',params:{threadId:'child',turnId:'child-turn',itemId:'question-item',questions:[{id:'q',header:'Choice',question:'Choose a value',options:[{label:'Alpha',description:'First'},{label:'Beta',description:'Second'}]}]}});send({id:m.id,result:{}});}
  else if(m.method==='ask-root') {send({id:'root-question',method:'item/tool/requestUserInput',params:{threadId:'root',turnId:'second-root',itemId:'root-item',questions:[]}});send({id:m.id,result:{}});}
  else if(m.method==='progress') {notify('thread/status/changed',{threadId:'child',status:{type:'active',activeFlags:['waitingOnApproval']}});notify('item/started',{threadId:'child',turnId:'child-turn',item:{id:'command',type:'commandExecution'}});send({id:m.id,result:{}});}
@@ -69,6 +77,36 @@ async function requested(events: HarnessAdapterEvent[]): Promise<HarnessAdapterE
   }
   throw new Error("No child input arrived");
 }
+
+test("Codex background commands retain their origin after root completion and publish late terminal proof", async () => {
+  const f = await fixture();
+  try {
+    await f.rpc.request("command-launch", {}); f.owner.admitRoot("root", "command-root", "app-command-root"); await f.owner.settled();
+    assert.equal(f.events.filter(event => event.event_type === "native.work.updated").length, 0);
+    await f.rpc.request("command-root-done", {}); await f.owner.settled();
+    const running = f.work();
+    assert.equal(running.kind, "command"); assert.equal(running.origin_turn_id, "app-command-root");
+    assert.equal(running.background, true); assert.equal(running.status, "running"); assert.equal(running.supports_cancel, true);
+    assert.equal(f.owner.busy, true);
+    await f.rpc.request("command-done", {}); await f.owner.settled();
+    assert.equal(f.work().work_id, running.work_id); assert.equal(f.work().status, "completed"); assert.equal(f.owner.busy, false);
+    await f.rpc.request("command-done", {}); await f.owner.settled();
+    assert.equal(f.events.filter(event => event.event_type === "native.work.updated" && (event.data.work as {status: string}).status === "completed").length, 1);
+    await f.owner.stop();
+  } finally {await f.close();}
+});
+
+for (const mode of ["normal", "wrong-command", "command-ack-only"]) test(`Codex command termination requires owned inventory and explicit native proof (${mode})`, async () => {
+  const f = await fixture(mode);
+  try {
+    await f.rpc.request("command-launch", {}); f.owner.admitRoot("root", "command-root", "app-command-root"); await f.owner.settled();
+    await f.rpc.request("command-root-done", {}); await f.owner.settled();
+    const operation = f.owner.cancel({...f.work(), revision: 1}, new AbortController().signal);
+    if (mode === "normal") {await operation; assert.equal(f.work().status, "cancelled"); await f.owner.stop();}
+    else {await assert.rejects(operation, {code: mode === "wrong-command" ? "native_work_binding_unconfirmed" : "native_work_cancel_unknown"}); assert.equal(f.work().status, "running");}
+    assert.equal((await f.rpc.request("command-stats", {}) as {terminations: number}).terminations, mode === "wrong-command" ? 0 : 1);
+  } finally {await f.close();}
+});
 
 test("Codex child launch confirms ancestry without requiring materialized turns", async () => {
   const f = await fixture("metadata-only");

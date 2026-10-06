@@ -16,10 +16,17 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly sessionEvents = true;
   readonly nativeWork = true;
   readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const,
-    empty_conversation: true, idle_configuration_transition: true}];
+    empty_conversation: true, idle_configuration_transition: true,
+    native_feedback: {owner: "live_conversation" as const, classifications: ["bug"], diagnostics: true}}];
   readonly requests = new Map<string, {id: string; turnId?: string}>();
   inputsReceived = 0;
   nativeCancellations = 0;
+  feedbackSubmissions = 0;
+  async submitNativeFeedback(input: Parameters<NonNullable<HarnessAdapter["submitNativeFeedback"]>>[0]) {
+    if (!this.observations.has(input.sessionId)) throw new HarnessAdapterError("owner_lost", "Fixture owner is closed.");
+    this.feedbackSubmissions++;
+    return {feedback_id: "fixture-feedback-receipt"};
+  }
   readonly observations = new Map<string, NonNullable<HarnessAdapterStartInput["emitSessionEvent"]>>();
   readonly workStatus = new Map<string, string>();
   readonly instructionRoles = ["system"] as const;

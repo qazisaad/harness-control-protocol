@@ -106,6 +106,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method==='initialize') send({id:m.id,result:{}});
  if(m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{inherited:{url:'http://localhost:1',enabled:true}},plugins:{'plugin@vendor':{enabled:true}}}}});
  if(m.method==='mcpServerStatus/list') send({id:m.id,result:{data:[{name:'inherited',runtimeStatus:'disabled',tools:{}},{name:'plugin-server',runtimeStatus:process.env.MODE==='mcp-leak'?'connected':'disabled',tools:{}}],nextCursor:null}});
+ if(m.method==='feedback/upload') send({id:m.id,result:{threadId:'feedback-receipt'}});
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never',approvalsReviewer:process.env.MODE==='reviewer'?'auto_review':m.params.approvalsReviewer}}); }
  if(m.method==='thread/section/move')send({id:m.id,result:{}});
  if(m.method==='thread/read')send({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd(),path:process.cwd()+'/native-rollout.jsonl',turns:[]}}});
@@ -250,6 +251,29 @@ for (const mode of [
       );
   });
 }
+
+it("Codex feedback borrows the owned transport and maps only explicit report fields", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-feedback-codex-"));
+  const executable = join(cwd, "codex.cjs"), record = join(cwd, "requests.jsonl");
+  await writeFile(executable, fixture); await chmod(executable, 0o755);
+  const selected = provider("codex", executable);
+  selected.env = {MODE: "retained", VERSION: "codex-cli 0.160.0", RECORD: record};
+  const payload = {...start("codex", cwd), execution_profile: "interactive" as const};
+  const adapter = new CodexHarnessAdapter();
+  await adapter.startSession({payload, provider: selected, emitSessionEvent:()=>{}, registerSessionInteractions:()=>{}});
+  const input = {sessionId: payload.session_id, nativeThreadId: "native-thread", provider: selected, startPayload: payload,
+    request: {kind: "feedback" as const, classification: "bug", include_diagnostics: false, reason: "Fixture report"}, signal: new AbortController().signal};
+  try {
+    assert.deepEqual(await adapter.submitNativeFeedback(input), {feedback_id: "feedback-receipt"});
+    await assert.rejects(adapter.submitNativeFeedback({...input, nativeThreadId: "foreign-thread"}));
+    await assert.rejects(adapter.submitNativeFeedback({...input, request: {...input.request, classification: "quality"}}));
+    const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(requests.filter(request => request.method === "feedback/upload").map(request => request.params),
+      [{classification: "bug", includeLogs: false, threadId: "native-thread", reason: "Fixture report"}]);
+    assert.equal(requests.some(request => request.method === "turn/start"), false);
+    assert.equal(new Set(requests.map(request => request.nativePid)).size, 1);
+  } finally {await adapter.stopSession({sessionId: payload.session_id}); await rm(cwd, {recursive: true, force: true});}
+});
 
 it("Codex interactive roots reuse one native transport and interrupt only their admitted turn", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-retained-codex-"));

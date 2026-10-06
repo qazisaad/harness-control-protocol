@@ -61,6 +61,22 @@ test("steering results must name the requested active turn", async () => {
   assert.equal((await waiting).payload.turn_id, "turn");
 });
 
+test("native feedback completion requires the matching native receipt and explicit diagnostics selection", async () => {
+  const {peer, sent} = connected();
+  const waiting = peer.submitNativeFeedback("session", {classification: "bug", include_diagnostics: false});
+  const command = sent.at(-1)!; let settled = false;
+  void waiting.then(() => {settled = true;});
+  const receipt = {command_id: command.id, session_id: "session", operation: "feedback" as const, filesystem_undo: false as const};
+  peer.receive(ack(command.id));
+  for (const feedback of [{source: "native" as const, feedback_id: "receipt", classification: "other", diagnostics_requested: false},
+    {source: "native" as const, feedback_id: "receipt", classification: "bug", diagnostics_requested: true}])
+    peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt, feedback}));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(createHcpEnvelope("harness.conversation.result", {...receipt,
+    feedback: {source: "native", feedback_id: "receipt", classification: "bug", diagnostics_requested: false}}));
+  assert.equal((await waiting).payload.feedback?.feedback_id, "receipt");
+});
+
 test("native work results must name the requested action and owned work ID", async () => {
   const {peer, sent} = connected();
   const waiting = peer.cancelNativeWork("session", "child", 4);

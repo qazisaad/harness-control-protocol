@@ -1,5 +1,6 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
 import { harnessPromptContextSchema, harnessNativePolicyReadbackSchema, nativeConversationHistorySchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
+import {harnessNativeFeedbackCapabilitiesSchema, harnessNativeFeedbackOperationSchema, harnessNativeFeedbackResultSchema} from "@harness-control/protocol";
 import {harnessNativeWorkObservationSchema, harnessNativeWorkRecordSchema, isNativeWorkTerminal,
   type HarnessNativeWorkRecord} from "@harness-control/protocol";
 import type {NativeWorkState} from "../state/index.js";
@@ -235,6 +236,62 @@ export class HarnessSessionManager {
     });
   }
 
+  async #nativeFeedbackOperation(commandId: string, request: HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "feedback"}>}): Promise<HcpConversationResultPayload> {
+    const binding = this.#stateStore.nativeConversationForSession(request.session_id);
+    if (!binding) throw new HarnessAdapterError("native_feedback_binding", "Feedback requires a retained native conversation binding.");
+    const {key, conversation} = binding;
+    await this.#assertWorkspaceAllowed(conversation.workspace_id, conversation.cwd);
+    const provider = this.#requireProvider(conversation.provider_instance_id);
+    if (nativeProviderHash(provider) !== conversation.provider_binding_hash)
+      throw new HarnessAdapterError("native_feedback_binding", "Feedback belongs to the original provider configuration.");
+    const operation = harnessNativeFeedbackOperationSchema.parse(request.operation);
+    const requestHash = createHash("sha256").update(JSON.stringify({session_id: request.session_id, operation, native_thread_id: conversation.native_thread_id,
+      provider_binding_hash: conversation.provider_binding_hash})).digest("hex");
+    const result = (feedback: NonNullable<HcpConversationResultPayload["feedback"]>): HcpConversationResultPayload =>
+      ({command_id: commandId, session_id: request.session_id, operation: "feedback", filesystem_undo: false, feedback});
+    const receipt = conversation.feedback_submissions?.find(item => item.command_id === commandId);
+    if (receipt) {
+      if (receipt.request_hash !== requestHash) throw new HarnessAdapterError("command_conflict", "This feedback identity has different submission parameters.");
+      if (receipt.phase === "completed" && receipt.result) return result(harnessNativeFeedbackResultSchema.parse(receipt.result));
+      throw new HarnessAdapterError("native_feedback_unknown", "The prior feedback submission has no confirmed outcome; it will not be repeated.");
+    }
+    const session = this.#sessions.get(request.session_id);
+    const declared = session?.adapter.executionProfiles?.find(profile => profile.id === session.startPayload.execution_profile)?.native_feedback;
+    if (!session || session.cancelRequested || !declared || !session.adapter.submitNativeFeedback
+      || session.adapterSession.native_thread_id !== conversation.native_thread_id || session.nativeBindingHash !== conversation.binding_hash
+      || session.nativeWorkOwnerAvailable === false || session.nativeWorkClosureUnconfirmed)
+      throw new HarnessAdapterError("native_feedback_owner_unavailable", "Feedback requires its declared live native conversation owner.");
+    const capability = harnessNativeFeedbackCapabilitiesSchema.parse(declared);
+    if (!capability.classifications.includes(operation.classification) || operation.include_diagnostics && !capability.diagnostics)
+      throw new HarnessAdapterError("native_feedback_unsupported", "This native owner does not support the requested feedback classification or diagnostics.");
+    if ((conversation.feedback_submissions?.length ?? 0) >= 1024)
+      throw new HarnessAdapterError("native_feedback_limit", "This conversation reached its bounded native feedback receipt limit.");
+    const intent = {command_id: commandId, request_hash: requestHash, source_session_id: request.session_id,
+      native_thread_id: conversation.native_thread_id, classification: operation.classification,
+      include_diagnostics: operation.include_diagnostics, phase: "pending" as const};
+    this.#stateStore.saveNativeConversation(key, {...conversation, feedback_submissions: [...(conversation.feedback_submissions ?? []), intent]});
+    if (this.#stateStore.getNativeConversation(key)?.feedback_submissions?.find(item => item.command_id === commandId)?.request_hash !== requestHash)
+      throw new HarnessAdapterError("native_feedback_fence_missing", "Feedback dispatch ownership was not retained.");
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const submitted = await Promise.race([session.adapter.submitNativeFeedback({sessionId: session.sessionId,
+        nativeThreadId: conversation.native_thread_id, provider, startPayload: session.startPayload, request: operation, signal: controller.signal}),
+      new Promise<never>((_, reject) => {timer = setTimeout(() => {controller.abort(); reject(new Error("Feedback acknowledgement deadline expired."));}, 30_000);})]);
+      const feedback = harnessNativeFeedbackResultSchema.parse({source: "native", feedback_id: submitted.feedback_id,
+        classification: operation.classification, diagnostics_requested: operation.include_diagnostics});
+      const current = this.#stateStore.getNativeConversation(key);
+      if (!current || current.native_thread_id !== conversation.native_thread_id || current.provider_binding_hash !== conversation.provider_binding_hash)
+        throw new Error("Feedback owner changed during acknowledgement.");
+      this.#stateStore.saveNativeConversation(key, {...current, feedback_submissions: current.feedback_submissions!.map(item =>
+        item.command_id === commandId ? {...item, phase: "completed" as const, result: feedback} : item)});
+      if (this.#stateStore.getNativeConversation(key)?.feedback_submissions?.find(item => item.command_id === commandId)?.phase !== "completed")
+        throw new Error("Feedback acknowledgement was not retained.");
+      return result(feedback);
+    } catch {throw new HarnessAdapterError("native_feedback_unknown", "Feedback dispatch has an unknown outcome; the retained command identity will not be resubmitted.");}
+    finally {if (timer) clearTimeout(timer); controller.abort();}
+  }
+
   async #nativeWorkOperation(commandId: string, request: HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "work"}>}): Promise<HcpConversationResultPayload> {
     let state = this.#stateStore.nativeWorkState(request.session_id);
     if (!state) throw new HarnessAdapterError("native_work_unavailable", "This session has no retained native-work contract.");
@@ -423,6 +480,7 @@ export class HarnessSessionManager {
         return {command_id: commandId, session_id: request.session_id, operation: "input_file", filesystem_undo: false,
           input_file: this.#inputFileStore().operation(session.inputFileScope, commandId, request.operation)};
       }
+      if (request.operation.kind === "feedback") return this.#nativeFeedbackOperation(commandId, request as HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "feedback"}>});
       if (request.operation.kind === "work") return this.#nativeWorkOperation(commandId, request as HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "work"}>});
       if (request.operation.kind === "content") {
         const scope = this.#contentStore.scope(request.session_id, request.operation.content_id);
@@ -557,7 +615,8 @@ export class HarnessSessionManager {
         if (!forkStarted || !target || target.session_id !== request.operation.target_session_id || target.continuation_group_key !== request.operation.continuation_group_key ||
             target.native_reference === conversation.native_thread_id)
           throw new HarnessAdapterError("native_history_binding", "Native fork did not confirm an independent destination.");
-        const {rollback: _rollback, fork: _fork, injections: _injections, ...bindingFields} = conversation;
+        const {rollback: _rollback, fork: _fork, injections: _injections, configuration_transitions: _transitions,
+          feedback_submissions: _feedback, ...bindingFields} = conversation;
         this.#stateStore.saveNativeConversation(target.continuation_group_key, {...bindingFields, ...(result.native_fresh ? {fresh: true} : {}), native_thread_id: target.native_reference,
           last_session_id: target.session_id, updated_at: new Date().toISOString()});
         this.#stateStore.saveNativeConversation(key, {...conversation, fork: {command_id: commandId, target_key: target.continuation_group_key,
@@ -1345,6 +1404,7 @@ export class HarnessSessionManager {
           ...(previous?.fork ? {fork: previous.fork} : {}),
           ...(previous?.injections ? {injections: previous.injections} : {}),
           ...(previous?.configuration_transitions ? {configuration_transitions: previous.configuration_transitions} : {}),
+          ...(previous?.feedback_submissions ? {feedback_submissions: previous.feedback_submissions} : {}),
           configuration_base_hash: nativeConfigurationBaseHash(session.startPayload, this.#requireProvider(session.providerInstanceId, session.driverKind), session.mcpToolsets,
             validateConfigurationInheritance(session.startPayload, session.adapter.configurationInheritance, session.adapter.configurationInheritanceOptions)),
           native_thread_id: threadId, binding_hash: session.nativeBindingHash!, updated_at: new Date().toISOString(),

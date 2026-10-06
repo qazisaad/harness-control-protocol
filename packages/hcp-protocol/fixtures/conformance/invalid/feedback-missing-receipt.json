@@ -1,0 +1,12 @@
+{
+  "sent_at": "2026-10-06T00:00:00Z",
+  "payload": {
+    "filesystem_undo": false,
+    "operation": "feedback",
+    "session_id": "session",
+    "command_id": "feedback"
+  },
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "id": "fixture-feedback-missing-receipt"
+}
