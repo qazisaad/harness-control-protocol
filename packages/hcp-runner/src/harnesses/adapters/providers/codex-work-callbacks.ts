@@ -4,6 +4,7 @@ import {HarnessAdapterError, type HarnessAdapterStartInput, type HarnessAdapterT
 import {CodexRpc} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
 import {NativeMcpBridge} from "./native-mcp.js";
+import {codexApproval} from "./codex-approvals.js";
 
 const binding = z.object({threadId: z.string().min(1).max(512), turnId: z.string().min(1).max(512)});
 type Owner = {thread: string; turn: string; interactions: NativeInteractions; bridge: NativeMcpBridge};
@@ -67,7 +68,7 @@ export class CodexWorkCallbacks {
         availableDecisions: ["accept", "decline", "cancel"]}, "permissions", signal);
       return {permissions: answer.decision === "accept" ? request.permissions : {}, scope: "turn"};
     }
-    return owner.interactions.approval(params, method === "item/fileChange/requestApproval" ? "file_change" : "command", signal);
+    return codexApproval(owner.interactions, params, method === "item/fileChange/requestApproval" ? "file_change" : "command", signal, true);
   }
   close(): void {
     if (this.#closed) return;

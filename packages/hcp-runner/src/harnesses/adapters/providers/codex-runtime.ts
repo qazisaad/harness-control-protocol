@@ -12,6 +12,7 @@ import { CodexRpc, type RpcMessage, type RpcRequestHandler } from "./codex-rpc.j
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
+import {codexApproval} from "./codex-approvals.js";
 import type {CodexOwnedWork} from "./codex-work.js";
 import type {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
@@ -258,8 +259,8 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         await admission; requestSignal.throwIfAborted(); return handler(params, requestSignal);
       });
     };
-    setTurnRequestHandler("item/commandExecution/requestApproval", (params, requestSignal) => interactions!.approval(params, "command", requestSignal));
-    setTurnRequestHandler("item/fileChange/requestApproval", (params, requestSignal) => interactions!.approval(params, "file_change", requestSignal));
+    setTurnRequestHandler("item/commandExecution/requestApproval", (params, requestSignal) => codexApproval(interactions!, params, "command", requestSignal, !!lease));
+    setTurnRequestHandler("item/fileChange/requestApproval", (params, requestSignal) => codexApproval(interactions!, params, "file_change", requestSignal, !!lease));
     setTurnRequestHandler("item/permissions/requestApproval", async (params, requestSignal) => {
       const request = z.object({threadId: z.string(), turnId: z.string(), itemId: z.string(),
         permissions: z.record(z.string(), z.json())}).passthrough().parse(params);
