@@ -18,6 +18,8 @@ import {harnessRateLimitObservationSchema} from "./rate-limits.js";
 export * from "./rate-limits.js";
 import {harnessNativeOutputObservationSchema} from "./native-output.js";
 export * from "./native-output.js";
+import {harnessNativeRetryObservationSchema} from "./native-retry.js";
+export * from "./native-retry.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -139,6 +141,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "native.work.owner_lost",
   "native.request.lost",
   "native.output.updated",
+  "native.retry.updated",
   "runtime.warning",
   "runtime.error",
 ] as const;
@@ -315,6 +318,7 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   account_limit_observations: z.literal("native_session").optional(),
   /** Uncorrelated native output is owned by the session, never an invented app turn. */
   native_async_output: z.literal("session").optional(),
+  native_retry_observations: z.literal("session").optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;
@@ -2782,6 +2786,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType === "settings.options.effective") return harnessEffectiveModelOptionsSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
   if (eventType === "native.output.updated") return z.object({output: harnessNativeOutputObservationSchema}).strict();
+  if (eventType === "native.retry.updated") return z.object({retry: harnessNativeRetryObservationSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
   if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"]), closure_unconfirmed: z.literal(true).optional()}).strict();
   if (eventType === "native.request.lost") {
@@ -2861,8 +2866,8 @@ export const hcpHarnessEventPayloadSchema = z
   .strict()
   .superRefine((payload, context) => {
     const eventType: string = payload.event_type;
-    if (eventType === "native.output.updated" && payload.turn_id !== undefined)
-      context.addIssue({code: "custom", path: ["turn_id"], message: "Unattributed native session output cannot claim an originating app turn."});
+    if (["native.output.updated", "native.retry.updated"].includes(eventType) && payload.turn_id !== undefined)
+      context.addIssue({code: "custom", path: ["turn_id"], message: "Unattributed native session observations cannot claim an originating app turn."});
     if (["settings.effective", "settings.options.effective", "context.input.prepared"].includes(eventType) && payload.turn_id === undefined)
       context.addIssue({code: "custom", path: ["turn_id"], message: "Root settings and prepared context require their admitted HCP turn identity."});
     const dataSchema: z.ZodType<unknown> = isKnownHcpEventType(eventType)

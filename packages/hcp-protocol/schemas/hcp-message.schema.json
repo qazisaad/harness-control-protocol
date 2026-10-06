@@ -5644,6 +5644,10 @@
                               "type": "string",
                               "const": "session"
                             },
+                            "native_retry_observations": {
+                              "type": "string",
+                              "const": "session"
+                            },
                             "root_interrupt_effect": {
                               "type": "string",
                               "enum": [
@@ -27674,6 +27678,218 @@
               ],
               "additionalProperties": false,
               "$id": "https://schemas.harness-control.local/hcp.v0/events/native.output.updated.schema.json"
+            },
+            "raw": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "payload": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              },
+              "required": [
+                "source",
+                "payload"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "session_id",
+            "sequence",
+            "event_type",
+            "created_at",
+            "data"
+          ],
+          "additionalProperties": false,
+          "not": {
+            "required": [
+              "turn_id"
+            ]
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "harness.event"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "turn_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sequence": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "event_type": {
+              "type": "string",
+              "const": "native.retry.updated"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "retry": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "const": "native"
+                    },
+                    "native_source": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "item_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "scope": {
+                      "type": "string",
+                      "const": "session"
+                    },
+                    "correlation": {
+                      "type": "string",
+                      "const": "unattributed"
+                    },
+                    "observed_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "retrying"
+                    },
+                    "attempt": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 2147483647
+                    },
+                    "max_retries": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2147483647
+                    },
+                    "retry_delay_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2147483647
+                    },
+                    "http_status": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 100,
+                          "maximum": 599
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "native_error_code": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[a-zA-Z0-9_.-]+$"
+                    },
+                    "no_response": {
+                      "type": "object",
+                      "properties": {
+                        "waited_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 2147483647
+                        },
+                        "retry_wait_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 2147483647
+                        }
+                      },
+                      "required": [
+                        "waited_ms",
+                        "retry_wait_ms"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "native_source",
+                    "item_id",
+                    "scope",
+                    "correlation",
+                    "observed_at",
+                    "status",
+                    "attempt",
+                    "max_retries",
+                    "retry_delay_ms",
+                    "http_status",
+                    "native_error_code"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "retry"
+              ],
+              "additionalProperties": false,
+              "$id": "https://schemas.harness-control.local/hcp.v0/events/native.retry.updated.schema.json"
             },
             "raw": {
               "type": "object",

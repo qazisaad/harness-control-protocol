@@ -6,7 +6,7 @@ import {join} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
 import {WebSocketServer} from "ws";
 import {HcpHostConnection} from "@harness-control/sdk";
-import {harnessRateLimitObservationSchema, harnessNativeOutputObservationSchema} from "@harness-control/protocol";
+import {harnessRateLimitObservationSchema, harnessNativeOutputObservationSchema, harnessNativeRetryObservationSchema} from "@harness-control/protocol";
 import {RunnerConnection} from "@harness-control/runner/connection";
 import {RunnerConfigSchema} from "@harness-control/runner/config";
 import {HarnessSessionManager, HarnessAdapterRegistry} from "@harness-control/runner/harnesses";
@@ -127,6 +127,13 @@ try {
   adapter.observations.get("session")({event_type: "native.output.updated", data: {output}});
   await until(() => events.some(event => event.event_type === "native.output.updated"));
   const observedOutput = events.find(event => event.event_type === "native.output.updated");
+  const retry = {source: "native", native_source: "fixture.retry", item_id: "retry-item", scope: "session", correlation: "unattributed",
+    observed_at: new Date().toISOString(), status: "retrying", attempt: 1, max_retries: 3, retry_delay_ms: 100,
+    http_status: null, native_error_code: "connection_error"};
+  assert.throws(() => adapter.observations.get("session")({event_type: "native.retry.updated", turn_id: "turn", data: {retry}}));
+  adapter.observations.get("session")({event_type: "native.retry.updated", data: {retry}});
+  await until(() => events.some(event => event.event_type === "native.retry.updated"));
+  assert.deepEqual(harnessNativeRetryObservationSchema.parse(events.find(event => event.event_type === "native.retry.updated").data.retry), retry);
   assert.equal(observedOutput.turn_id, undefined);
   assert.deepEqual(harnessNativeOutputObservationSchema.parse(observedOutput.data.output), output);
   await peer.stopSession({session_id: "session"});

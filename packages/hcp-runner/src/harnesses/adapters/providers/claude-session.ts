@@ -2,7 +2,7 @@ import {randomUUID, createHash} from "node:crypto";
 import {realpath} from "node:fs/promises";
 import {query, type Query, type Options, type SDKMessage, type SDKUserMessage} from "@anthropic-ai/claude-agent-sdk";
 import {z} from "zod";
-import {isNativeWorkTerminal, type HarnessContextUsage, type HarnessNativeWorkObservation, type HarnessTurnFinalOutput} from "@harness-control/protocol";
+import {harnessNativeRetryObservationSchema, isNativeWorkTerminal, type HarnessContextUsage, type HarnessNativeWorkObservation, type HarnessTurnFinalOutput} from "@harness-control/protocol";
 import {HarnessAdapterError, type HarnessAdapterStartInput, type HarnessAdapterTurnInput, type HarnessAdapterEvent, type HarnessNativeInteractions} from "../types.js";
 import {NativeInteractions} from "../../native-interactions.js";
 import {ClaudeInput} from "./claude-input.js";
@@ -104,6 +104,27 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #session(event: HarnessAdapterEvent): void {this.start.emitSessionEvent!(event);}
   #observe(task: Task): void {this.#session({event_type: "native.work.updated", data: {work: task.work}});}
   readonly #sessionOutputIds = new Map<string, string>();
+  readonly #retryIds = new Map<string, string>();
+  #retry(message: Extract<SDKMessage, {subtype: "api_retry"}>): void {
+    const code = z.enum(["authentication_failed", "oauth_org_not_allowed", "account_on_hold", "billing_error", "rate_limit", "overloaded",
+      "invalid_request", "model_not_found", "server_error", "unknown", "max_output_tokens", "cloud_credential_error"]).safeParse(message.error);
+    const retry = harnessNativeRetryObservationSchema.safeParse({source: "native", native_source: "claude.sdk.api_retry",
+      item_id: message.uuid, scope: "session", correlation: "unattributed", observed_at: new Date().toISOString(), status: "retrying",
+      attempt: message.attempt, max_retries: message.max_retries, retry_delay_ms: message.retry_delay_ms,
+      http_status: message.error_status, native_error_code: message.error, ...(message.no_response ? {no_response: {
+        waited_ms: message.no_response.waited_ms, retry_wait_ms: message.no_response.retry_wait_ms}} : {})});
+    if (!retry.success || !code.success) {
+      this.#session({event_type: "runtime.warning", data: {code: "native_retry_invalid", message: "Native retry observation was malformed."}}); return;
+    }
+    const {observed_at: _observed, ...identity} = retry.data;
+    const digest = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+    const prior = this.#retryIds.get(retry.data.item_id);
+    if (prior === digest) return;
+    if (prior) throw error("native_retry_binding", "Native retry identity was reused with another observation.");
+    if (this.#retryIds.size >= 1024) throw error("native_retry_limit", "Native retry observations exceeded their bounded identity registry.");
+    this.#session({event_type: "native.retry.updated", data: {retry: retry.data}});
+    this.#retryIds.set(retry.data.item_id, digest);
+  }
   #unattributedAssistant(message: Extract<SDKMessage, {type: "assistant"}>): void {
     const id = z.string().min(1).max(512).parse(message.uuid);
     const blocks = z.array(z.record(z.string(), z.json())).max(1024).parse(message.message.content);
@@ -295,6 +316,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       else this.#session({event_type: "runtime.warning", data: {code: "native_rate_limit_invalid", message: "Native quota observation was malformed or contradictory."}});
       return;
     }
+    if (message.type === "system" && message.subtype === "api_retry") {this.#retry(message); return;}
     if (message.type === "system" && message.subtype === "background_tasks_changed") {
       // The SDK explicitly permits this level signal to precede its origin-bearing bookends.
       // It fences destructive controls; neither absence nor membership proves a terminal outcome or origin.

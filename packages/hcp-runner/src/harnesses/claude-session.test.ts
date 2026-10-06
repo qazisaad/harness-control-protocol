@@ -106,6 +106,61 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
     closeNative: () => output.close(), get closes() {return closes;}, cleanup};
 }
 
+test("Claude retry observations preserve native evidence without adopting the current root", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "ordinary");
+    const retry = {type: "system", subtype: "api_retry", uuid: "retry-1", attempt: 2, max_retries: 4, retry_delay_ms: 1000,
+      error_status: null, error: "server_error", no_response: {waited_ms: 30000, retry_wait_ms: 60000}, private_detail: "omitted"};
+    f.emit(retry); f.emit(retry);
+    await until(() => f.events.some(event => event.event_type === "native.retry.updated"));
+    const event = f.events.find(event => event.event_type === "native.retry.updated")!;
+    assert.equal(event.turn_id, undefined);
+    assert.deepEqual({...((event.data as {retry: Record<string, unknown>}).retry), observed_at: undefined}, {source: "native", native_source: "claude.sdk.api_retry",
+      item_id: "retry-1", scope: "session", correlation: "unattributed", observed_at: undefined, status: "retrying", attempt: 2, max_retries: 4,
+      retry_delay_ms: 1000, http_status: null, native_error_code: "server_error", no_response: {waited_ms: 30000, retry_wait_ms: 60000}});
+    const running = f.send("second", "wait"); await until(() => f.prompts.length === 2);
+    f.emit({...retry, uuid: "retry-2", error_status: 429, error: "rate_limit"});
+    await until(() => f.events.filter(event => event.event_type === "native.retry.updated").length === 2);
+    assert.equal(f.events.filter(event => event.event_type === "native.retry.updated").every(event => event.turn_id === undefined), true);
+    f.result(f.prompts[1]!); await running;
+    assert.equal(f.factoryCalls, 1);
+  } finally {await f.cleanup();}
+});
+
+test("malformed Claude retry evidence warns without projecting arbitrary details or stopping the usable owner", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "ordinary");
+    f.emit({type: "system", subtype: "api_retry", uuid: "bad-retry", attempt: -1, max_retries: 4, retry_delay_ms: 100,
+      error_status: null, error: "private_native_error"});
+    await until(() => f.events.some(event => event.event_type === "runtime.warning" && (event.data as {code?: string}).code === "native_retry_invalid"));
+    f.emit({type: "system", subtype: "api_retry", uuid: "unknown-error", attempt: 1, max_retries: 4, retry_delay_ms: 100,
+      error_status: null, error: "private_native_error"});
+    await until(() => f.events.filter(event => event.event_type === "runtime.warning" && (event.data as {code?: string}).code === "native_retry_invalid").length === 2);
+    assert.equal(f.events.some(event => event.event_type === "native.retry.updated"), false);
+    await f.send("second", "usable"); assert.equal(f.factoryCalls, 1);
+    f.emit({type: "system", subtype: "api_retry", session_id: "foreign", uuid: "foreign-retry", attempt: 1, max_retries: 4,
+      retry_delay_ms: 100, error_status: 500, error: "server_error"});
+    await until(() => f.events.some(event => event.event_type === "native.work.owner_lost"));
+    assert.equal(f.events.some(event => event.event_type === "native.retry.updated"), false);
+  } finally {await f.cleanup();}
+});
+
+test("conflicting Claude retry identities fence the native owner", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "ordinary");
+    const retry = {type: "system", subtype: "api_retry", uuid: "retry-identity", attempt: 1, max_retries: 4,
+      retry_delay_ms: 100, error_status: 500, error: "server_error"};
+    f.emit(retry); await until(() => f.events.some(event => event.event_type === "native.retry.updated"));
+    f.emit({...retry, attempt: 2}); await until(() => f.events.some(event => event.event_type === "native.work.owner_lost"));
+    assert.equal(f.events.filter(event => event.event_type === "native.retry.updated").length, 1);
+    assert.equal((await f.send("second", "refused")).at(-1)?.event_type, "turn.failed");
+    assert.equal(f.factoryCalls, 1); assert.equal(f.prompts.length, 1);
+  } finally {await f.cleanup();}
+});
+
 test("Claude completed blocks retain their exact stamped native message lane without admitting another message", async () => {
   const f = await fixture();
   try {
