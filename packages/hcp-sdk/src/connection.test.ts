@@ -195,3 +195,17 @@ test("transport failure preserves its cause and clears the pending wait", async 
   await assert.rejects(peer.send(stop()), (error: unknown) => error instanceof HcpOutcomeUnknownError && error.cause === cause);
   peer.disconnect();
 });
+
+test("child history waits for its exact owned revision instead of an ACK or stale snapshot", async () => {
+  const {peer, sent} = connected();
+  const pending = peer.readNativeWorkHistory("session", "child", 4);
+  const id = sent.at(-1)!.id;
+  let settled = false; void pending.then(() => {settled = true;});
+  const result = (revision: number, work_id = "child") => createHcpEnvelope("harness.conversation.result", {
+    command_id: id, session_id: "session", operation: "work", filesystem_undo: false,
+    work: {action: "history", work_id, revision, source: "native", owner_status: "active",
+      history: {history_hash: "a".repeat(64), turn_count: 0, truncated: false, turns: []}}});
+  peer.receive(ack(id)); peer.receive(result(3)); peer.receive(result(4, "foreign"));
+  await Promise.resolve(); assert.equal(settled, false);
+  peer.receive(result(4)); assert.equal((await pending).payload.work?.action, "history");
+});

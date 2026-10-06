@@ -16,6 +16,7 @@ import {consumeNativeSse} from "./native-sse.js";
 import {NativeEventOwner} from "./native-event-owner.js";
 import {OpenCodeOwnedWork} from "./opencode-work.js";
 import {OpenCodeWorkCallbacks} from "./opencode-work-callbacks.js";
+import {readOpenCodeOwnedHistory} from "./opencode-conversation.js";
 import {unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, type ContentPublisher} from "./content-projection.js";
 
@@ -58,7 +59,7 @@ const executionProfiles = [
   {id: "isolated", runtime_lifetime: "session", native_work: false, session_events: false},
   {id: "interactive", runtime_lifetime: "session", native_work: false, session_events: false, root_interrupt_effect: "owned_work"},
   {id: "background", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "owned_work",
-    required_configuration_inheritance: controlledOpenCodeInheritance, mcp_attachments: false},
+    required_configuration_inheritance: controlledOpenCodeInheritance, mcp_attachments: false, native_work_history: "live_owner"},
 ] as const;
 
 const executionCapabilities: HarnessExecutionCapabilities = {
@@ -151,6 +152,7 @@ export type OpenCodeRuntime = {
   readonly work?: OpenCodeOwnedWork;
   stopNativeWork?(): Promise<void>;
   cancelOwnedWork?(work: import("@harness-control/protocol").HarnessNativeWorkRecord, signal: AbortSignal): Promise<void>;
+  readOwnedWorkHistory?(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]): Promise<import("@harness-control/protocol").NativeConversationHistory>;
   readonly sessionPermissions?: true;
   readonly ownedAccount?: {providerId: string; binding: string};
   readonly sessionId: string;
@@ -413,6 +415,11 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
     if (!runtime.cancelOwnedWork) throw new HarnessAdapterError("native_work_owner_unavailable", "The runtime has no native callback cancellation owner.");
     await runtime.cancelOwnedWork(input.work, input.signal);
   }
+  async readNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]) {
+    const runtime = this.#requireRuntime(input.sessionId);
+    if (!runtime.readOwnedWorkHistory) throw new HarnessAdapterError("native_work_history_unavailable", "The native child history owner is unavailable.");
+    return runtime.readOwnedWorkHistory(input);
+  }
 }
 
 async function runProbe(
@@ -574,7 +581,8 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       const read = (path: string) => fetchJson(new URL(`${path}?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "GET"});
       this.work = new OpenCodeOwnedWork(sessionId, {...workOwner, emitSessionEvent: event => {
         workOwner.emitSessionEvent!(event);if (event.event_type === "native.work.updated") this.#callbacks?.synchronize();
-      }}, {session: id => read(`/session/${encodeURIComponent(id)}`),
+      }}, {session: (id, signal) => fetchJson(new URL(`/session/${encodeURIComponent(id)}?directory=${encodeURIComponent(cwd)}`, baseUrl),
+        {method: "GET", ...(signal ? {signal} : {})}),
         message: (session, id) => read(`/session/${encodeURIComponent(session)}/message/${encodeURIComponent(id)}`),
         cancel: (session, signal) => fetchJson(new URL(`/session/${encodeURIComponent(session)}/abort?directory=${encodeURIComponent(cwd)}`, baseUrl), {method: "POST", signal})});
       this.#callbacks = new OpenCodeWorkCallbacks(this.work, workOwner, (path, body, signal) => fetchJson(
@@ -718,6 +726,17 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
       throw new HarnessAdapterError("native_history_binding", "OpenCode history has another directory or conversation.");
     this.#verifyPermissions(scope.permission);
     return await fetchJson(new URL(`/session/${encodeURIComponent(sessionId)}/message?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl), {method: "GET"});
+  }
+  async readOwnedWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]) {
+    if (this.#closed || this.#shutdownRequested || !this.work || !this.ownedAccount || !this.backgroundPermissions)
+      throw new HarnessAdapterError("native_work_history_unavailable", "The controlled native child history owner is unavailable.");
+    const nativeReference = await this.work.verifyHistoryOwner(input.work, input.signal);
+    const history = await readOpenCodeOwnedHistory(() => fetchJson(
+      new URL(`/session/${encodeURIComponent(nativeReference)}/message?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl),
+      {method: "GET", signal: input.signal}), nativeReference, input.signal, input.page, input.publishContent);
+    await this.work.verifyHistoryOwner(input.work, input.signal);
+    if (this.#closed || this.#shutdownRequested) throw new HarnessAdapterError("native_work_history_unavailable", "The native child history owner closed during its read.");
+    return history;
   }
 
   async forkHistory(beforeMessageId?: string): Promise<string> {

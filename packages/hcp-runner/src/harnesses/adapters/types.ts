@@ -143,6 +143,10 @@ export type HarnessAdapter = {
   /** Read-only, revision-checked native history can coexist with this adapter's live session owner. */
   readonly liveHistoryRead?: true;
   readonly nativeWork?: true;
+  readNativeWorkHistory?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
+    provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload;
+    page: {cursor?: string; limit?: number}; publishContent: import("./providers/content-projection.js").ContentPublisher;
+    signal: AbortSignal}): Promise<import("@harness-control/protocol").NativeConversationHistory>;
   cancelNativeWork?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
     provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload; signal: AbortSignal}): Promise<void>;
   readonly sessionEvents?: true;

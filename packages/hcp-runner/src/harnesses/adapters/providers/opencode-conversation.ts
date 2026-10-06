@@ -4,13 +4,14 @@ import type {HarnessAdapterConversationInput} from "../types.js";
 import {HarnessAdapterError} from "../types.js";
 import type {OpenCodeRuntime} from "./opencode.js";
 import {hash, publicHistory, type HistoryTurn} from "../../conversation-history.js";
+import type {ContentPublisher} from "./content-projection.js";
 
 const messagesSchema = z.array(z.object({info: z.object({id: z.string(), sessionID: z.string(), role: z.enum(["user", "assistant"])}).passthrough(),
   parts: z.array(z.record(z.string(), z.json()))})).max(10_000);
 function contextHash(turns: HistoryTurn[]) {
   return hash(turns.map(turn => ({...turn, id: "", items: turn.items.map(({id: _id, ...item}) => item)})));
 }
-async function history(runtime: OpenCodeRuntime, sessionId: string): Promise<HistoryTurn[]> {
+async function history(runtime: Pick<OpenCodeRuntime, "readHistory">, sessionId: string): Promise<HistoryTurn[]> {
   if (!runtime.readHistory) throw new HarnessAdapterError("conversation_operation_unsupported", "The OpenCode runtime has no retained-history implementation.");
   const messages = messagesSchema.parse(await runtime.readHistory(sessionId));
   if (messages.some(message => message.info.sessionID !== sessionId))
@@ -31,6 +32,18 @@ async function history(runtime: OpenCodeRuntime, sessionId: string): Promise<His
     }
   }
   return turns;
+}
+
+/** Read through the already-authorized child owner; this never creates or resumes a runtime. */
+export async function readOpenCodeOwnedHistory(readMessages: () => Promise<unknown>, nativeReference: string,
+  signal: AbortSignal, page: {cursor?: string; limit?: number}, publish?: ContentPublisher) {
+  signal.throwIfAborted();
+  const reader = {readHistory: readMessages};
+  const turns = await history(reader, nativeReference);
+  if (hash(await history(reader, nativeReference)) !== hash(turns))
+    throw new HarnessAdapterError("native_history_changed", "Native history changed during the snapshot; read it again.");
+  signal.throwIfAborted();
+  return publicHistory({id: nativeReference, turns}, publish, {kind: "read", ...page}, "opencode");
 }
 
 export async function openCodeConversation(input: HarnessAdapterConversationInput, runtime: OpenCodeRuntime): Promise<HcpConversationResultPayload> {

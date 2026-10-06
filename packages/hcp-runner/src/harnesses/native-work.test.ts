@@ -8,7 +8,7 @@ import {HarnessSessionManager, HarnessAdapterRegistry, type HarnessAdapter, type
 import {RunnerConfigSchema} from "../config/index.js";
 import {JsonRunnerStateStore} from "../state/index.js";
 
-async function fixture() {
+async function fixture(historyMode?: "supported" | "changed" | "lost" | "undeclared") {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-native-work-"));
   const path = join(cwd, "state.json");
   let emit!: (event: HarnessAdapterEvent) => void;
@@ -20,6 +20,13 @@ async function fixture() {
     ({work_id, native_reference: `native-${work_id}`, origin_turn_id: "turn", kind: "task", background: true, status, supports_cancel: true, ...(parent_work_id ? {parent_work_id} : {})});
   const publish = (value: HarnessNativeWorkObservation) => emit({event_type: "native.work.updated", data: {work: value}});
   const adapter: HarnessAdapter = {driverKind: "example", sessionEvents: true, nativeWork: true,
+    ...(historyMode ? {executionProfiles: [{id: "interactive", runtime_lifetime: "session" as const, native_work: true, session_events: true,
+      ...(historyMode === "undeclared" ? {} : {native_work_history: "live_owner" as const})}],
+      async readNativeWorkHistory() {
+        if (historyMode === "changed") publish(work("child", "waiting"));
+        if (historyMode === "lost") emit({event_type: "native.work.owner_lost", data: {reason: "native_exit"}});
+        return {history_hash: "a".repeat(64), turn_count: 0, truncated: false, turns: []};
+      }} : {}),
     async probe() {return {driver_kind: "example", installed: true, available: true, models: []};}, async validateStart() {},
     async startSession(input) {emit = input.emitSessionEvent!; return {adapter_session_id: "native"};},
     async sendTurn(input) {publish(work()); return [{event_type: "turn.completed", turn_id: input.payload.turn_id, data: {final_output: {final_text: "done"}}}];},
@@ -42,7 +49,7 @@ async function fixture() {
   const makeManager = () => new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(path, {eventRetentionPerSession: 1}), adapterRegistry: new HarnessAdapterRegistry([adapter])});
   const manager = new HarnessSessionManager(config, {stateStore: state, adapterRegistry: new HarnessAdapterRegistry([adapter])});
   const start: HcpSessionStartPayload = {session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example", model_selection: {model: "example"}, sandbox_mode: "read_only", approval_policy: "ask", continue_session: false, mcp_servers: []};
-  await manager.startSession(start);
+  await manager.startSession({...start, ...(historyMode ? {execution_profile: "interactive"} : {})});
   await manager.sendTurn({session_id: "session", turn_id: "turn", input: "run"});
   const operation = (operation: HcpConversationRequestPayload["operation"], command = "command", target = manager) => target.conversationOperation(command, hcpConversationRequestPayloadSchema.parse({session_id: "session", operation}));
   const read = async (target = manager) => {
@@ -226,6 +233,25 @@ test("terminal proof delivered during cancellation publication prevents native d
     });
     const result = await f.operation({kind: "work", action: "cancel", work_id: "child", expected_revision: 1}, "cancel");
     assert.equal(result.work?.action === "cancel" && result.work.already_terminal, true);
+    assert.equal(f.calls, 0);
+  } finally {await f.cleanup();}
+});
+
+for (const mode of ["supported", "changed", "lost", "undeclared"] as const)
+test(`owned native child history requires live declared unchanged ownership (${mode})`, async () => {
+  const f = await fixture(mode);
+  try {
+    const request = {kind: "work" as const, action: "history" as const, work_id: "child", expected_revision: 1};
+    await assert.rejects(f.operation({...request, expected_revision: 2}), /current native-work revision/);
+    await assert.rejects(f.operation({...request, work_id: "foreign"}), /not owned/);
+    if (mode === "supported") {
+      const result = hcpConversationResultPayloadSchema.parse(await f.operation(request));
+      assert.deepEqual(result.work, {action: "history", work_id: "child", revision: 1, source: "native", owner_status: "active",
+        history: {history_hash: "a".repeat(64), turn_count: 0, truncated: false, turns: []}});
+      f.ownerLost();
+      await assert.rejects(f.operation(request), /no declared live native history owner/);
+      await assert.rejects(f.operation(request, "offline", f.makeManager()), /no declared live native history owner/);
+    } else await assert.rejects(f.operation(request), mode === "changed" ? /changed during/ : mode === "lost" ? /lost during/ : /no declared/);
     assert.equal(f.calls, 0);
   } finally {await f.cleanup();}
 });

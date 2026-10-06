@@ -51,6 +51,17 @@ async function readThread(rpc: Pick<CodexRpc, "request">, threadId: string, owne
   return {...metadata, turns: turns.reverse()};
 }
 
+/** The caller owns the deadline and exclusive transport; this never starts, resumes or mutates a thread. */
+export async function readCodexOwnedHistory(rpc: CodexRpc, nativeReference: string, signal: AbortSignal,
+  page: {cursor?: string; limit?: number}, publish?: ContentPublisher) {
+  const boundedRpc = {request: (method: string, params: unknown) => rpc.request(method, params, {signal})};
+  const thread = await readThread(boundedRpc, nativeReference, true);
+  if (hash((await readThread(boundedRpc, nativeReference, true)).turns) !== hash(thread.turns))
+    throw new HarnessAdapterError("native_history_changed", "Native history changed during the snapshot; read it again.");
+  signal.throwIfAborted();
+  return publicHistory(thread, publish, {kind: "read", ...page}, "codex");
+}
+
 export async function nativeConversationOperation(commandId: string, request: HcpConversationRequestPayload,
   conversation: NativeConversation, provider: ProviderInstanceConfig, save: (conversation: NativeConversation) => void,
   beginMutation?: () => void, publish?: ContentPublisher, ownedRpc?: CodexRpc): Promise<HcpConversationResultPayload> {

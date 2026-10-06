@@ -76,6 +76,14 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   #session(event: HarnessAdapterEvent): void {this.start.emitSessionEvent!(event);}
   #observe(task: Task): void {this.#session({event_type: "native.work.updated", data: {work: task.work}});}
+  historyOwner(work: import("@harness-control/protocol").HarnessNativeWorkRecord): {sessionId: string; agentId: string} {
+    const task = this.#tasks.get(work.work_id);
+    if (this.#lost || this.#stopping || !this.#initialized || !task || task.work.kind !== "agent" || !task.launch
+      || task.work.native_reference !== work.native_reference || task.work.origin_turn_id !== work.origin_turn_id
+      || task.work.parent_work_id !== work.parent_work_id)
+      throw error("native_work_history_binding", "This native child transcript has no matching execution owner.");
+    return {sessionId: this.nativeId, agentId: task.work.native_reference};
+  }
   #pending(): Task[] {return [...this.#tasks.values()].filter(task => !isNativeWorkTerminal(task.work.status));}
   #unownedBackground(): boolean {return this.#unconfirmedWork || [...this.#background].some(id => !this.#tasks.has(id));}
   #lose(reason: "native_exit" | "transport_lost" | "runtime_error", failure: unknown): void {

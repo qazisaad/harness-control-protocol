@@ -83,6 +83,11 @@ try {
   const children = await peer.readNativeWork("session");
   assert.equal(children.payload.work.items[0].owner_status, "active");
   const child = children.payload.work.items[0].work;
+  const childHistory = await peer.readNativeWorkHistory("session", child.work_id, child.revision);
+  assert.equal(childHistory.payload.work.action, "history");
+  assert.equal(childHistory.payload.work.revision, child.revision);
+  assert.equal(childHistory.payload.work.history.turns[0].items[0].text, "Owned child transcript");
+  assert.equal(adapter.nativeCancellations, 0);
   const cancelled = await peer.cancelNativeWork("session", child.work_id, child.revision, {id: "cancel-child"});
   const cancelledAgain = await peer.cancelNativeWork("session", child.work_id, child.revision, {id: "cancel-child"});
   assert.deepEqual(cancelled.payload, cancelledAgain.payload);

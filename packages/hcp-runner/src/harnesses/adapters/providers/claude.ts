@@ -34,7 +34,7 @@ import {
   validateNativeStart,
 } from "./native-turn.js";
 import { createClaudeTurn, type ClaudeQueryFactory } from "./claude-runtime.js";
-import {claudeConversation, type ClaudeSessionHelper} from "./claude-conversation.js";
+import {claudeConversation, readClaudeOwnedHistory, type ClaudeSessionHelper} from "./claude-conversation.js";
 import {PersistentClaudeSession} from "./claude-session.js";
 import {claudeModelCatalog} from "./claude-models.js";
 import type {HarnessModel} from "@harness-control/protocol";
@@ -247,6 +247,15 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     const runtime = this.#persistent.get(input.sessionId);
     if (!runtime || input.startPayload.execution_profile !== "interactive") throw new HarnessAdapterError("native_work_unsupported", "Native task control requires the interactive Claude profile.");
     await runtime.cancel(input.work.work_id, input.signal);
+  }
+  async readNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]) {
+    const runtime = this.#persistent.get(input.sessionId);
+    if (!runtime || input.startPayload.execution_profile !== "interactive")
+      throw new HarnessAdapterError("native_work_history_unavailable", "Native child history requires the interactive Claude owner.");
+    const owner = runtime.historyOwner(input.work);
+    const history = await readClaudeOwnedHistory(input.provider, input.startPayload.cwd, owner, input.signal, input.page, input.publishContent, this.#sessionHelper);
+    runtime.historyOwner(input.work);
+    return history;
   }
   #runProcess(
     executable: string,

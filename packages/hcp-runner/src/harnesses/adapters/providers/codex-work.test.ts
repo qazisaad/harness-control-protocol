@@ -204,3 +204,19 @@ test("native Codex unload refuses unconfirmed membership after root completion",
     assert.deepEqual(await f.rpc.request("stats",{}),{interrupts:0,subscriptions:[]});
   } finally {await f.close();}
 });
+
+test("Codex child transcript lookup rechecks exact ownership and never resumes or interrupts work", async () => {
+  const f = await fixture();
+  try {
+    await f.launch();
+    const work = {...f.work(), revision: 1};
+    assert.equal(await f.owner.verifyHistoryOwner(work, new AbortController().signal), "child");
+    await assert.rejects(f.owner.verifyHistoryOwner({...work, native_reference: "foreign"}, new AbortController().signal), /matching execution owner/);
+    await assert.rejects(f.owner.verifyHistoryOwner({...work, origin_turn_id: "new-root"}, new AbortController().signal), /matching execution owner/);
+    await f.rpc.request("complete", {}); await f.owner.settled();
+    assert.equal(await f.owner.verifyHistoryOwner({...f.work(), revision: 2}, new AbortController().signal), "child");
+    assert.deepEqual(await f.rpc.request("stats", {}), {interrupts: 0, subscriptions: []});
+    await f.owner.stop();
+    await assert.rejects(f.owner.verifyHistoryOwner(work, new AbortController().signal), /matching execution owner/);
+  } finally {await f.close();}
+});

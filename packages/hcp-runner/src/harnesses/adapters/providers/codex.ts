@@ -13,7 +13,7 @@ import {
   type HarnessAdapterStopInput,
   type HarnessAdapterConversationInput,
 } from "../types.js";
-import { nativeConversationOperation } from "../../native-conversation.js";
+import { nativeConversationOperation, readCodexOwnedHistory } from "../../native-conversation.js";
 import {
   type CliProcessSpawner,
   type CliProcessResult,
@@ -41,7 +41,7 @@ import {readCodexSettingsNotification} from "./codex-settings.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true, native_work_history: "live_owner"},
 ] as const;
 function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
@@ -286,6 +286,14 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     const lease = this.#leases.get(input.sessionId);
     if (!lease?.work) throw new HarnessAdapterError("native_work_owner_unavailable", "The native child owner is unavailable.");
     await lease.work.cancel(input.work, input.signal);
+  }
+  async readNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]) {
+    const lease = this.#leases.get(input.sessionId);
+    if (!lease?.work) throw new HarnessAdapterError("native_work_history_unavailable", "The native child history owner is unavailable.");
+    const nativeReference = await lease.work.verifyHistoryOwner(input.work, input.signal);
+    const history = await readCodexOwnedHistory(lease.rpc, nativeReference, input.signal, input.page, input.publishContent);
+    await lease.work.verifyHistoryOwner(input.work, input.signal);
+    return history;
   }
   #runProcess(
     executable: string,

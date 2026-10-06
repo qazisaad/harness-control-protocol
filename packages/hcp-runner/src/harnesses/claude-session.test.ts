@@ -10,6 +10,7 @@ import {ClaudeHarnessAdapter} from "./adapters.js";
 import {RunnerConfigSchema} from "../config/index.js";
 import {JsonRunnerStateStore} from "../state/index.js";
 import type {ClaudeQueryFactory} from "./adapters/providers/claude-runtime.js";
+import type {ClaudeSessionHelper} from "./adapters/providers/claude-conversation.js";
 
 class Messages implements AsyncIterable<SDKMessage> {
   readonly items: SDKMessage[] = [];
@@ -26,7 +27,7 @@ async function until(predicate: () => boolean) {
   for (let n = 0; n < 500; n++) {if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 2));}
   throw new Error("Native fixture did not reach the expected observation.");
 }
-async function fixture() {
+async function fixture(sessionHelper?: ClaudeSessionHelper) {
   const cwd = await mkdtemp(join(tmpdir(), "hcp-claude-persistent-"));
   const options: Options[] = [];
   const prompts: SDKUserMessage[] = [];
@@ -84,7 +85,7 @@ async function fixture() {
   const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
     provider_instances: [{id: "provider", driver_kind: "claude"}]});
   const state = new JsonRunnerStateStore(join(cwd, "state.json"));
-  const adapter = new ClaudeHarnessAdapter({queryFactory: factory});
+  const adapter = new ClaudeHarnessAdapter({queryFactory: factory, ...(sessionHelper ? {sessionHelper} : {})});
   const manager = new HarnessSessionManager(config, {stateStore: state, adapterRegistry: new HarnessAdapterRegistry([adapter])});
   const events: HcpHarnessEventPayload[] = [];
   manager.subscribeEvents(event => {hcpHarnessEventPayloadSchema.parse(event); events.push(event);});
@@ -435,5 +436,38 @@ test("unconfirmed native task origin cannot become a clean unload after process 
     assert.equal(f.state.nativeWorkState("session")?.closure_unconfirmed, true);
     const {closure_unconfirmed: _, ...cleared} = quarantine;
     assert.throws(() => f.state.saveNativeWorkState("session", cleared), /authoritative reconciliation/);
+  } finally {await f.cleanup();}
+});
+
+for (const mode of ["stable", "foreign-agent", "foreign-session"] as const)
+test(`Claude child transcript uses its live task and native SDK owner (${mode})`, async () => {
+  let reads = 0;
+  const helper: ClaudeSessionHelper = async (_provider, cwd, request, signal) => {
+    assert.equal(request.kind, "subagent_read");
+    if (request.kind !== "subagent_read") throw new Error("Unexpected history operation");
+    assert.equal(request.agentId, "agent"); assert.equal(signal?.aborted, false); reads++;
+    return {info: {sessionId: request.sessionId, cwd}, agentId: mode === "foreign-agent" ? "foreign" : "agent",
+      revision: "a".repeat(64), messages: [{type: "user", uuid: "child-message", session_id: mode === "foreign-session" ? "foreign" : request.sessionId,
+        message: {content: "Owned child transcript"}}]};
+  };
+  const f = await fixture(helper);
+  try {
+    await f.send("first", "spawn");
+    await f.send("new-root", "followup");
+    const record = (await f.read()).items[0]!.work;
+    assert.equal(record.origin_turn_id, "first");
+    const read = () => f.manager.conversationOperation("child-read", {session_id: "session", operation: {
+      kind: "work", action: "history", work_id: record.work_id, expected_revision: record.revision}});
+    if (mode === "stable") {
+      const result = await read();
+      assert.equal(result.work?.action, "history");
+      if (result.work?.action !== "history") throw new Error("Expected history receipt");
+      assert.equal(result.work.history.turns[0]!.items[0]!.text, "Owned child transcript");
+    } else await assert.rejects(read(), /another native owner or workspace/);
+    assert.equal(reads, 1); assert.equal(f.factoryCalls, 1); assert.equal(f.closes, 0); assert.deepEqual(f.controls, []);
+    await assert.rejects(f.adapter.readNativeWorkHistory({commandId: "forged", sessionId: "session", work: {...record, native_reference: "foreign"},
+      provider: f.config.provider_instances[0]!, startPayload: f.start, page: {}, signal: new AbortController().signal,
+      publishContent: () => {throw new Error("No publication for unowned child");}}), /matching execution owner/);
+    assert.equal(reads, 1);
   } finally {await f.cleanup();}
 });

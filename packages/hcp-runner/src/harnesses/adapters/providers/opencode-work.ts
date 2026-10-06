@@ -12,7 +12,7 @@ const partSchema=z.object({id,messageID:id,sessionID:id,type:z.literal("tool"),t
 type Child={parent:string;launch:string;prompt?:string;cancelAccepted?:true;aborted?:true;work:HarnessNativeWorkObservation};
 
 export type OpenCodeWorkTransport={
-  session(id:string):Promise<unknown>;
+  session(id:string,signal?:AbortSignal):Promise<unknown>;
   message(sessionId:string,messageId:string):Promise<unknown>;
   cancel?(sessionId:string,signal:AbortSignal):Promise<unknown>;
 };
@@ -48,6 +48,19 @@ export class OpenCodeOwnedWork {
   async settled():Promise<void> {
     await this.#queue;
     if(this.#lost)throw new HarnessAdapterError("native_owner_unavailable","The native task observation owner was lost.");
+  }
+  async verifyHistoryOwner(work:HarnessNativeWorkRecord,signal:AbortSignal):Promise<string> {
+    await this.settled();signal.throwIfAborted();
+    const child=this.#children.get(work.native_reference);
+    if(this.#lost||this.#stopping||!child||child.work.work_id!==work.work_id||child.work.origin_turn_id!==work.origin_turn_id
+      ||child.work.parent_work_id!==work.parent_work_id)
+      throw new HarnessAdapterError("native_work_history_binding","This native child history has no matching execution owner.");
+    const native=z.object({id,parentID:id,directory:z.string()}).parse(await this.transport.session(work.native_reference,signal));
+    if(native.id!==work.native_reference||native.parentID!==child.parent||await realpath(native.directory)!==await realpath(this.start.payload.cwd))
+      throw new HarnessAdapterError("native_work_history_binding","Native child history ancestry or workspace changed.");
+    signal.throwIfAborted();
+    if(this.#lost||this.#stopping)throw new HarnessAdapterError("native_work_history_unavailable","The native child history owner was lost.");
+    return native.id;
   }
   async cancel(work:HarnessNativeWorkRecord,signal:AbortSignal,beforeDispatch?:()=>void):Promise<void> {
     await this.settled();signal.throwIfAborted();

@@ -54,6 +54,26 @@ const spawn = async (turn, seconds) => {
   return owned.work;
 };
 const passed = [];
+const childHistoryAcceptance = process.env.HCP_LIVE_CHILD_HISTORY === "1";
+const readChildHistory = async (workId, requireItems = false) => until(async () => {
+  const current = (await work()).items.find(item => item.work.work_id === workId)?.work;
+  assert.ok(current);
+  try {
+    const result = await manager.conversationOperation(randomUUID(), {session_id: "work", operation: {
+      kind: "work", action: "history", work_id: workId, expected_revision: current.revision, limit: 1}});
+    assert.equal(result.work?.action, "history"); assert.equal(result.work.work_id, workId);
+    assert.equal(result.work.source, "native"); assert.equal(result.work.owner_status, "active");
+    assert.equal(result.work.revision, current.revision);
+    assert.ok(result.work.history.turn_count >= 1);
+    assert.equal(result.work.history.turns.length, 1);
+    assert.ok(Array.isArray(result.work.history.turns[0].portable_items));
+    if (requireItems) assert.ok(result.work.history.turns[0].portable_items.length);
+    return result.work.history;
+  } catch (error) {
+    if (["native_work_changed", "native_history_changed"].includes(error?.code)) return false;
+    throw error;
+  }
+}, 15000);
 try {
   const model = driver === "claude" ? process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet"
     : driver === "opencode" ? process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/glm-5.3-flash"
@@ -69,6 +89,11 @@ try {
   const history = await manager.conversationOperation("background-live-read", {session_id: "work", operation: {kind: "read"}});
   assert.ok(history.history?.turn_count >= 1, "A live background owner lost its readable root history");
   passed.push("live-history-with-background");
+  if (childHistoryAcceptance) {
+    await readChildHistory(first.work_id);
+    assert.ok((await work()).items.some(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)));
+    passed.push("live-owned-child-history", "child-history-preserves-background");
+  }
   await manager.sendTurn({session_id: "work", turn_id: "interrupted-root", input: "Without tools, print the integers from 1 through 10000, one per line. Start immediately and continue without commentary."}, observe);
   assert.ok(interrupt, "No streaming root was available to interrupt");
   await interrupt;
@@ -118,6 +143,7 @@ try {
     passed.push("observed-parent-continuation");
   }
   passed.push("background-after-root", "followup-with-background", "observed-child-completion");
+  if (childHistoryAcceptance) {await readChildHistory(completionChild.work_id, true); passed.push("completed-child-history");}
   const launchedSecond = await spawn("background-cancel", 60);
   const second = await until(async () => (await work()).items.find(item => item.work.work_id === launchedSecond.work_id && item.work.supports_cancel)?.work);
   const request = {session_id: "work", operation: {kind: "work", action: "cancel", work_id: second.work_id, expected_revision: second.revision}};

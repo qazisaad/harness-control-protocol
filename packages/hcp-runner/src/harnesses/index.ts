@@ -1,5 +1,5 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
-import { harnessPromptContextSchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
+import { harnessPromptContextSchema, nativeConversationHistorySchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import {harnessNativeWorkObservationSchema, harnessNativeWorkRecordSchema, isNativeWorkTerminal,
   type HarnessNativeWorkRecord} from "@harness-control/protocol";
 import type {NativeWorkState} from "../state/index.js";
@@ -252,6 +252,36 @@ export class HarnessSessionManager {
       session?.nativeWorkOwnerAvailable === true, this.#liveNativeWork.get(request.session_id) ?? new Set(), operation));
     const work = state.items[operation.work_id];
     if (!work) throw new HarnessAdapterError("native_work_not_found", "Native work is not owned by this session.");
+    if (operation.action === "history") {
+      if (work.revision !== operation.expected_revision)
+        throw new HarnessAdapterError("native_work_changed", "Read the current native-work revision before reading its history.");
+      const profile = session?.adapter.executionProfiles?.find(value => value.id === session.startPayload.execution_profile);
+      if (!session?.nativeWorkOwnerAvailable || !session.adapter.readNativeWorkHistory || profile?.native_work_history !== "live_owner"
+        || !this.#liveNativeWork.get(request.session_id)?.has(work.work_id))
+        throw new HarnessAdapterError("native_work_history_unavailable", "This work has no declared live native history owner.");
+      if (nativeBindingHash(session.startPayload, provider, session.mcpToolsets) !== state.scope.execution_binding_hash)
+        throw new HarnessAdapterError("native_work_binding", "The execution binding no longer owns this native work.");
+      const abort = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const history = await Promise.race([
+          session.adapter.readNativeWorkHistory({commandId, sessionId: request.session_id, work: structuredClone(work), provider,
+            startPayload: session.startPayload, page: {...(operation.cursor ? {cursor: operation.cursor} : {}),
+              ...(operation.limit ? {limit: operation.limit} : {})}, signal: abort.signal,
+            publishContent: value => this.#contentStore.publish({session_id: request.session_id, provider_instance_id: provider.id,
+              provider_binding_hash: state!.scope.provider_binding_hash, workspace_id: state!.scope.workspace_id, cwd: state!.scope.cwd}, value)}),
+          new Promise<never>((_, reject) => {timer = setTimeout(() => {
+            const failure = new HarnessAdapterError("native_work_history_timeout", "Native work history exceeded its deadline.");
+            abort.abort(failure); reject(failure);
+          }, 30_000);}),
+        ]);
+        if (!session.nativeWorkOwnerAvailable || this.#sessions.get(request.session_id) !== session)
+          throw new HarnessAdapterError("native_work_history_unavailable", "The native history owner was lost during the read.");
+        if (this.#stateStore.nativeWorkState(request.session_id)?.items[work.work_id]?.revision !== work.revision)
+          throw new HarnessAdapterError("native_work_changed", "Native work changed during its history snapshot; read it again.");
+        return result({action: "history", work_id: work.work_id, revision: work.revision, source: "native", owner_status: "active", history: nativeConversationHistorySchema.parse(history)});
+      } finally {if (timer) clearTimeout(timer); abort.abort();}
+    }
     const requestHash = createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(operation).sort(([a], [b]) => a.localeCompare(b))))).digest("hex");
     const priorCommand = [...Object.values(state.items), ...Object.values(state.retired)].find(item => item.control?.command_id === commandId);
     if (priorCommand && (priorCommand.work_id !== work.work_id || priorCommand.control?.request_hash !== requestHash))

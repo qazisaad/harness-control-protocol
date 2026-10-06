@@ -15,7 +15,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly liveHistoryRead = true;
   readonly sessionEvents = true;
   readonly nativeWork = true;
-  readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true}];
+  readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const}];
   readonly requests = new Map<string, {id: string; turnId?: string}>();
   inputsReceived = 0;
   nativeCancellations = 0;
@@ -95,6 +95,13 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   async cancelNativeWork(input: Parameters<NonNullable<HarnessAdapter["cancelNativeWork"]>>[0]) {
     this.nativeCancellations++;
     this.emitWork(input.sessionId, input.work.origin_turn_id, "cancelled");
+  }
+  async readNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readNativeWorkHistory"]>>[0]) {
+    input.signal.throwIfAborted();
+    if (!this.observations.has(input.sessionId) || input.work.work_id !== "background-task")
+      throw new HarnessAdapterError("native_work_history_binding", "No matching child transcript owner.");
+    return {history_hash: "a".repeat(64), turn_count: 1, truncated: false, turns: [{id: "child-turn", status: "running",
+      items: [{type: "text", text: "Owned child transcript"}]}]};
   }
   async sendTurn(input: HarnessAdapterTurnInput): Promise<HarnessAdapterEvent[]> {
     const nativeId = input.session.native_thread_id!;

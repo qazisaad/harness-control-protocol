@@ -6,6 +6,7 @@ import {HarnessAdapterError} from "../types.js";
 import {hash, publicHistory, type HistoryTurn} from "../../conversation-history.js";
 import {claudeSessionHelper} from "./claude-session-helper.js";
 import type {HcpConversationResultPayload} from "@harness-control/protocol";
+import type {ContentPublisher} from "./content-projection.js";
 
 export type ClaudeSessionHelper = typeof claudeSessionHelper;
 // The SDK rewrites transcript UUIDs when forking; verify retained meaning independently of those IDs.
@@ -20,8 +21,12 @@ async function history(input: HarnessAdapterConversationInput, nativeId: string,
     await helper(input.provider, input.conversation.cwd, {kind: "read", sessionId: nativeId}));
   if (data.info.sessionId !== nativeId || await realpath(data.info.cwd) !== await realpath(input.conversation.cwd) || data.messages.some(message => message.session_id !== nativeId))
     throw new HarnessAdapterError("native_history_binding", "Claude history belongs to another conversation or workspace.");
+  return {turns: claudeHistoryTurns(data.messages, boundaries), revision: data.revision};
+}
+
+function claudeHistoryTurns(messages: z.infer<typeof messageSchema>[], boundaries = new Map<string, string>()): HistoryTurn[] {
   const turns: HistoryTurn[] = [];
-  for (const message of data.messages) {
+  for (const message of messages) {
     const content = message.message.content;
     const blocks = typeof content === "string" ? [{type: "text", text: content}] : Array.isArray(content) ? content : [];
     const isHuman = message.type === "user" && blocks.some(block => block && typeof block === "object" && !Array.isArray(block) && block.type !== "tool_result");
@@ -38,7 +43,22 @@ async function history(input: HarnessAdapterConversationInput, nativeId: string,
     }
     boundaries.set(turns.at(-1)!.id, message.uuid);
   }
-  return {turns, revision: data.revision};
+  return turns;
+}
+
+export async function readClaudeOwnedHistory(provider: import("../../../config/index.js").ProviderInstanceConfig, cwd: string,
+  owner: {sessionId: string; agentId: string}, signal: AbortSignal, page: {cursor?: string; limit?: number},
+  publish?: ContentPublisher, helper: ClaudeSessionHelper = claudeSessionHelper) {
+  signal.throwIfAborted();
+  const data = z.object({info: z.object({sessionId: z.string(), cwd: z.string()}), agentId: z.string(),
+    messages: z.array(messageSchema).max(10_000), revision: z.string().regex(/^[a-f0-9]{64}$/)}).parse(
+      await helper(provider, cwd, {kind: "subagent_read", ...owner}, signal));
+  if (data.info.sessionId !== owner.sessionId || data.agentId !== owner.agentId || await realpath(data.info.cwd) !== await realpath(cwd)
+    || data.messages.some(message => message.session_id !== owner.sessionId))
+    throw new HarnessAdapterError("native_work_history_binding", "Claude child history belongs to another native owner or workspace.");
+  signal.throwIfAborted();
+  return publicHistory({id: `${owner.sessionId}:${owner.agentId}`, turns: claudeHistoryTurns(data.messages), revision: data.revision},
+    publish, {kind: "read", ...page}, "claude");
 }
 
 export async function claudeConversation(input: HarnessAdapterConversationInput, helper: ClaudeSessionHelper = claudeSessionHelper): Promise<HcpConversationResultPayload> {

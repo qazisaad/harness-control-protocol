@@ -1,0 +1,25 @@
+{
+  "id": "fixture-native-work-read-result",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "command_id": "read-1",
+    "session_id": "session-1",
+    "operation": "work",
+    "filesystem_undo": false,
+    "work": {
+      "work_id": "child",
+      "owner_status": "active",
+      "revision": 1,
+      "history": {
+        "history_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "turn_count": 0,
+        "truncated": false,
+        "turns": []
+      },
+      "action": "history",
+      "source": "native"
+    }
+  }
+}

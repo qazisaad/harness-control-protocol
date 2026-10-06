@@ -143,3 +143,17 @@ test("foreground task completion is proved by the admitted parent tool terminal"
   const f=fixture();f.work.observe(f.task("running",false));await f.work.settled();assert.equal(f.work.busy,true);
   f.work.observe(f.task("completed",false));await f.work.settled();assert.equal(f.work.busy,false);
 });
+
+test("OpenCode child transcript lookup rechecks original parent and workspace without cancellation", async () => {
+  const f = await activeChild();
+  const record = f.events.filter(event => event.event_type === "native.work.updated").at(-1)!.data.work as import("@harness-control/protocol").HarnessNativeWorkObservation;
+  const work = {...record, revision: 1};
+  assert.equal(await f.work.verifyHistoryOwner(work, new AbortController().signal), "child");
+  await assert.rejects(f.work.verifyHistoryOwner({...work, work_id: "foreign"}, new AbortController().signal), /matching execution owner/);
+  await assert.rejects(f.work.verifyHistoryOwner({...work, origin_turn_id: "new-root"}, new AbortController().signal), /matching execution owner/);
+  f.work.transport.session = async () => ({id: "child", parentID: "foreign", directory: tmpdir()});
+  await assert.rejects(f.work.verifyHistoryOwner(work, new AbortController().signal), /ancestry or workspace changed/);
+  f.work.transport.session = async () => ({id: "child", parentID: "root", directory: tmpdir()});
+  f.work.lose();
+  await assert.rejects(f.work.verifyHistoryOwner(work, new AbortController().signal), /owner was lost/);
+});

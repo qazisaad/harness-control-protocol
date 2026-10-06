@@ -3,6 +3,7 @@ export * from "./accounts.js";
 import { hcpConversationRequestPayloadSchema, hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "./conversation.js";
 import {harnessContentReferenceSchema, type HarnessContentReference} from "./content.js";
 export * from "./conversation.js";
+export type {NativeConversationHistory} from "./conversation-history.js";
 export * from "./content.js";
 import {harnessNativeWorkRecordSchema} from "./native-work.js";
 export * from "./native-work.js";
@@ -297,6 +298,8 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   empty_conversation: z.boolean().optional(),
   /** Native readback of root model/options and fixed execution policy; omission is unknown. */
   root_settings_readback: z.boolean().optional(),
+  /** Read-only child transcripts require the current native execution owner. */
+  native_work_history: z.literal("live_owner").optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;

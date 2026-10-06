@@ -172,6 +172,8 @@ export class HcpHostConnection {
         || operation.continuation_group_key !== message.payload.fork?.continuation_group_key)) return;
       if (operation.kind === "work" && (operation.action !== message.payload.work?.action
         || (operation.action !== "read" && (message.payload.work?.action === "read" || operation.work_id !== message.payload.work?.work_id)))) return;
+      if (operation.kind === "work" && operation.action === "history"
+        && (message.payload.work?.action !== "history" || message.payload.work.revision !== operation.expected_revision)) return;
     } else if (message.type === "host.accounts.snapshot") {
       pending = this.#pending.get(message.payload.request_id);
       if (pending?.command.type !== "host.accounts.read") return;
@@ -244,6 +246,9 @@ export class HcpHostConnection {
   }
   cancelNativeWork(sessionId: string, workId: string, expectedRevision: number, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "work", action: "cancel", work_id: workId, expected_revision: expectedRevision}}, command, wait);
+  }
+  readNativeWorkHistory(sessionId: string, workId: string, expectedRevision: number, page: {cursor?: string; limit?: number} = {}, command?: CommandOptions, wait?: WaitOptions) {
+    return this.conversation({session_id: sessionId, operation: {kind: "work", action: "history", work_id: workId, expected_revision: expectedRevision, ...page}}, command, wait);
   }
   retireNativeWork(sessionId: string, workId: string, expectedRevision: number, command?: CommandOptions, wait?: WaitOptions) {
     return this.conversation({session_id: sessionId, operation: {kind: "work", action: "retire", work_id: workId, expected_revision: expectedRevision}}, command, wait);

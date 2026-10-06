@@ -78,6 +78,20 @@ export class CodexOwnedWork {
     return child && child.turn === turn && !this.#lost && !isNativeWorkTerminal(child.work.status)
       ? {origin_turn_id: child.work.origin_turn_id, work_id: child.work.work_id} : undefined;
   }
+  async verifyHistoryOwner(work: HarnessNativeWorkRecord, signal: AbortSignal): Promise<string> {
+    await this.settled(); signal.throwIfAborted();
+    const child = this.#works.get(work.work_id);
+    if (this.#lost || this.#stopping || !child || this.#children.get(child.thread) !== child || child.thread !== work.native_reference
+      || child.work.origin_turn_id !== work.origin_turn_id || child.work.parent_work_id !== work.parent_work_id)
+      throw new HarnessAdapterError("native_work_history_binding", "This native child history has no matching execution owner.");
+    const read = childRead.parse(await this.rpc.request("thread/read", {threadId: child.thread, includeTurns: false}, {signal})).thread;
+    if (read.id !== child.thread || read.parentThreadId !== child.parent || read.source.subAgent.thread_spawn.parent_thread_id !== child.parent
+      || await realpath(read.cwd) !== await realpath(this.start.payload.cwd))
+      throw new HarnessAdapterError("native_work_history_binding", "Native child history ancestry or workspace changed.");
+    signal.throwIfAborted();
+    if (this.#lost || this.#stopping) throw new HarnessAdapterError("native_work_history_unavailable", "The native child history owner was lost.");
+    return read.id;
+  }
   #buffer(thread: string, message: RpcMessage): void {
     if (this.#pending.size >= 128 && !this.#pending.has(thread)) throw new Error("Unconfirmed native membership limit");
     const messages = this.#pending.get(thread) ?? [];
