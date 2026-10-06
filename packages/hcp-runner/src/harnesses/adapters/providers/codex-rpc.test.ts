@@ -23,6 +23,8 @@ createInterface({input: process.stdin}).on("line", line => {
     send({id:value.id,result:{resolved:true}});
   } else if (value.method === "ping") {
     send({id:value.id,result:{alive:true}});
+  } else if (value.method === "delayed-read") {
+    setTimeout(() => send({id:value.id,result:{late:true}}), 100);
   } else if (value.method === "bound-probe") {
     send({id:value.id,result:{started:true}});
     send({id:"tool-request",method:"item/tool/call",params:{threadId:"child",turnId:"child-turn",value:42}});
@@ -31,6 +33,7 @@ createInterface({input: process.stdin}).on("line", line => {
     send({id:value.id,result:{}});
   }
 });
+
 `, { mode: 0o700 });
   const rpc = new CodexRpc(executable, directory, process.env);
   return { rpc, async close() { await rpc.process.stop(); await rm(directory, {recursive:true, force:true}); } };
@@ -116,5 +119,22 @@ test("an observed native child terminal fences only callbacks for that exact thr
     assert.equal(wasAborted,false);
     await rpc.request("terminal",{threadId:"child",turnId:"child-turn"}); await terminal;
     assert.deepEqual(await rpc.request("ping",{}),{alive:true}); assert.equal(failure,undefined);
+  } finally {await close();}
+});
+
+test("abandoned native reads discard late replies without stopping the shared owner", {timeout: 5000}, async () => {
+  const {rpc, close} = await fixture();
+  try {
+    const controller = new AbortController();
+    const reason = new Error("history deadline");
+    const read = rpc.request("delayed-read", {}, {signal: controller.signal});
+    controller.abort(reason);
+    await assert.rejects(read, error => error === reason);
+    assert.deepEqual(await rpc.request("ping", {}), {alive: true});
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.deepEqual(await rpc.request("ping", {}), {alive: true});
+    const aborted = AbortSignal.abort(reason);
+    await assert.rejects(rpc.request("probe", {}, {signal: aborted}), error => error === reason);
+    assert.deepEqual(await rpc.request("ping", {}), {alive: true});
   } finally {await close();}
 });

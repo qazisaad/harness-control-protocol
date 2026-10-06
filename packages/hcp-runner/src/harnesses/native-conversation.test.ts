@@ -155,3 +155,26 @@ createInterface({input: process.stdin}).on('line', line => {
       () => {throw new Error("Read must not modify retained state");}), /changed during the snapshot/);
   } finally {await rm(cwd, {recursive: true, force: true});}
 });
+
+test("a stalled borrowed Codex history read releases its deadline without stopping native work", async t => {
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  let stopped = 0;
+  const methods: string[] = [];
+  const rpc = {request(method: string, _params: unknown, options?: {signal?: AbortSignal}) {
+    methods.push(method);
+    return new Promise<never>((_, reject) => {
+      const signal = options!.signal!;
+      signal.addEventListener("abort", () => reject(signal.reason), {once: true});
+    });
+  }, process: {async stop() {stopped++;}}} as unknown as CodexRpc;
+  const state: NativeConversation = {native_thread_id: "native-thread", binding_hash: "a".repeat(64),
+    updated_at: new Date().toISOString(), cwd: "/tmp", last_session_id: "session", provider_instance_id: "codex",
+    workspace_id: "workspace", provider_binding_hash: "b".repeat(64)};
+  const provider = ProviderInstanceConfigSchema.parse({id: "codex", driver_kind: "codex"});
+  const read = nativeConversationOperation("deadline-read", {session_id: "session", operation: {kind: "read"}}, state,
+    provider, () => {throw new Error("Read cannot mutate state");}, undefined, undefined, rpc);
+  t.mock.timers.tick(30_000);
+  await assert.rejects(read, error => (error as {code?: string}).code === "native_history_timeout");
+  assert.deepEqual(methods, ["thread/read"]);
+  assert.equal(stopped, 0);
+});

@@ -23,6 +23,7 @@ export type RpcRequestHandler = (
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  cleanup: () => void;
 };
 
 export class CodexRpc {
@@ -82,11 +83,20 @@ export class CodexRpc {
     );
   }
 
-  request(method: string, params: unknown): Promise<unknown> {
+  request(method: string, params: unknown, options?: {signal?: AbortSignal}): Promise<unknown> {
     if (this.#failure) return Promise.reject(this.#failure);
+    if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      const signal = options?.signal;
+      const abort = () => {
+        this.#pending.delete(id);
+        cleanup();
+        reject(signal!.reason);
+      };
+      const cleanup = () => {signal?.removeEventListener("abort", abort);};
+      this.#pending.set(id, { resolve, reject, cleanup });
+      signal?.addEventListener("abort", abort, {once: true});
       this.#write({ id, method, params });
     });
   }
@@ -208,6 +218,7 @@ export class CodexRpc {
       const pending = this.#pending.get(message.id);
       if (!pending) return;
       this.#pending.delete(message.id);
+      pending.cleanup();
       if (message.error !== undefined) {
         const error = z
           .object({ message: z.string(), code: z.number().int().optional() })
@@ -233,7 +244,7 @@ export class CodexRpc {
     if (this.#failure) return;
     this.#failure = error;
     this.#requestsAbort.abort(error);
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values()) {pending.cleanup(); pending.reject(error);}
     this.#pending.clear();
     this.onFailure(error);
   }
