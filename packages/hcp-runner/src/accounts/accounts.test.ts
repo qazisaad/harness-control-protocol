@@ -62,7 +62,13 @@ test("reader is opt-in, coalesces concurrent reads, caches original timestamps a
   const reader = new AccountUsageReader(config, { collectors: new Map([["codex", collector]]) });
   const [first, second] = await Promise.all([reader.read("a", {}), reader.read("b", {})]);
   assert.equal(calls, 1);
-  assert.deepEqual(first.providers, second.providers);
+  assert.deepEqual(first.providers[0], second.providers[0]);
+  // Disabled providers are observed per request, not read from the usage cache.
+  for (const result of [first, second]) {
+    const observation = result.providers[1]?.observation;
+    assert.equal(observation?.status, "unavailable");
+    assert.ok(Number.isFinite(Date.parse(observation!.observed_at)));
+  }
   assert.equal(first.providers[1]?.observation.status, "unavailable");
   assert.equal((await reader.read("c", {})).providers[0]?.observation.observed_at, first.providers[0]?.observation.observed_at);
   await assert.rejects(reader.read("bad", { provider_instance_ids: ["unknown"] }));

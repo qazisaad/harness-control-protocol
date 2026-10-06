@@ -137,6 +137,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
   }
 
   async startSession(input: HarnessAdapterStartInput): Promise<HarnessAdapterSession> {
+    if (input.payload.instructions !== undefined) throw new HarnessAdapterError("instructions_unsupported", "This adapter does not support native session instructions.");
     if (this.#closed) throw new HarnessAdapterError("runner_closed", "OpenCode runtime owner is closed.");
     if (this.#runtimes.has(input.payload.session_id)) {
       throw new HarnessAdapterError("opencode_session_exists", `OpenCode session '${input.payload.session_id}' already exists.`);

@@ -24,3 +24,7 @@ Import `mcpReviewActionSchema`, `mcpReviewGrantSchema`, `mcpReviewPolicySchema`,
 Non-TypeScript consumers use `@harness-control/protocol/mcp-review.json` and the shared `mcp-review-fixtures.json`. In addition to JSON Schema validation, enforce the manifest's UTF-8 byte limit and validate the grant's embedded action JSON against the action schema. The versioned key intentionally has no application-specific alias.
 
 Durable continuation is an adapter capability (`durableMcpContinuation: true`), not a restriction in the persisted operation contract. Only adapters that can restore their native execution context should declare it. The built-in Codex adapter currently does; other built-ins do not. Application authorization and supported-provider policy remain the control plane's responsibility. See `examples/mcp-review-consumer.mjs` for approval and restart recovery using public APIs with an independent adapter.
+
+### Native instructions
+
+`harness.session.start.instructions` is an optional string of at most 131072 characters. It is separate from turn input. Use protocol, SDK and runner 0.4.12 together when sending it. Codex sets or clears native developer instructions on start and resume. Claude appends instructions to its system preset and rejects a changed instruction scope in a live conversation. OpenCode reports `instructions_unsupported` before launching a runtime when this field is present.

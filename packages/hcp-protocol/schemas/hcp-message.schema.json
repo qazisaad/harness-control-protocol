@@ -2281,6 +2281,10 @@
               ],
               "additionalProperties": false
             },
+            "instructions": {
+              "type": "string",
+              "maxLength": 131072
+            },
             "mcp_servers": {
               "type": "array",
               "items": {

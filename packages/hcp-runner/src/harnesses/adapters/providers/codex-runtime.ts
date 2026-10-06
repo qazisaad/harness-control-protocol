@@ -138,6 +138,8 @@ const runCodexTurn = async (input: Parameters<NativeTurn>[0], signal: AbortSigna
         model: selection.model,
         sandbox,
         approvalPolicy,
+        // Reset on resume so instructions cannot leak from an earlier invocation.
+        developerInstructions: input.startPayload.instructions ?? "",
 
         config: {
           mcp_servers: servers,

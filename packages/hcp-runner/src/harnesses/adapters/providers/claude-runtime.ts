@@ -62,7 +62,8 @@ export function createClaudeTurn(
               ? { CLAUDE_CONFIG_DIR: input.provider.home }
               : {}),
           },
-          systemPrompt: { type: "preset", preset: "claude_code" },
+          systemPrompt: { type: "preset", preset: "claude_code",
+            ...(input.startPayload.instructions ? {append: input.startPayload.instructions} : {}) },
           settingSources: [],
           persistSession: false,
           includePartialMessages: true,

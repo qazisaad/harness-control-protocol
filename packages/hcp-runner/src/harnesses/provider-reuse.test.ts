@@ -77,7 +77,7 @@ test("Claude reuses one live SDK query only within its original conversation", a
   assert.deepEqual(f.counts(),{created:2,closed:2});
 });
 
-for (const change of ["credentials", "model", "workspace"]) test(`Claude rejects changed ${change} without restarting history`, async () => {
+for (const change of ["credentials", "model", "workspace", "instructions"]) test(`Claude rejects changed ${change} without restarting history`, async () => {
   const f=claudeFactory(), adapter=new ClaudeHarnessAdapter({queryFactory:f.factory});
   const selected=provider("claude"), start=payload("claude",tmpdir(),"one");
   try {
@@ -86,7 +86,7 @@ for (const change of ["credentials", "model", "workspace"]) test(`Claude rejects
     await adapter.sendTurn(input);
     const result=await adapter.sendTurn({...input,
       provider:change==="credentials"?{...selected,env:{ROTATED:"yes"}}:selected,
-      startPayload:change==="workspace"?{...start,workspace_id:"other"}:start,
+      startPayload:change==="workspace"?{...start,workspace_id:"other"}:change==="instructions"?{...start,instructions:"Changed"}:start,
       payload:{...input.payload,turn_id:"second",...(change==="model"?{model_selection:{model:"other-model"}}:{})}});
     assert.equal(result.at(-1)?.event_type,"turn.failed");
     assert.equal(f.counts().created,1);
@@ -138,4 +138,31 @@ test("OpenCode cancellation physically stops its leased server before reporting 
     const log=(await readFile(record,"utf8")).trim().split("\n").map(line=>JSON.parse(line));
     assert.throws(()=>process.kill(log.find(r=>r.kind==="server").pid,0),{code:"ESRCH"});
   } finally {await adapter.close();await rm(root,{recursive:true,force:true});}
+});
+
+test("Claude passes native instructions separately from user input", async () => {
+  const f = claudeFactory();
+  let promptOptions: unknown;
+  const adapter = new ClaudeHarnessAdapter({queryFactory: input => {
+    promptOptions = input.options?.systemPrompt;
+    return f.factory(input);
+  }});
+  const start = {...payload("claude", tmpdir(), "instructions"), instructions: "Review security"};
+  const selected = provider("claude");
+  try {
+    const session = await adapter.startSession({payload: start, provider: selected});
+    const result = await adapter.sendTurn({session, startPayload: start, provider: selected,
+      payload: {session_id: start.session_id, turn_id: "one", input: "Check this code"}});
+    assert.deepEqual(promptOptions, {type: "preset", preset: "claude_code", append: "Review security"});
+    assert.equal((result.at(-1)?.data.final_output as {final_text:string}).final_text, "Check this code");
+  } finally { await adapter.close(); }
+});
+
+test("OpenCode rejects instructions before starting a native runtime", async () => {
+  const adapter = new OpenCodeHarnessAdapter();
+  try {
+    await assert.rejects(adapter.startSession({provider: provider("opencode"),
+      payload: {...payload("opencode", tmpdir(), "instructions"), instructions: "Review security"}}),
+      {code: "instructions_unsupported"});
+  } finally { await adapter.close(); }
 });

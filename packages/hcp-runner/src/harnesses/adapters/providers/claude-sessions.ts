@@ -39,7 +39,7 @@ export class ClaudeSessions {
     const binding = createHash("sha256").update(JSON.stringify({provider: input.provider,
       cwd: await realpath(input.startPayload.cwd), workspace: input.startPayload.workspace_id,
       policy: input.startPayload.approval_policy, sandbox: input.startPayload.sandbox_mode,
-      model: options.model, effort: options.effort, mcp: options.mcpServers, env: options.env})).digest("hex");
+      instructions: options.systemPrompt, model: options.model, effort: options.effort, mcp: options.mcpServers, env: options.env})).digest("hex");
     const previous = this.#bindings.get(input.session);
     signal.throwIfAborted();
     if (previous && (previous !== binding || !this.#live.has(id))) {

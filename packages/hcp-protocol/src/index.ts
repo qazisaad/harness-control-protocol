@@ -421,6 +421,7 @@ export type HcpSessionStartPayload = {
   model_selection: HarnessModelSelection;
   workspace_preflight?: WorkspacePreflight;
   local_capability_lease?: LocalCapabilityLease;
+  instructions?: string;
   mcp_servers: McpServerAttachment[];
   first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[] };
 };
@@ -1325,6 +1326,7 @@ export const hcpSessionStartPayloadSchema = z
     model_selection: harnessModelSelectionSchema,
     workspace_preflight: workspacePreflightSchema.optional(),
     local_capability_lease: localCapabilityLeaseSchema.optional(),
+    instructions: z.string().max(128 * 1024).optional(),
     mcp_servers: z.array(mcpServerAttachmentSchema),
     first_turn: z.object({
       turn_id: nonEmptyStringSchema,
