@@ -111,8 +111,14 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method==='turn/start') {
   const turnId=turns++?'native-turn-'+turns:'native-turn';
   const params={threadId:'native-thread',turnId};
+  if(process.env.MODE==='admission') {
+    notify('turn/started',{threadId:'native-thread',turn:{id:'unadmitted-turn'}});
+    notify('item/agentMessage/delta',{threadId:'native-thread',turnId:'unadmitted-turn',delta:'FOREIGN_ROOT'});
+    notify('turn/completed',{threadId:'native-thread',turn:{id:'unadmitted-turn',status:'completed',error:null}});
+  }
   notify('turn/started',{threadId:'native-thread',turn:{id:turnId}});
-  send({id:m.id,result:{turn:{id:turnId}}});
+  if(process.env.MODE==='admission') setTimeout(()=>send({id:m.id,result:{turn:{id:turnId}}}),50);
+  else send({id:m.id,result:{turn:{id:turnId}}});
   if(process.env.MODE==='retained' && m.params.input[0].text==='wait') return;
   if(process.env.MODE==='exit') return process.exit(0);
   if(process.env.MODE==='request') return send({id:'approval-1',method:'item/commandExecution/requestApproval',params});
@@ -140,6 +146,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
 
 for (const mode of [
   "success",
+  "admission",
   "exit",
   "failed",
   "malformed",
@@ -183,9 +190,10 @@ for (const mode of [
     events.push(...terminal);
     assert.equal(
       events.at(-1)?.event_type,
-      mode === "success" ? "turn.completed" : "turn.failed",
+      ["success", "admission"].includes(mode) ? "turn.completed" : "turn.failed",
     );
-    if (mode === "success") {
+    if (["success", "admission"].includes(mode)) {
+      assert.equal(JSON.stringify(events).includes("FOREIGN_ROOT"), false);
       const context = events.filter(event => event.event_type === "context.updated").at(-1)!.data;
       assert.equal(context.used_tokens, 50);
       assert.equal(context.capacity_tokens, 200000);

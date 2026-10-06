@@ -8,7 +8,7 @@ import type {
 import { HarnessAdapterError } from "../types.js";
 import { adapterMcpServers } from "./shared.js";
 import { selectedEffort, type NativeTurn } from "./native-turn.js";
-import { CodexRpc } from "./codex-rpc.js";
+import { CodexRpc, type RpcMessage, type RpcRequestHandler } from "./codex-rpc.js";
 import { NativeMcpBridge } from "./native-mcp.js";
 import { recordMcpContinuation } from "./mcp-continuation.js";
 import { NativeInteractions } from "../../native-interactions.js";
@@ -75,6 +75,7 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
   let interrupt: Promise<void> | undefined;
   let interruptDeadline: ReturnType<typeof setTimeout> | undefined;
   let interrupted = false;
+  let rejectAdmission: ((error: Error) => void) | undefined;
   signal.throwIfAborted();
   const selection =
     input.payload.model_selection ?? input.startPayload.model_selection;
@@ -240,9 +241,18 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
     }});
     interactions = new NativeInteractions(input.startPayload, input.payload, {threadId, turnId: () => nativeTurnId}, emit);
     input.registerNativeInteractions?.(interactions);
-    rpc.setRequestHandler("item/commandExecution/requestApproval", (params, requestSignal) => interactions!.approval(params, "command", requestSignal));
-    rpc.setRequestHandler("item/fileChange/requestApproval", (params, requestSignal) => interactions!.approval(params, "file_change", requestSignal));
-    rpc.setRequestHandler("item/permissions/requestApproval", async (params, requestSignal) => {
+    let admit!: () => void;
+    const admission = new Promise<void>((resolve, reject) => {admit = resolve; rejectAdmission = reject;});
+    void admission.catch(() => {});
+    if (input.payload.action === "compact") admit();
+    const setTurnRequestHandler = (method: string, handler: RpcRequestHandler): void => {
+      rpc.setRequestHandler(method, async (params, requestSignal) => {
+        await admission; requestSignal.throwIfAborted(); return handler(params, requestSignal);
+      });
+    };
+    setTurnRequestHandler("item/commandExecution/requestApproval", (params, requestSignal) => interactions!.approval(params, "command", requestSignal));
+    setTurnRequestHandler("item/fileChange/requestApproval", (params, requestSignal) => interactions!.approval(params, "file_change", requestSignal));
+    setTurnRequestHandler("item/permissions/requestApproval", async (params, requestSignal) => {
       const request = z.object({threadId: z.string(), turnId: z.string(), itemId: z.string(),
         permissions: z.record(z.string(), z.json())}).passthrough().parse(params);
       // This isolated profile never offers session grants or a grant that broadens restricted containment.
@@ -250,8 +260,8 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         availableDecisions: ["accept", "decline", "cancel"]}, "permissions", requestSignal);
       return {permissions: response.decision === "accept" ? request.permissions : {}, scope: "turn"};
     });
-    rpc.setRequestHandler("item/tool/requestUserInput", (params, requestSignal) => interactions!.questions(params, requestSignal));
-    rpc.setRequestHandler("item/tool/call", async (params, requestSignal) => {
+    setTurnRequestHandler("item/tool/requestUserInput", (params, requestSignal) => interactions!.questions(params, requestSignal));
+    setTurnRequestHandler("item/tool/call", async (params, requestSignal) => {
       if (!nativeTurnId) throw new HarnessAdapterError("codex_turn_missing", "Native tool calls require an active turn.");
       return bridge.call(params, {threadId, turnId: nativeTurnId}, requestSignal);
     });
@@ -272,13 +282,17 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         reject(error);
       }
     };
-    rpc.onNotification = (message) => {
+    let admissionPending = input.payload.action !== "compact";
+    const pendingNotifications: RpcMessage[] = [];
+    let pendingBytes = 0;
+    const projectNotification = (message: RpcMessage): void => {
       if (settled) return;
       if (message.method === "turn/started") {
         const event = z
           .object({ threadId: z.string(), turn: idObject })
           .parse(message.params);
-        if (event.threadId === threadId) nativeTurnId = event.turn.id;
+        if (event.threadId === threadId && input.payload.action === "compact" && nativeTurnId === undefined)
+          nativeTurnId = event.turn.id;
       } else if (
         message.method === "item/agentMessage/delta" ||
         message.method === "item/reasoning/summaryTextDelta"
@@ -410,6 +424,13 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         } else resolve({ ...retainedFinalText(finalText ?? "", input.publishContent), context, ...(usage ? { usage } : {}) });
       }
     };
+    rpc.onNotification = message => {
+      if (!admissionPending) return projectNotification(message);
+      pendingBytes += Buffer.byteLength(JSON.stringify(message));
+      if (pendingNotifications.length >= 256 || pendingBytes > 1024 * 1024)
+        throw new HarnessAdapterError("codex_admission_overflow", "Codex exceeded the bounded turn-admission notification buffer.");
+      pendingNotifications.push(message);
+    };
     const continuation = input.mcpContinuation;
     if (continuation) await recordMcpContinuation(rpc, threadId, continuation);
     if (input.payload.action === "compact") {
@@ -435,11 +456,15 @@ async function executeCodexTurn(input: Parameters<NativeTurn>[0], signal: AbortS
         "Codex returned conflicting turn identities.",
       );
     nativeTurnId = turn.turn.id;
+    admissionPending = false;
+    admit();
+    for (const message of pendingNotifications) projectNotification(message);
     return await terminal;
   } catch (failure) {
     if (lease && !(signal.aborted && interrupted)) await rpc.process.stop();
     throw failure;
   } finally {
+    rejectAdmission?.(new HarnessAdapterError("codex_turn_admission_lost", "The native turn was not admitted."));
     input.registerActiveTurnControls?.(undefined);
     interactions?.close();
     input.registerNativeInteractions?.(undefined);
