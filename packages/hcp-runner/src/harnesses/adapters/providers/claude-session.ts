@@ -17,6 +17,7 @@ import {adapterMcpServers, assertCliMcpAttachmentProxied} from "./shared.js";
 import {selectedEffort} from "./native-turn.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
+import {claudeRateLimitObservation} from "./claude-rate-limits.js";
 
 type Root = {input: HarnessAdapterTurnInput; emit: (event: HarnessAdapterEvent) => void; ids: Set<string>;
   interactions: NativeInteractions; lifetime: AbortController; context: HarnessContextUsage; nativeModel?: string; streamed: boolean; compacted: boolean;
@@ -269,6 +270,12 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       return;
     }
     if (!this.#initialized) throw error("native_continuation_binding", `Claude emitted ${message.type}${"subtype" in message ? `/${message.subtype}` : ""} before its initialization proof.`);
+    if (message.type === "rate_limit_event") {
+      const observation = claudeRateLimitObservation(message.rate_limit_info);
+      if (observation) this.#session({event_type: "account.rate_limits.updated", data: {provider_instance_id: this.start.provider.id, observation}});
+      else this.#session({event_type: "runtime.warning", data: {code: "native_rate_limit_invalid", message: "Native quota observation was malformed or contradictory."}});
+      return;
+    }
     if (message.type === "system" && message.subtype === "background_tasks_changed") {
       // The SDK explicitly permits this level signal to precede its origin-bearing bookends.
       // It fences destructive controls; neither absence nor membership proves a terminal outcome or origin.

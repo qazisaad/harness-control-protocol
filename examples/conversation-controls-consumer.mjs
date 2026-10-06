@@ -6,6 +6,7 @@ import {join} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
 import {WebSocketServer} from "ws";
 import {HcpHostConnection} from "@harness-control/sdk";
+import {harnessRateLimitObservationSchema} from "@harness-control/protocol";
 import {RunnerConnection} from "@harness-control/runner/connection";
 import {RunnerConfigSchema} from "@harness-control/runner/config";
 import {HarnessSessionManager, HarnessAdapterRegistry} from "@harness-control/runner/harnesses";
@@ -112,6 +113,14 @@ try {
   assert.deepEqual(feedback.payload.feedback, {source: "native", feedback_id: "fixture-feedback-receipt", classification: "bug", diagnostics_requested: false});
   assert.deepEqual((await peer.submitNativeFeedback("session", {classification: "bug", reason: "Fixture report", include_diagnostics: false}, {id: "fixture-feedback"})).payload, feedback.payload);
   assert.equal(adapter.feedbackSubmissions, 1);
+  const quota = {source: "native", native_source: "example.native.quota", scope: "native_session", observed_at: new Date().toISOString(),
+    windows: [{window_id: "five_hour", status: "allowed_warning", utilization: 0.9}]};
+  assert.throws(() => adapter.observations.get("session")({event_type: "account.rate_limits.updated", data: {provider_instance_id: "foreign", observation: quota}}));
+  adapter.observations.get("session")({event_type: "account.rate_limits.updated", data: {provider_instance_id: "provider", observation: quota}});
+  await until(() => events.some(event => event.event_type === "account.rate_limits.updated"));
+  const observedQuota = events.find(event => event.event_type === "account.rate_limits.updated");
+  assert.equal(observedQuota.turn_id, undefined);
+  assert.deepEqual(harnessRateLimitObservationSchema.parse(observedQuota.data.observation), quota);
   await peer.stopSession({session_id: "session"});
   const read = await peer.readConversation("session");
   assert.equal(read.payload.history.turns[0].portable_items[0].type, "message");

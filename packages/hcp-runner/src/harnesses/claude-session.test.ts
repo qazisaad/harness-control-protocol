@@ -106,6 +106,24 @@ async function fixture(sessionHelper?: ClaudeSessionHelper) {
     closeNative: () => output.close(), get closes() {return closes;}, cleanup};
 }
 
+test("native Claude quota observations retain session scope between roots without completing work", async () => {
+  const f = await fixture();
+  try {
+    await f.send("first", "ordinary");
+    f.emit({type: "rate_limit_event", rate_limit_info: {status: "rejected", rateLimitType: "five_hour", resetsAt: 1_800_000_000, utilization: 1}});
+    await until(() => f.events.some(event => event.event_type === "account.rate_limits.updated"));
+    const event = f.events.find(event => event.event_type === "account.rate_limits.updated")!;
+    const data = event.data as {provider_instance_id: string; observation: {scope: string}};
+    assert.equal(event.turn_id, undefined); assert.equal(data.provider_instance_id, "provider");
+    assert.equal(data.observation.scope, "native_session");
+    assert.equal(f.events.filter(event => event.event_type === "turn.completed").length, 1);
+    f.emit({type: "rate_limit_event", rate_limit_info: {status: "allowed", isUsingOverage: true, overageInUse: false}});
+    await until(() => f.events.some(event => event.event_type === "runtime.warning" && (event.data as {code?: string}).code === "native_rate_limit_invalid"));
+    assert.equal(f.events.filter(event => event.event_type === "account.rate_limits.updated").length, 1);
+    await f.send("second", "ordinary"); assert.equal(f.factoryCalls, 1);
+  } finally {await f.cleanup();}
+});
+
 test("interactive Claude retains one query, roots and background ownership across follow-ups", async () => {
   const f = await fixture();
   try {

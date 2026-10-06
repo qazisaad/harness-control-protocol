@@ -884,7 +884,11 @@ export class HarnessSessionManager {
           || event.data.session_id !== payload.session_id
           || typeof event.data.request_id !== "string" || !this.#sessionInteractions.get(payload.session_id)?.owns(event.data.request_id)))
         throw new HarnessAdapterError("native_session_request_binding", "Session interactions require an admitted origin and their registered native request owner.");
-      if (!interaction && (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated", "native.work.owner_lost"].includes(event.event_type)
+      if (event.event_type === "account.rate_limits.updated" && (
+        adapter.executionProfiles?.find(profile => profile.id === payload.execution_profile)?.account_limit_observations !== "native_session"
+        || event.data.provider_instance_id !== provider.id || !event.data.observation || !eventOwner?.adapterSession.native_thread_id))
+        throw new HarnessAdapterError("native_account_observation_binding", "Native quota observations require their declared initialized provider session owner.");
+      if (!interaction && (event.turn_id || !["runtime.warning", "runtime.error", "config.warning", "deprecation.notice", "native.work.updated", "native.work.owner_lost", "account.rate_limits.updated"].includes(event.event_type)
           && !event.event_type.startsWith("provider.") && !event.event_type.startsWith("extension."))
         )
         throw new HarnessAdapterError("native_session_event_unsupported", "Session observations cannot publish root turns or interaction requests.");

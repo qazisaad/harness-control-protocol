@@ -17,7 +17,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly nativeWork = true;
   readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const,
     empty_conversation: true, idle_configuration_transition: true,
-    native_feedback: {owner: "live_conversation" as const, classifications: ["bug"], diagnostics: true}}];
+    native_feedback: {owner: "live_conversation" as const, classifications: ["bug"], diagnostics: true},
+    account_limit_observations: "native_session" as const}];
   readonly requests = new Map<string, {id: string; turnId?: string}>();
   inputsReceived = 0;
   nativeCancellations = 0;

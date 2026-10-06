@@ -14,6 +14,8 @@ import {harnessPromptContextSchema, harnessPromptContextPreparedSchema, type Har
 export * from "./prompt-context.js";
 import {harnessNativeFeedbackCapabilitiesSchema} from "./feedback.js";
 export * from "./feedback.js";
+import {harnessRateLimitObservationSchema} from "./rate-limits.js";
+export * from "./rate-limits.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -306,6 +308,8 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   idle_configuration_transition: z.boolean().optional(),
   /** An explicit app request may submit provider feedback through its live owner. */
   native_feedback: harnessNativeFeedbackCapabilitiesSchema.optional(),
+  /** Native account quota frames observed through this session; no account identity is inferred. */
+  account_limit_observations: z.literal("native_session").optional(),
   /** Omission is unknown; consumers must not assume a root interrupt spares background work. */
   root_interrupt_effect: z.enum(["root_only", "owned_work", "unknown"]).optional()}).strict();
 export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutionProfileCapabilitiesSchema>;
@@ -2421,6 +2425,7 @@ const accountEventDataSchema = z
     auth: providerAuthSnapshotSchema.optional(),
     account: unknownRecordSchema.optional(),
     rate_limits: unknownRecordSchema.optional(),
+    observation: harnessRateLimitObservationSchema.optional(),
     message: z.string().optional(),
   })
   .strict();

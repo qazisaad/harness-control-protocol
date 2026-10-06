@@ -1,0 +1,29 @@
+{
+  "version": "hcp.v0",
+  "id": "fixture-native-quota",
+  "type": "harness.event",
+  "sent_at": "2026-10-06T00:00:00Z",
+  "payload": {
+    "session_id": "session",
+    "sequence": 1,
+    "event_type": "account.rate_limits.updated",
+    "created_at": "2026-10-06T00:00:00Z",
+    "data": {
+      "provider_instance_id": "claude",
+      "observation": {
+        "source": "native",
+        "native_source": "claude.sdk.rate_limit_event",
+        "scope": "native_session",
+        "observed_at": "2026-10-06T00:00:00Z",
+        "windows": [
+          {
+            "window_id": "five_hour",
+            "status": "rejected",
+            "utilization": 1,
+            "resets_at": "tomorrow"
+          }
+        ]
+      }
+    }
+  }
+}
