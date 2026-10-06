@@ -9,6 +9,7 @@ import {OpenCodeText} from "./opencode-text.js";
 import {OpenCodeItems} from "./opencode-items.js";
 import {projectOpenCodeCatalog} from "./opencode-models.js";
 import {openCodeContext} from "./opencode-context.js";
+import {openCodeEffectiveOptions, assertOpenCodeModelOptions} from "./opencode-options.js";
 import {prepareControlledOpenCode, controlledOpenCodeInheritance, controlledOpenCodeReference, readControlledOpenCodeReference, assertControlledOpenCodeInventory, openCodeAgentPermission, assertOpenCodeAgentPermission} from "./opencode-controlled.js";
 import {respondOpenCodeInteraction} from "./opencode-interactions.js";
 import {consumeNativeSse} from "./native-sse.js";
@@ -139,6 +140,8 @@ export type OpenCodeRuntimeTurnInput = {
   onUsage?: (usage: HarnessUsageSnapshot) => void;
   onContext?: (context: import("@harness-control/protocol").HarnessContextUsage) => void;
   modelSelection?: HarnessModelSelection;
+  confirmEffectiveOptions?: true;
+  onEffectiveOptions?: (selection: HarnessModelSelection) => void;
 };
 
 export type OpenCodeRuntime = {
@@ -337,7 +340,17 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       const selection = input.payload.model_selection ?? input.startPayload.model_selection;
       let context = unavailableContext(selection, input.payload.action === "compact" ? "compaction_started" : "request_started");
       emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: context});
+      const requiresOptions = ["interactive", "background"].includes(input.startPayload.execution_profile ?? "") && input.payload.action !== "compact";
+      let optionsConfirmed = false;
       const finalText = await runtime.sendTurn({
+        ...(requiresOptions ? {
+          confirmEffectiveOptions: true as const,
+          onEffectiveOptions: (model_selection: HarnessModelSelection) => {
+            optionsConfirmed = true;
+            emit({event_type: "settings.options.effective", turn_id: input.payload.turn_id,
+              data: {scope: "root", source: "native", model_selection}});
+          },
+        } : {}),
         turnId: input.payload.turn_id,
         ...(runtime.sessionPermissions ? {allowSessionPermissions: true} : {}),
         input: input.payload.input,
@@ -354,6 +367,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
         ...((input.payload.model_selection ?? input.startPayload.model_selection).options?.[0] ?
           {variant: String((input.payload.model_selection ?? input.startPayload.model_selection).options![0]!.value)} : {}),
       });
+      if (requiresOptions && !optionsConfirmed) throw new HarnessAdapterError("native_settings_unconfirmed", "The native runtime did not report its confirmed root model/options.");
       return {...retainedFinalText(finalText, input.publishContent), ...(usage ? {usage} : {}), context};
       } finally {
         interactions.close(); input.registerNativeInteractions?.(undefined);
@@ -581,6 +595,13 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
     if (this.#activeRequest) {
       throw new Error(`OpenCode session '${this.sessionId}' already has an active HTTP request.`);
     }
+    let optionsCatalog: unknown;
+    if (input.confirmEffectiveOptions && input.action !== "compact") {
+      optionsCatalog = await fetchJson(new URL(`/provider?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl),
+        {method: "GET", signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000)});
+      assertOpenCodeModelOptions(optionsCatalog, input.modelSelection ?? {model: input.model,
+        ...(input.variant ? {options: [{id: "variant", value: input.variant}]} : {})}, !!input.images?.length);
+    }
     await this.work?.settled();
     if (this.work?.rootBusy) throw new HarnessAdapterError("native_root_busy", "A native parent continuation is still running.");
     if (input.action === "compact" && this.work?.busy) throw new HarnessAdapterError("native_work_active", "Compaction requires resolved background work.");
@@ -642,12 +663,20 @@ class HttpOpenCodeRuntime implements OpenCodeRuntime {
         await this.work.settled();
         this.work.closeRoot(messageId);
       }
-      if (input.systemInstructions) {
-        const user = z.object({info: z.object({id: z.string(), sessionID: z.string(), role: z.literal("user"), system: z.string()})}).parse(await fetchJson(
+      if (input.systemInstructions || input.confirmEffectiveOptions) {
+        const admitted = await fetchJson(
           new URL(`/session/${encodeURIComponent(this.sessionId)}/message/${encodeURIComponent(messageId)}?directory=${encodeURIComponent(this.#cwd)}`, this.#baseUrl),
-          {method: "GET", signal: abortController.signal}));
-        if (user.info.id !== messageId || user.info.sessionID !== this.sessionId || user.info.system !== input.systemInstructions)
+          {method: "GET", signal: abortController.signal});
+        const user = z.object({info: z.object({id: z.string(), sessionID: z.string(), role: z.literal("user"), system: z.string().optional()})}).parse(admitted);
+        if (user.info.id !== messageId || user.info.sessionID !== this.sessionId || input.systemInstructions && user.info.system !== input.systemInstructions)
           throw new HarnessAdapterError("native_instruction_mismatch", "OpenCode did not confirm the admitted system instructions on this prompt.");
+        if (input.confirmEffectiveOptions) {
+          if (!model) throw new HarnessAdapterError("native_settings_mismatch", "Root options require a bound provider/model selection.");
+          const effective = openCodeEffectiveOptions(admitted, response.info, {sessionId: this.sessionId, messageId, model,
+            ...(input.variant ? {variant: input.variant} : {})});
+          assertOpenCodeModelOptions(optionsCatalog, effective);
+          input.onEffectiveOptions?.(effective);
+        }
       }
       usage.message(response.info);
       for (const part of response.parts) usage.part(part);

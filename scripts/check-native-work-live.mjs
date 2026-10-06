@@ -64,7 +64,7 @@ try {
     ...(driver === "opencode" ? {configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}} : {}),
     sandbox_mode: "danger_full_access", approval_policy: "full_access", continue_session: false, continuation_group_key: "live-work-history",
     model_selection: {model}, mcp_servers: []});
-  const settingsAcceptance = driver === "codex" && process.env.HCP_LIVE_SETTINGS === "1";
+  const settingsAcceptance = ["codex", "opencode"].includes(driver) && process.env.HCP_LIVE_SETTINGS === "1";
   const first = await spawn(driver === "opencode" ? "background-interruption" : "background-completion", settingsAcceptance ? 90 : 30);
   const history = await manager.conversationOperation("background-live-read", {session_id: "work", operation: {kind: "read"}});
   assert.ok(history.history?.turn_count >= 1, "A live background owner lost its readable root history");
@@ -77,12 +77,12 @@ try {
   if (driver === "opencode") {
     await until(async () => (await work()).items.find(item => item.work.work_id === first.work_id && item.work.status === "cancelled"));
     passed.push("root-interruption-cancels-owned-background");
-    completionChild = await spawn("background-completion", 30);
+    completionChild = await spawn("background-completion", settingsAcceptance ? 90 : 30);
   } else {
     assert.ok((await work()).items.some(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Root interruption stopped its independent background child");
     passed.push("root-interruption-preserves-background");
   }
-  if (settingsAcceptance) {
+  if (settingsAcceptance && driver === "codex") {
     for (const effort of ["low", "high", null]) {
       assert.ok((await work()).items.find(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Settings test requires a still-running child");
       const turn = effort ? `settings-${effort}` : "settings-reset";
@@ -92,6 +92,20 @@ try {
       assert.deepEqual(observed.data.model_selection.options, effort ? [{id: "reasoningEffort", value: effort}] : []);
       assert.ok((await work()).items.find(item => item.work.work_id === first.work_id && !isNativeWorkTerminal(item.work.status)), "Changing root settings stopped or replaced its child");
       passed.push(effort ? `effective-effort-${effort}-with-background` : "effective-effort-reset-with-background");
+    }
+  }
+  if (settingsAcceptance && driver === "opencode") {
+    const alternative = process.env.HCP_LIVE_OPENCODE_ALTERNATIVE_MODEL ?? "opencode-go/glm-5.3";
+    const status = (await manager.providerDriverStatuses()).find(value => value.driver_kind === driver);
+    assert.ok(status.models.some(value => value.id === alternative), "The alternate model is not in the current native catalog");
+    for (const [turn, selected] of [["model-changed", alternative], ["model-restored", model]]) {
+      assert.ok((await work()).items.find(item => item.work.work_id === completionChild.work_id && !isNativeWorkTerminal(item.work.status)), "Model test requires the same running child");
+      await send(turn, "Reply READY only. Do not use tools or wait for a child.", {model_selection: {model: selected}});
+      const observed = events.find(event => event.turn_id === turn && event.event_type === "settings.options.effective");
+      assert.ok(observed); assert.equal(observed.data.scope, "root"); assert.equal(observed.data.source, "native");
+      assert.equal(observed.data.model_selection.model, selected);
+      assert.ok((await work()).items.find(item => item.work.work_id === completionChild.work_id && !isNativeWorkTerminal(item.work.status)), "Model update stopped or replaced the child");
+      passed.push(`${turn}-with-background`);
     }
   }
   await send("followup", "Reply FOLLOWUP only. Do not use tools or wait for the child.");

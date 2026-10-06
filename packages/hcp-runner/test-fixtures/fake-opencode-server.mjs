@@ -15,12 +15,14 @@ const admittedMessages = new Map();
 const requestMessages = new Map();
 const emit = value => {for (const stream of streams) sendEvent(stream, value);};
 const finish = response => {
+  const admitted = admittedMessages.get(response.hcpMessageId);
   const messageID = `assistant-tools-${response.hcpMessageId}`;
   emit({type: "message.updated", properties: {info: {id: messageID, sessionID: "fake-opencode-session", role: "assistant", parentID: response.hcpMessageId}}});
   emit({type: "message.part.updated", properties: {part: {id: "tool", messageID, sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "completed", input: {command: "echo hello"}, output: "hello"}}}});
   emit({type: "message.part.updated", properties: {part: {id: "tool", messageID, sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "running", input: {command: "echo late"}}}}});
   emit({type: "session.idle", properties: {sessionID: "fake-opencode-session"}});
-  writeJson(response, {parts: [{type: "text", text: "hello"}]});
+  writeJson(response, {info: {id: messageID, sessionID: admitted?.hcpSessionId, parentID: response.hcpMessageId,
+    role: "assistant", providerID: admitted?.model?.providerID, modelID: admitted?.model?.modelID}, parts: [{type: "text", text: "hello"}]});
 };
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -31,11 +33,15 @@ const server = createServer(async (request, response) => {
     writeJson(response, JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}")); return;
   }
   if (process.env.HCP_TEST_OPENCODE_RECORD) appendFileSync(process.env.HCP_TEST_OPENCODE_RECORD, JSON.stringify({method: request.method, path: url.pathname, payload}) + "\n");
+  if (request.method === "GET" && url.pathname === "/provider") {
+    writeJson(response, {all: [{id: "anthropic", models: {claude: {id: "claude", providerID: "anthropic", name: "Fixture Claude",
+      capabilities: {input: {image: true}}, variants: {high: {}}}}}], connected: ["anthropic"]}); return;
+  }
   const admitted = /^\/session\/([^/]+)\/message\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && admitted) {
     if(requestMessages.has(admitted[2])) {writeJson(response,requestMessages.get(admitted[2]));return;}
     const user = admittedMessages.get(admitted[2]);
-    const info = {id: admitted[2], sessionID: user?.hcpSessionId, role: "user", system: user?.system};
+    const info = {id: admitted[2], sessionID: user?.hcpSessionId, role: "user", system: user?.system, model: user?.model, variant: user?.variant};
     const drift = process.env.HCP_TEST_OPENCODE_INSTRUCTION_DRIFT;
     if (drift === "system") info.system = "Native rewritten instructions";
     if (drift === "session") info.sessionID = "unrelated-session";

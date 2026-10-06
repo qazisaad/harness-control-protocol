@@ -27,6 +27,14 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
     ...(interactive ? {execution_profile: "interactive"} : {})});
   try {
     const events: HcpHarnessEventPayload[] = [...await runner.startSession(start("first-session", false))];
+    if (interactive) {
+      const rejected = await runner.sendTurn({session_id: "first-session", turn_id: "unsupported-variant", input: "must not execute",
+        model_selection: {model: "anthropic/claude", options: [{id: "variant", value: "unavailable"}]}});
+      events.push(...rejected);
+      assert.equal(rejected.at(-1)?.event_type, "turn.failed");
+      const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(requests.some(request => request.method === "POST" && request.path.endsWith("/message")), false);
+    }
     await runner.sendTurn({session_id: "first-session", turn_id: "first-turn", input: kind}, event => {
       events.push(event);
       const data = event.data as Record<string, unknown>;
@@ -40,6 +48,8 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
     assert.equal(events.filter(event => event.event_type === "item.updated").length, 0);
     if (kind === "approval") assert.equal((events.find(event => event.event_type === "approval.requested")!.data as {allowed_decisions: string[]}).allowed_decisions.includes("accept_for_session"), interactive);
     if (interactive) {
+      assert.deepEqual(events.find(event => event.event_type === "settings.options.effective")?.data,
+        {scope: "root", source: "native", model_selection: {model: "anthropic/claude", options: []}});
       const repeated = await runner.sendTurn({session_id: "first-session", turn_id: "remembered", input: "approval"});
       assert.equal(repeated.at(-1)?.event_type, "turn.completed");
       assert.equal(repeated.some(event => event.event_type === "approval.requested"), false);
@@ -65,6 +75,8 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
     const followup = await runner.sendTurn({session_id: "second-session", turn_id: "second-turn", input: "followup", mode: "plan",
       model_selection: {model: "anthropic/claude", options: [{id: "variant", value: "high"}]}, images: [{mime_type: "image/png", data_base64: "aGVsbG8="}]});
     assert.equal(followup.at(-1)?.event_type, "turn.completed");
+    if (interactive) assert.deepEqual(followup.find(event => event.event_type === "settings.options.effective")?.data,
+      {scope: "root", source: "native", model_selection: {model: "anthropic/claude", options: [{id: "variant", value: "high"}]}});
     const usage = followup.find(event => event.event_type === "usage.updated")?.data;
     assert.deepEqual(usage, {scope: "turn", status: "complete", source: "opencode.message.step-finish", input_tokens: 34,
       output_tokens: 5, total_tokens: 39, cached_input_tokens: 20, cache_creation_input_tokens: 4, reasoning_output_tokens: 2, cost_usd: 0.5});
