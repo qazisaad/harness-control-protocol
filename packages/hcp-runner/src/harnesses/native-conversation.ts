@@ -1,3 +1,4 @@
+import {HARNESS_CONTENT_MAX_BYTES} from "@harness-control/protocol";
 import {hash, publicHistory} from "./conversation-history.js";
 import { z } from "zod";
 import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
@@ -10,7 +11,7 @@ import {type ContentPublisher} from "./adapters/providers/content-projection.js"
 
 const threadSchema = z.object({thread: z.object({id: z.string(), historyMode: z.enum(["legacy", "paginated"]).optional(), turns: z.array(z.object({id: z.string(), status: z.string(), items: z.array(z.record(z.string(), z.json()))}))})});
 type Thread = z.infer<typeof threadSchema>["thread"];
-async function readThread(rpc: Pick<CodexRpc, "request">, threadId: string, owned = false): Promise<Thread> {
+export async function readThread(rpc: Pick<CodexRpc, "request">, threadId: string, owned = false): Promise<Thread> {
   const metadata = threadSchema.parse(await rpc.request("thread/read", {threadId, includeTurns: false})).thread;
   if (metadata.id !== threadId) throw new HarnessAdapterError("native_history_binding", "Native history belongs to another conversation.");
   if (metadata.historyMode !== "paginated" || !owned) {
@@ -41,7 +42,7 @@ async function readThread(rpc: Pick<CodexRpc, "request">, threadId: string, owne
     }
     const page = z.object({data: z.array(threadSchema.shape.thread.shape.turns.element), nextCursor: z.string().nullish()}).parse(result);
     size += Buffer.byteLength(JSON.stringify(page.data));
-    if (size > 8 * 1024 * 1024 || turns.length + page.data.length > 10_000)
+    if (size > HARNESS_CONTENT_MAX_BYTES || turns.length + page.data.length > 10_000)
       throw new HarnessAdapterError("native_history_limit", "Native history exceeds the bounded snapshot limit.");
     turns.push(...page.data);
     cursor = page.nextCursor ?? undefined;
@@ -53,10 +54,10 @@ async function readThread(rpc: Pick<CodexRpc, "request">, threadId: string, owne
 
 /** The caller owns the deadline and exclusive transport; this never starts, resumes or mutates a thread. */
 export async function readCodexOwnedHistory(rpc: CodexRpc, nativeReference: string, signal: AbortSignal,
-  page: {cursor?: string; limit?: number}, publish?: ContentPublisher) {
+  page: {cursor?: string; limit?: number}, publish?: ContentPublisher, owned = true) {
   const boundedRpc = {request: (method: string, params: unknown) => rpc.request(method, params, {signal})};
-  const thread = await readThread(boundedRpc, nativeReference, true);
-  if (hash((await readThread(boundedRpc, nativeReference, true)).turns) !== hash(thread.turns))
+  const thread = await readThread(boundedRpc, nativeReference, owned);
+  if (hash((await readThread(boundedRpc, nativeReference, owned)).turns) !== hash(thread.turns))
     throw new HarnessAdapterError("native_history_changed", "Native history changed during the snapshot; read it again.");
   signal.throwIfAborted();
   return publicHistory(thread, publish, {kind: "read", ...page}, "codex");
@@ -64,8 +65,8 @@ export async function readCodexOwnedHistory(rpc: CodexRpc, nativeReference: stri
 
 export async function nativeConversationOperation(commandId: string, request: HcpConversationRequestPayload,
   conversation: NativeConversation, provider: ProviderInstanceConfig, save: (conversation: NativeConversation) => void,
-  beginMutation?: () => void, publish?: ContentPublisher, ownedRpc?: CodexRpc): Promise<HcpConversationResultPayload> {
-  if (ownedRpc && request.operation.kind !== "read") throw new HarnessAdapterError("native_history_read_only", "A live native owner can only lend its transport for history reads.");
+  beginMutation?: () => void, publish?: ContentPublisher, ownedRpc?: CodexRpc, transportMode: "live" | "inspection" = "live"): Promise<HcpConversationResultPayload> {
+  if (ownedRpc && transportMode === "live" && request.operation.kind !== "read") throw new HarnessAdapterError("native_history_read_only", "A live native owner can only lend its transport for history reads.");
   const rpc = ownedRpc ?? new CodexRpc(provider.executable_path ?? "codex", conversation.cwd, {...process.env, ...provider.env,
     ...(provider.home ? {CODEX_HOME: provider.home} : {})});
   const deadline = new AbortController();
@@ -79,9 +80,10 @@ export async function nativeConversationOperation(commandId: string, request: Hc
     await boundedRpc.request("initialize", {clientInfo: {name: "hcp-conversation", version: "0.4.10"}, capabilities: {experimentalApi: true}});
     rpc.notify("initialized");
     }
-    let thread = await readThread(boundedRpc, conversation.native_thread_id, !!ownedRpc);
+    const live = !!ownedRpc && transportMode === "live";
+    let thread = await readThread(boundedRpc, conversation.native_thread_id, live);
     if (thread.id !== conversation.native_thread_id) throw new HarnessAdapterError("native_history_binding", "Native history belongs to another conversation.");
-    if (request.operation.kind === "read" && hash((await readThread(boundedRpc, thread.id, !!ownedRpc)).turns) !== hash(thread.turns))
+    if (request.operation.kind === "read" && hash((await readThread(boundedRpc, thread.id, live)).turns) !== hash(thread.turns))
       throw new HarnessAdapterError("native_history_changed", "Native history changed during the snapshot; read it again.");
     if (request.operation.kind === "inject") {
       const operation = request.operation;
@@ -126,6 +128,8 @@ export async function nativeConversationOperation(commandId: string, request: Hc
       const verified = forked.historyMode === "paginated" ? await readThread(boundedRpc, forked.id) : forked;
       if (hash(verified.turns) !== hash(retained))
         throw new HarnessAdapterError("native_fork_unknown", "Codex did not confirm the selected retained context on its fork.");
+      if (hash((await readThread(boundedRpc, thread.id, live)).turns) !== operation.expected_history_hash)
+        throw new HarnessAdapterError("native_fork_unknown", "The native source history changed during fork dispatch.");
       return {command_id: commandId, session_id: request.session_id, operation: "fork", filesystem_undo: false,
         fork: {session_id: request.operation.target_session_id, continuation_group_key: request.operation.continuation_group_key, native_reference: forked.id}};
     }

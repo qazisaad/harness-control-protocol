@@ -127,12 +127,12 @@ function createHarnessEventMessageSchemas(baseMessageSchema: JsonSchema): JsonSc
       basePayloadSchema,
       createEventTypeSchema(eventType),
       dataSchema,
-      eventType.startsWith("local_capability.action.") || ["settings.effective", "settings.options.effective", "context.input.prepared"].includes(eventType),
+      eventType.startsWith("local_capability.action.") || ["settings.effective", "settings.options.effective", "context.input.prepared", "native.execution.admitted", "native.execution.completed", "native.goal.updated"].includes(eventType),
     );
     if (["input.requested", "input.resolved", "user_input.requested", "user_input.resolved", "native.request.lost"].includes(eventType))
       payloadSchema.allOf = [{if: {properties: {data: {properties: {request_scope: {const: "session"}}, required: ["request_scope"]}}, required: ["data"]},
         then: {not: {required: ["turn_id"]}}}];
-    if (["native.output.updated", "native.retry.updated"].includes(eventType)) payloadSchema.not = {required: ["turn_id"]};
+    if (["native.output.updated", "native.retry.updated", "native.goal.observed"].includes(eventType)) payloadSchema.not = {required: ["turn_id"]};
     return createHarnessEventMessageSchema(baseMessageSchema, payloadSchema);
   });
 
@@ -175,6 +175,11 @@ function patchStreamableHttpMcpUrlSchema(schema: JsonSchema): void {
   urlSchema.pattern = "^https?://";
 }
 
+function combinedImageCountRules(): JsonSchema[] {
+  return [1, 2, 3, 4].map(count => ({if: {required: ["images"], properties: {images: {minItems: count}}},
+    then: {properties: {image_files: {maxItems: 100 - count}}}}));
+}
+
 export function createHcpMessageJsonSchema(): JsonSchema {
   const schema: JsonSchema = cloneJsonSchema(toRootJsonSchema(hcpMessageSchema));
   const messageSchemas: JsonSchema[] = schema.oneOf ?? [];
@@ -186,19 +191,33 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     if (hasMessageTypeConst(messageSchema, "harness.session.start")) {
       const payload = getObjectProperty(messageSchema, "payload", "session start");
       payload.allOf = [{if: {required: ["conversation_transition"]}, then: {
-        required: ["continuation_group_key"], properties: {continue_session: {const: true}}, not: {required: ["first_turn"]}}}];
+        required: ["continuation_group_key"], properties: {continue_session: {const: true}}, not: {required: ["first_turn"]}}},
+        {if: {required: ["expected_native_reference"]}, then: {required: ["continuation_group_key"], properties: {continue_session: {const: true}}, not: {required: ["first_turn"]}}},
+        {if: {required: ["policy_control_authority"]}, then: {required: ["execution_profile", "continuation_group_key"],
+          properties: {execution_profile: {const: "interactive"}}}},
+        ...["ask", "auto_edits", "full_access"].flatMap(approval_policy => ["user", "native_auto"].map(approval_reviewer => ({
+          if: {required: ["policy_control_authority", "approval_policy", ...(approval_reviewer === "native_auto" ? ["approval_reviewer"] : [])],
+            properties: {approval_policy: {const: approval_policy}, approval_reviewer: {const: approval_reviewer}}},
+          then: {properties: {policy_control_authority: {properties: {allowed_selections: {contains: {type: "object",
+            required: ["approval_policy", "approval_reviewer"], properties: {approval_policy: {const: approval_policy}, approval_reviewer: {const: approval_reviewer}}}}}}}}})))];
+      getObjectProperty(getObjectProperty(payload, "policy_control_authority", "policy authority"), "allowed_selections", "allowed policies").uniqueItems = true;
+      getObjectProperty(payload, "first_turn", "session first turn").allOf = combinedImageCountRules();
     }
     if (hasMessageTypeConst(messageSchema, "harness.event")) {
       return createHarnessEventMessageSchemas(messageSchema);
     }
     if (hasMessageTypeConst(messageSchema, "harness.conversation.result")) {
       const payload = getObjectProperty(messageSchema, "payload", "conversation result");
-      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"], ["inject", "injection"], ["input_file", "input_file"], ["feedback", "feedback"]]
+      payload.allOf = [...[["read", "history"], ["rollback", "history"], ["fork", "fork"], ["steer", "turn_id"], ["content", "content"], ["work", "work"], ["inject", "injection"], ["input_file", "input_file"], ["feedback", "feedback"], ["goal", "goal"], ["policy", "policy"]]
         .map(([operation, field]) => ({if: {properties: {operation: {const: operation}}, required: ["operation"]}, then: {required: [field]}})),
         {if: {required: ["native_fresh"]}, then: {properties: {operation: {enum: ["fork", "rollback"]}}}},
         {if: {required: ["injection"]}, then: {properties: {operation: {const: "inject"}}}},
         {if: {required: ["input_file"]}, then: {properties: {operation: {const: "input_file"}}}},
-        {if: {required: ["feedback"]}, then: {properties: {operation: {const: "feedback"}}}}];
+        {if: {required: ["feedback"]}, then: {properties: {operation: {const: "feedback"}}}},
+        {if: {required: ["goal"]}, then: {properties: {operation: {const: "goal"}}}},
+        {if: {required: ["policy"]}, then: {properties: {operation: {const: "policy"}}}},
+        {if: {required: ["operation"], properties: {operation: {const: "policy"}}}, then: {not: {anyOf:
+          ["history", "native_reference", "turn_id", "fork", "content", "work", "input_file", "feedback", "goal", "injection"].map(field => ({required: [field]}))}}}];
       const file = getObjectProperty(payload, "input_file", "input file result");
       file.allOf = [{if: {properties: {action: {const: "release"}}, required: ["action"]}, then: {properties: {state: {const: "released"}}}},
         {if: {properties: {state: {const: "released"}}, required: ["state"]}, then: {properties: {action: {const: "release"}}}},
@@ -207,7 +226,11 @@ export function createHcpMessageJsonSchema(): JsonSchema {
     if (hasMessageTypeConst(messageSchema, "harness.turn.send")) {
       const payload = getObjectProperty(messageSchema, "payload", "turn send");
       payload.allOf = [{if: {properties: {action: {const: "compact"}}, required: ["action"]},
-        then: {not: {required: ["context"]}, properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}, files: {maxItems: 0}}}}];
+        then: {not: {anyOf: [{required: ["context"]}, {required: ["goal"]}]},
+          properties: {input: {const: ""}, mode: {const: "execute"}, images: {maxItems: 0}, image_files: {maxItems: 0}, files: {maxItems: 0}}}},
+        {if: {required: ["goal"]}, then: {properties: {mode: {const: "execute"}}}},
+        {if: {required: ["goal"], properties: {goal: {properties: {action: {const: "resume"}}, required: ["action"]}}},
+          then: {not: {required: ["context"]}, properties: {input: {const: ""}, images: {maxItems: 0}, image_files: {maxItems: 0}, files: {maxItems: 0}}}}, ...combinedImageCountRules()];
     }
     return [messageSchema];
   });

@@ -1,6 +1,8 @@
 import {z} from "zod";
 
-export const HARNESS_INPUT_FILE_MAX_BYTES = 32 * 1024 * 1024;
+export const HARNESS_INPUT_FILE_MAX_BYTES = 50 * 1024 * 1024;
+export const HARNESS_INPUT_FILE_MAX_COUNT = 100;
+export const HARNESS_INPUT_FILE_STORE_MAX_BYTES = HARNESS_INPUT_FILE_MAX_BYTES * HARNESS_INPUT_FILE_MAX_COUNT;
 export const HARNESS_INPUT_FILE_CHUNK_BYTES = 64 * 1024;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const harnessInputFileReferenceSchema = z.object({file_id: digest, sha256: digest,
@@ -27,10 +29,10 @@ export const harnessInputFileResultSchema = z.object({action: z.enum(["create", 
       context.addIssue({code: "custom", message: "File result state must confirm the requested action and declared byte length."});
   });
 export const harnessTurnFilesSchema = z.array(z.object({reference: harnessInputFileReferenceSchema,
-  delivery: z.enum(["file_context", "native"])}).strict()).max(8);
+  delivery: z.enum(["file_context", "native"])}).strict()).max(HARNESS_INPUT_FILE_MAX_COUNT);
 /** File context provides a readable workspace file; it makes no claim about native multimodal decoding. */
 export const harnessFileInputCapabilitiesSchema = z.object({delivery: z.array(z.enum(["file_context", "native"])).min(1).max(2),
-  max_bytes: z.number().int().positive().max(HARNESS_INPUT_FILE_MAX_BYTES), max_files: z.number().int().min(1).max(8)}).strict();
+  max_bytes: z.number().int().positive().max(HARNESS_INPUT_FILE_MAX_BYTES), max_files: z.number().int().min(1).max(HARNESS_INPUT_FILE_MAX_COUNT)}).strict();
 export type HarnessInputFileReference = z.infer<typeof harnessInputFileReferenceSchema>;
 export type HarnessInputFileOperation = z.infer<typeof harnessInputFileOperationSchema>;
 export type HarnessInputFileResult = z.infer<typeof harnessInputFileResultSchema>;

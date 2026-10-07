@@ -1,0 +1,52 @@
+{
+  "id": "native-ordered-permissions-mixed",
+  "type": "harness.session.start",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "session_id": "session-1",
+    "workspace_id": "workspace-1",
+    "provider_instance_id": "provider-1",
+    "driver_kind": "opencode",
+    "cwd": "/tmp/workspace",
+    "sandbox_mode": "danger_full_access",
+    "approval_policy": "ask",
+    "continue_session": false,
+    "model_selection": {
+      "model": "opencode/public-fixture"
+    },
+    "workspace_preflight": {
+      "workspace_id": "workspace-1",
+      "expected_branch": "main",
+      "allow_dirty_worktree": true
+    },
+    "mcp_servers": [],
+    "execution_profile": "interactive",
+    "approval_reviewer": "native_auto",
+    "approval_options": {
+      "permission_rules": [
+        {
+          "permission": "*",
+          "pattern": "*",
+          "action": "deny"
+        },
+        {
+          "permission": "read",
+          "pattern": "*",
+          "action": "allow"
+        },
+        {
+          "permission": "read",
+          "pattern": "*.env",
+          "action": "ask"
+        },
+        {
+          "permission": "task",
+          "pattern": "*",
+          "action": "deny"
+        }
+      ],
+      "permission_prompting": "reject_unapproved"
+    }
+  }
+}

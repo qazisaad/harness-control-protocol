@@ -1,0 +1,16 @@
+{
+  "version": "hcp.v0",
+  "id": "closure-proof",
+  "sent_at": "2026-10-07T00:00:00Z",
+  "type": "harness.event",
+  "payload": {
+    "session_id": "session",
+    "sequence": 1,
+    "created_at": "2026-10-07T00:00:00Z",
+    "event_type": "session.exited",
+    "data": {
+      "provider_instance_id": "provider",
+      "native_owner_closed": true
+    }
+  }
+}

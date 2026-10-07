@@ -25,3 +25,13 @@ test("driver profiles are bounded discoverable identities with explicit configur
   assert.equal(profile.id,"background");assert.equal(profile.required_configuration_inheritance?.plugins,false);
   for(const value of ["", "UPPER", "../settings", "a".repeat(65)])assert.equal(harnessExecutionProfileIdSchema.safeParse(value).success,false);
 });
+
+test("owned session closure is explicit positive evidence, while legacy logical exits remain unknown", () => {
+  const profile = {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true};
+  assert.equal(harnessExecutionProfileCapabilitiesSchema.parse({...profile, native_owner_closure: "owned_session"}).native_owner_closure, "owned_session");
+  assert.equal(harnessExecutionProfileCapabilitiesSchema.parse(profile).native_owner_closure, undefined);
+  const event = {session_id: "session", sequence: 1, created_at: new Date().toISOString(), event_type: "session.exited", data: {provider_instance_id: "provider", reason: "stopped"}};
+  assert.equal(hcpHarnessEventPayloadSchema.safeParse(event).success, true);
+  assert.equal(hcpHarnessEventPayloadSchema.safeParse({...event, data: {...event.data, native_owner_closed: true}}).success, true);
+  for (const value of [false, "true", "logical_retirement"]) assert.equal(hcpHarnessEventPayloadSchema.safeParse({...event, data: {...event.data, native_owner_closed: value}}).success, false);
+});

@@ -11,6 +11,7 @@ import { JsonRunnerStateStore } from "../state/index.js";
 const providerFixture = String.raw`#!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
+if (process.argv.includes("--version")) {process.stdout.write("codex-cli 0.160.0\n");process.exit(0);}
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const notify = (method, params) => send({method, params});
 let turnId;
@@ -19,8 +20,17 @@ const complete = text => {
  notify('item/completed', {...binding(), item:{id:'command',type:'commandExecution',command:'echo done',cwd:process.cwd(),status:'completed',aggregatedOutput:'done\n',exitCode:0,durationMs:5}});
  notify('item/completed', {...binding(), item:{id:'edit',type:'fileChange',status:'completed',changes:[{path:'example.txt',kind:{type:'add'},diff:'+done'}]}});
  notify('turn/plan/updated', {...binding(),plan:[{step:'Inspect',status:'completed'}],explanation:'Finished'});
+ notify('item/plan/delta', {threadId:'foreign',turnId,itemId:'foreign-plan',delta:'foreign'});
+ notify('item/plan/delta', {...binding(),itemId:'proposal',delta:'Preview draft'});
+ notify('item/completed', {...binding(),item:{id:'proposal',type:'plan',text:'Authoritative replacement'}});
+ notify('item/started', {...binding(),item:{id:'reasoning',type:'reasoning',summary:[],content:[]}});
+ notify('item/started', {...binding(),item:{id:'user',type:'userMessage',content:[{type:'text',text:'Native request'}]}});
+ notify('item/reasoning/summaryTextDelta', {...binding(),itemId:'reasoning',summaryIndex:0,delta:'Summary preview'});
+ notify('item/reasoning/textDelta', {...binding(),itemId:'reasoning',contentIndex:0,delta:'Content preview'});
+ notify('item/reasoning/textDelta', {...binding(),threadId:'foreign',itemId:'reasoning',contentIndex:0,delta:'Foreign'});
+ notify('item/completed', {...binding(),item:{id:'reasoning',type:'reasoning',summary:['Authoritative summary'],content:['Authoritative content']}});
  notify('turn/diff/updated', {...binding(),diff:'diff --git example.txt\n+done'});
- notify('item/completed', {...binding(), item:{id:'answer',type:'agentMessage',phase:'final_answer',text}});
+ if(turnId !== 'plan-only') notify('item/completed', {...binding(), item:{id:'answer',type:'agentMessage',phase:'final_answer',text}});
  notify('turn/completed', {threadId:'thread',turn:{id:turnId,status:'completed',error:null}});
 };
 createInterface({input:process.stdin}).on('line', line => {
@@ -33,9 +43,12 @@ createInterface({input:process.stdin}).on('line', line => {
  if(request.method==='initialize') send({id:request.id,result:{}});
  if(request.method==='thread/loaded/list') send({id:request.id,result:{data:[]}});
  if(request.method==='thread/unsubscribe') {send({id:request.id,result:{status:'unsubscribed'}});notify('thread/closed',{threadId:'thread'});}
+ if(request.method==='thread/goal/get') send({id:request.id,result:{goal:null}});
+ if(request.method==='thread/read') send({id:request.id,result:{thread:{id:'thread',cwd:process.cwd(),path:process.cwd()+'/fixture-session',turns:[]}}});
+ if(request.method==='thread/section/move') send({id:request.id,result:{}});
  if(request.method==='config/read') send({id:request.id,result:{config:{}}});
  if(request.method==='mcpServerStatus/list') send({id:request.id,result:{data:[],nextCursor:null}});
- if(request.method==='thread/start' || request.method==='thread/resume') send({id:request.id,result:{thread:{id:'thread'},sandbox:{type:request.params.sandbox==='danger-full-access'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:request.params.approvalPolicy}});
+ if(request.method==='thread/start' || request.method==='thread/resume') send({id:request.id,result:{thread:{id:'thread'},sandbox:{type:request.params.sandbox==='danger-full-access'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:request.params.approvalPolicy,approvalsReviewer:request.params.approvalsReviewer}});
  if(request.method==='turn/start') {
   turnId=request.params.input[0].text;
   notify('turn/started',{threadId:'thread',turn:{id:turnId}});
@@ -73,6 +86,42 @@ async function fixture() {
   const requests = async () => (await readFile(record,"utf8")).trim().split("\n").map(line => JSON.parse(line));
   return {cwd,manager,payload,requests,cleanup:() => rm(cwd,{recursive:true,force:true})};
 }
+
+test("native reasoning summary/content segments and authoritative completion remain distinct", async () => {
+  const f = await fixture(), manager = f.manager();
+  try {
+    const start = f.payload("reasoning-session", "reasoning", false);
+    await manager.startSession(start);const events: HcpHarnessEventPayload[] = [];
+    await manager.sendFirstTurn(start, event => events.push(event));
+    for (const event of events) hcpHarnessEventPayloadSchema.parse(event);
+    assert.deepEqual(events.filter(event => event.event_type === "reasoning.delta").map(event => event.data), [
+      {delta: "Summary preview", item_id: "reasoning", native_execution_reference: "reasoning", stream_kind: "reasoning_summary", native_segment: {kind: "summary", index: 0}},
+      {delta: "Content preview", item_id: "reasoning", native_execution_reference: "reasoning", stream_kind: "reasoning_content", native_segment: {kind: "content", index: 0}},
+    ]);
+    const completed = events.find(event => event.event_type === "item.completed" && (event.data as {item_id: string}).item_id === "reasoning");
+    assert.ok(completed);assert.deepEqual((completed.data as {content: unknown}).content,
+      {summary: ["Authoritative summary"], content: ["Authoritative content"]});
+    assert.ok(events.some(event => event.event_type === "item.started" && (event.data as {item_type: string}).item_type === "userMessage"));
+    await manager.stopSession(start.session_id, "done");
+  } finally {await manager.close();await f.cleanup();}
+});
+
+test("a successful native plan-only result completes without manufacturing an assistant final answer", async () => {
+  const f = await fixture(), manager = f.manager();
+  try {
+    const start = f.payload("plan-session", "plan-only", false);
+    await manager.startSession(start);
+    const events: HcpHarnessEventPayload[] = [];
+    await manager.sendFirstTurn(start, event => events.push(event));
+    for (const event of events) hcpHarnessEventPayloadSchema.parse(event);
+    const completion = events.find(event => event.event_type === "turn.completed");
+    assert.ok(completion);assert.equal((completion.data as {final_output: {final_text?: string}}).final_output.final_text, undefined);
+    assert.equal(events.some(event => event.event_type === "turn.failed"), false);
+    assert.ok(events.some(event => event.event_type === "native.execution.completed" && (event.data as {status: string}).status === "completed"));
+    assert.ok(events.some(event => event.event_type === "turn.proposed.completed" && (event.data as {plan: string}).plan === "Authoritative replacement"));
+    await manager.stopSession(start.session_id, "done");
+  } finally {await manager.close();await f.cleanup();}
+});
 
 test("native instruction roles reach Codex start/resume and changed instructions cannot reuse a binding", {timeout: 10_000}, async () => {
   const f = await fixture();
@@ -145,6 +194,9 @@ for (const mode of ["approval", "question"] as const) {
       assert.equal(events.filter(event => event.event_type === "turn.completed").length,1);
       assert.ok(events.some(event => event.event_type === "command.completed" && "exit_code" in event.data && event.data.exit_code === 0));
       assert.ok(events.some(event => event.event_type === "turn.plan.updated"));
+      const proposal = events.filter(event => event.event_type.startsWith("turn.proposed."));
+      assert.deepEqual(proposal.map(event => event.data), [{item_id: "proposal", native_execution_reference: mode, delta: "Preview draft"},
+        {item_id: "proposal", native_execution_reference: mode, plan: "Authoritative replacement", status: "completed"}]);
       assert.ok(events.some(event => event.event_type === "turn.diff.updated"));
       await manager.close();
       manager = f.manager();
@@ -232,4 +284,35 @@ test("native steering targets the exact live turn and compaction preserves its c
     const reducer = new HcpSessionEventReducer();
     for (const event of [...events, ...compact]) {hcpHarnessEventPayloadSchema.parse(event); reducer.applyEvent(event);}
   } finally {await manager.stopSession("first", "cleanup"); await f.cleanup();}
+});
+
+test("Codex native plan snapshots retain the actual execution, full step status and raw native content", async () => {
+  const f = await fixture(), manager = f.manager();
+  try {
+    const start = f.payload("plan-observation", "structured", false);
+    await manager.startSession(start);const events: HcpHarnessEventPayload[] = [];
+    await manager.sendFirstTurn(start, event => events.push(event));
+    const requests = await f.requests();
+    assert.equal(requests.find(request => request.method === "thread/start").params.config["tools.update_plan.enabled"], true);
+    const event = events.find(event => event.event_type === "turn.plan.updated")!;
+    hcpHarnessEventPayloadSchema.parse(event);
+    assert.equal(event.turn_id, start.first_turn!.turn_id);
+    assert.deepEqual(event.data, {plan: [{step: "Inspect", status: "completed"}], delta: "Finished", native_plan: {source: "native",
+      kind: "execution_plan", observation: "snapshot", native_reference: "thread", native_execution_reference: "structured", explanation: "Finished",
+      steps: [{index: 0, text: "Inspect", status: "completed", native_status: "completed"}]}});
+    await manager.stopSession(start.session_id, "done");
+  } finally {await manager.close();await f.cleanup();}
+});
+
+for (const profile of ["interactive", "isolated"] as const) test(`native closure proof is conditional on the ${profile} owner contract`, {timeout: 10_000}, async () => {
+  const f = await fixture(), manager = f.manager();
+  try {
+    const {first_turn: _first, ...start} = f.payload(`closure-${profile}`, "unused", false);
+    await manager.startSession({...start, execution_profile: profile, sandbox_mode: "danger_full_access"});
+    const events = await manager.stopSession(start.session_id, "closure acceptance");
+    const exited = events.find(event => event.event_type === "session.exited")!;
+    hcpHarnessEventPayloadSchema.parse(exited);
+    assert.equal((exited.data as {native_owner_closed?: boolean}).native_owner_closed, profile === "interactive" ? true : undefined);
+    if (profile === "interactive") assert.equal((await f.requests()).filter(request => request.method === "turn/start").length, 0);
+  } finally {await manager.close();await f.cleanup();}
 });

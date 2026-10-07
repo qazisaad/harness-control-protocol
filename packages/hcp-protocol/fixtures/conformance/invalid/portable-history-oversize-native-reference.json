@@ -1,0 +1,53 @@
+{
+  "id": "fixture-portable-history-oversize-native-reference",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "read-1",
+    "session_id": "session-1",
+    "operation": "read",
+    "filesystem_undo": false,
+    "history": {
+      "history_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "turn_count": 1,
+      "truncated": false,
+      "turns": [
+        {
+          "id": "turn-1",
+          "status": "completed",
+          "items": [],
+          "portable_items": [
+            {
+              "id": "call",
+              "status": "completed",
+              "type": "tool_call",
+              "tool_name": "Read",
+              "arguments": {
+                "storage": "inline",
+                "value": {
+                  "path": "file.txt"
+                }
+              },
+              "native_item_reference": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "native_call_reference": "native-call"
+            },
+            {
+              "id": "result-call",
+              "status": "completed",
+              "type": "tool_result",
+              "call_id": "call",
+              "result": {
+                "storage": "inline",
+                "value": "File contents"
+              },
+              "native_item_reference": "native-part",
+              "native_call_reference": "native-call"
+            }
+          ],
+          "portable_fidelity": "full"
+        }
+      ]
+    }
+  }
+}

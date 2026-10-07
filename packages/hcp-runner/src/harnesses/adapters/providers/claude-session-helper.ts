@@ -1,3 +1,4 @@
+import {HARNESS_CONTENT_MAX_BYTES} from "@harness-control/protocol";
 import {NativeProcess} from "./native-process.js";
 import {HarnessAdapterError} from "../types.js";
 import type {ProviderInstanceConfig} from "../../../config/index.js";
@@ -8,12 +9,13 @@ import {getSessionInfo, getSessionMessages, getSubagentMessages, listSubagents, 
 import {createHash} from 'node:crypto';
 let input = ''; for await (const chunk of process.stdin) input += chunk;
 const request = JSON.parse(input);
+const HARNESS_CONTENT_MAX_BYTES = ${HARNESS_CONTENT_MAX_BYTES};
 async function revision() {
   const hash = createHash('sha256'); let size = 0;
   await importSessionToStore(request.sessionId, {async append(_key, entries) {
     for (const entry of entries) {
       const encoded = JSON.stringify(entry) + '\\n'; size += Buffer.byteLength(encoded);
-      if (size > 8 * 1024 * 1024) throw new Error('History limit');
+      if (size > HARNESS_CONTENT_MAX_BYTES) throw new Error('History limit');
       hash.update(encoded);
     }
   }}, {dir: request.cwd, includeSubagents: false});
@@ -33,7 +35,7 @@ if (request.kind === 'read') {
     throw new Error('Owned subagent transcript unavailable');
   const messages = await getSubagentMessages(request.sessionId, request.agentId, {dir: request.cwd, limit: 10001});
   const encoded = JSON.stringify(messages);
-  if (messages.length > 10000 || Buffer.byteLength(encoded) > 8 * 1024 * 1024) throw new Error('History limit');
+  if (messages.length > 10000 || Buffer.byteLength(encoded) > HARNESS_CONTENT_MAX_BYTES) throw new Error('History limit');
   const after = await getSubagentMessages(request.sessionId, request.agentId, {dir: request.cwd, limit: 10001});
   if (encoded !== JSON.stringify(after) || !(await listSubagents(request.sessionId, {dir: request.cwd})).includes(request.agentId))
     throw new Error('Subagent history changed during read');
@@ -56,7 +58,7 @@ export async function claudeSessionHelper(provider: ProviderInstanceConfig, cwd:
   processHandle.child.stderr.resume();
   processHandle.child.stdout.on("data", (chunk: Buffer) => {
     size += chunk.length;
-    if (size > 8 * 1024 * 1024) {exceeded = true; void processHandle.stop();}
+    if (size > HARNESS_CONTENT_MAX_BYTES) {exceeded = true; void processHandle.stop();}
     else chunks.push(chunk);
   });
   const timer = setTimeout(() => {void processHandle.stop();}, 15_000);

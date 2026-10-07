@@ -16,12 +16,21 @@ import {
   type HcpSessionSnapshotPayload,
   hcpConversationResultPayloadSchema, type HcpConversationResultPayload,
   harnessNativeWorkRecordSchema,
+  isNativeWorkTerminal,
+  harnessNativeGoalRecordSchema,
+  harnessApprovalOptionsSchema,
+  harnessNativeGoalResultSchema,
   type HostRetainedEventRanges,
   type LocalActionErrorPayload,
   type LocalActionRequestPayload,
   type LocalActionResponsePayload,
 } from "@harness-control/protocol";
 import { z } from "zod";
+import {nativeWorkCustodySchema} from "./native-work-custody.js";
+import {nativePolicyControlReceiptSchema, nativePolicyControlReceiptsSchema, type NativePolicyControlReceipt} from "./native-policy-control.js";
+export {nativePolicyControlReceiptSchema, type NativePolicyControlReceipt} from "./native-policy-control.js";
+export {nativeWorkCustodySchema, type NativeWorkCustody} from "./native-work-custody.js";
+import {isDeepStrictEqual} from "node:util";
 import { persistedMcpReviewSchema, validateMcpTransition, type PersistedMcpReview } from "./mcp-review.js";
 
 const DEFAULT_RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -85,11 +94,54 @@ const nativeWorkDictionarySchema = z.unknown().transform((input, context): Recor
   return result;
 });
 const nativeWorkStateSchema = z.object({scope: z.object({provider_instance_id: z.string(), provider_binding_hash: z.string(),
-  workspace_id: z.string(), cwd: z.string(), execution_binding_hash: z.string()}).strict(),
-  items: nativeWorkDictionarySchema, retired: nativeWorkDictionarySchema.default({}), closure_unconfirmed: z.literal(true).optional()}).strict();
+  workspace_id: z.string(), cwd: z.string(), execution_binding_hash: z.string(), execution_profile: z.string().optional(),
+  conversation_key: z.string().min(1).max(512).optional()}).strict(),
+  items: nativeWorkDictionarySchema, retired: nativeWorkDictionarySchema.default({}),
+  /** Earlier admissions retain their exact execution binding when an idle policy changes. */
+  execution_bindings: z.array(z.object({kind: z.enum(["root", "work"]), admission_id: z.string().min(1).max(512),
+    binding_hash: z.string().min(1).max(512)}).strict()).max(2176)
+    .refine(values => new Set(values.map(value => `${value.kind}:${value.admission_id}`)).size === values.length).optional(),
+  custody: z.record(z.string(), nativeWorkCustodySchema).optional(),
+  goals: z.array(z.object({admission_id: z.string().min(1).max(512), origin_turn_id: z.string().min(1).max(512),
+    native_reference: z.string().min(1).max(512), objective: z.string().min(1).max(128 * 1024),
+    token_budget: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+    expected_native_created_at: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    phase: z.enum(["pending", "confirmed"]), snapshot: harnessNativeGoalRecordSchema.optional()}).strict()).max(128)
+    .refine(values => new Set(values.map(value => value.admission_id)).size === values.length && values.every(value =>
+      value.phase === "pending" ? !value.snapshot : value.snapshot?.admission_id === value.admission_id
+      && value.snapshot.origin_turn_id === value.origin_turn_id && value.snapshot.native_reference === value.native_reference
+      && value.snapshot.objective === value.objective && value.snapshot.token_budget === value.token_budget
+      && (value.expected_native_created_at === undefined || value.snapshot.native_created_at === value.expected_native_created_at)), "Invalid native goal admission.").optional(),
+  root_executions: z.array(z.object({admission_id: z.string().min(1).max(512), origin_turn_id: z.string().min(1).max(512),
+    native_reference: z.string().min(1).max(512), goal_admission_id: z.string().min(1).max(512).optional(),
+    native_execution_reference: z.string().min(1).max(512).optional(),
+    requires_terminal_proof: z.literal(true).optional(), phase_status: z.enum(["completed", "interrupted", "failed"]).optional()}).strict().refine(value => !value.phase_status || !!value.native_execution_reference, "Native completion requires acknowledged execution identity.")).max(1024)
+    .refine(values => new Set(values.map(value => value.admission_id)).size === values.length, "Duplicate native execution admission.").optional(),
+  reconciliations: z.array(z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    result: hcpConversationResultPayloadSchema}).strict()).max(1024).refine(values =>
+      new Set(values.map(value => value.command_id)).size === values.length && values.every(value =>
+        value.result.command_id === value.command_id && value.result.operation === "work" && value.result.work?.action === "reconcile"),
+    "Invalid native reconciliation receipt.").optional(),
+  forks: z.array(z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    work_id: z.string().min(1).max(512), phase: z.enum(["pending", "completed"]),
+    result: hcpConversationResultPayloadSchema.optional()}).strict()).max(1024).refine(values =>
+      new Set(values.map(value => value.command_id)).size === values.length
+      && values.every(value => value.phase === "completed" ? value.result?.command_id === value.command_id
+        && value.result.operation === "work" && value.result.work?.action === "fork" && value.result.work.work_id === value.work_id : !value.result),
+    "Invalid native child fork receipt.").optional(),
+  closure_unconfirmed: z.literal(true).optional()}).strict();
 export type NativeWorkState = z.infer<typeof nativeWorkStateSchema>;
 
 const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  policy_controls: nativePolicyControlReceiptsSchema.optional(),
+  goal_controls: z.array(z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    source_session_id: z.string().min(1).max(512), native_thread_id: z.string().min(1).max(512), action: z.enum(["pause", "clear"]),
+    native_created_at: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), phase: z.enum(["pending", "completed"]),
+    result: harnessNativeGoalResultSchema.optional()}).strict().refine(value => value.phase === "pending" ? !value.result
+      : value.result?.action === value.action && value.result.native_reference === value.native_thread_id
+        && value.result.target_native_created_at === value.native_created_at,
+    "Invalid native goal control receipt.")).max(1024).refine(values => new Set(values.map(value => value.command_id)).size === values.length,
+      "Native goal controls require unique command identities.").optional(),
   feedback_submissions: z.array(z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/),
     source_session_id: z.string().min(1).max(512), native_thread_id: z.string().min(1).max(512),
     classification: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/), include_diagnostics: z.boolean(),
@@ -99,7 +151,9 @@ const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), 
     && value.result.diagnostics_requested === value.include_diagnostics : value.result === undefined, "Invalid feedback dispatch receipt."))
     .max(1024).refine(value => new Set(value.map(item => item.command_id)).size === value.length, "Feedback dispatch identities must be unique.").optional(),
   configuration_base_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  configuration_authority_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   configuration_transitions: z.array(z.object({transition_id: z.string().min(1).max(512),
+    change: z.enum(["policy", "mcp_catalog"]).optional(),
     source_binding_hash: z.string().regex(/^[a-f0-9]{64}$/), target_binding_hash: z.string().regex(/^[a-f0-9]{64}$/),
     expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/), target_session_id: z.string().min(1).max(512),
     phase: z.enum(["pending", "completed"])}).strict()).max(1024).refine(value => new Set(value.map(item => item.transition_id)).size === value.length,
@@ -107,6 +161,8 @@ const nativeConversationSchema = z.object({native_thread_id: z.string().min(1), 
   updated_at: z.string().datetime({offset: true}), last_session_id: z.string(), provider_instance_id: z.string(), provider_binding_hash: z.string(), workspace_id: z.string(), cwd: z.string(),
   fresh: z.literal(true).optional(),
   approval_policy: z.enum(["ask", "auto_edits", "full_access"]).optional(),
+  approval_reviewer: z.enum(["user", "native_auto"]).optional(),
+  approval_options: harnessApprovalOptionsSchema.optional(),
   injections: z.array(z.discriminatedUnion("phase", [
     z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/), phase: z.literal("pending")}).strict(),
     z.object({command_id: z.string().min(1).max(512), request_hash: z.string().regex(/^[a-f0-9]{64}$/), phase: z.literal("completed"), result: hcpConversationResultPayloadSchema}).strict(),
@@ -194,6 +250,8 @@ export interface RunnerStateStore {
   readonly contentDirectory?: string;
   getNativeConversation(key: string): NativeConversation | undefined;
   saveNativeConversation(key: string, conversation: NativeConversation): void;
+  beginNativePolicyControl(key: string, receipt: NativePolicyControlReceipt): void;
+  completeNativePolicyControl(key: string, sessionId: string, commandId: string, result: HcpConversationResultPayload, event?: HcpHarnessEventPayload): void;
   nativeConversationForSession(sessionId: string): {key: string; conversation: NativeConversation} | undefined;
   retireNativeConversation(key: string): void;
   getMcpReview(sessionId: string): PersistedMcpReview | undefined;
@@ -268,6 +326,62 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     if (Object.keys(state.retired).length > 1024) throw new Error("Native work tombstone capacity exceeded; close the execution lease before retiring further work.");
     if (Object.entries(state.items).some(([key, work]) => key !== work.work_id)) throw new Error("Native work identity mismatch.");
     if (previous && JSON.stringify(previous.scope) !== JSON.stringify(state.scope)) throw new Error("Native work execution scope changed.");
+    for (const binding of state.execution_bindings ?? []) {
+      const exists = binding.kind === "root" ? state.root_executions?.some(root => root.admission_id === binding.admission_id)
+        : !!(state.items[binding.admission_id] ?? state.retired[binding.admission_id]);
+      const prior = previous?.execution_bindings?.find(value => value.kind === binding.kind && value.admission_id === binding.admission_id);
+      if (!exists || !prior && binding.binding_hash !== state.scope.execution_binding_hash)
+        throw new Error("Native execution policy history must belong to its admitted configuration.");
+    }
+    for (const binding of previous?.execution_bindings ?? []) if (!isDeepStrictEqual(binding,
+      state.execution_bindings?.find(value => value.kind === binding.kind && value.admission_id === binding.admission_id)))
+      throw new Error("Native execution policy history cannot be erased or replaced.");
+    if (Object.keys(state.custody ?? {}).length > 1152) throw new Error("Native work custody capacity exceeded.");
+    for (const [id, proof] of Object.entries(state.custody ?? {})) {
+      const work = state.items[id] ?? state.retired[id];
+      if (!work || id !== proof.work_id || work.native_reference !== proof.native_reference
+        || work.origin_turn_id !== proof.origin_turn_id || work.parent_work_id !== proof.parent_work_id || work.kind !== "agent")
+        throw new Error("Native work custody does not match its admitted child.");
+    }
+    for (const [id, proof] of Object.entries(previous?.custody ?? {})) {
+      const next = state.custody?.[id];
+      const {native_execution_reference: _newExecution, ...nextAdmission} = next ?? {};
+      const {native_execution_reference: _oldExecution, ...admission} = proof;
+      if (!next || !isDeepStrictEqual(nextAdmission, admission) || proof.native_execution_reference && next.native_execution_reference !== proof.native_execution_reference)
+        throw new Error("Native work custody cannot be replaced or removed.");
+    }
+    for (const receipt of previous?.forks ?? []) {
+      const next = state.forks?.find(value => value.command_id === receipt.command_id);
+      if (!next || next.work_id !== receipt.work_id || next.request_hash !== receipt.request_hash
+        || receipt.phase === "completed" && !isDeepStrictEqual(next, receipt))
+        throw new Error("Native child fork dispatch receipts cannot be removed or replaced.");
+    }
+    for (const receipt of previous?.reconciliations ?? []) {
+      if (!isDeepStrictEqual(state.reconciliations?.find(value => value.command_id === receipt.command_id), receipt))
+        throw new Error("Native reconciliation receipts cannot be removed or replaced.");
+    }
+    for (const execution of previous?.root_executions ?? []) {
+      const next = state.root_executions?.find(value => value.admission_id === execution.admission_id);
+      if (!next || next.origin_turn_id !== execution.origin_turn_id || next.native_reference !== execution.native_reference
+        || next.goal_admission_id !== execution.goal_admission_id || next.requires_terminal_proof !== execution.requires_terminal_proof
+        || execution.native_execution_reference && next.native_execution_reference !== execution.native_execution_reference
+        || execution.phase_status && next.phase_status !== execution.phase_status)
+        throw new Error("Native root execution admissions cannot be removed or replaced.");
+    }
+    for (const execution of state.root_executions ?? []) if (execution.goal_admission_id && !state.goals?.some(goal =>
+      goal.admission_id === execution.goal_admission_id && goal.phase === "confirmed"
+      && goal.origin_turn_id === execution.origin_turn_id && goal.native_reference === execution.native_reference))
+      throw new Error("Native autonomous execution requires its confirmed original goal admission.");
+    for (const goal of previous?.goals ?? []) {
+      const next = state.goals?.find(value => value.admission_id === goal.admission_id);
+      if (!next || next.origin_turn_id !== goal.origin_turn_id || next.native_reference !== goal.native_reference
+        || next.objective !== goal.objective || next.token_budget !== goal.token_budget || next.expected_native_created_at !== goal.expected_native_created_at
+        || goal.phase === "confirmed" && next.phase !== "confirmed"
+        || goal.snapshot && (!next.snapshot || next.snapshot.native_created_at !== goal.snapshot.native_created_at
+          || next.snapshot.native_updated_at < goal.snapshot.native_updated_at || next.snapshot.tokens_used < goal.snapshot.tokens_used
+          || next.snapshot.time_used_seconds < goal.snapshot.time_used_seconds))
+        throw new Error("Native goal admissions cannot be removed, replaced or regressed.");
+    }
     if (event && event.session_id !== sessionId) throw new Error("Native work event targets another session.");
     const previousEvents = this.data.events[sessionId];
     this.data.nativeWork[sessionId] = state;
@@ -283,15 +397,90 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
 
   removeEmptyNativeWorkState(sessionId: string): void {
     const previous = this.data.nativeWork[sessionId];
-    if (!previous || previous.closure_unconfirmed || Object.keys(previous.items).length) return;
+    if (!previous || previous.closure_unconfirmed || Object.keys(previous.items).length || Object.keys(previous.retired).length
+      || previous.root_executions?.length || previous.goals?.length || previous.forks?.length || previous.reconciliations?.length
+      || Object.keys(previous.custody ?? {}).length) return;
     delete this.data.nativeWork[sessionId];
     try {this.persist();} catch (error) {this.data.nativeWork[sessionId] = previous; throw error;}
+  }
+
+  beginNativePolicyControl(key: string, input: NativePolicyControlReceipt): void {
+    const receipt = nativePolicyControlReceiptSchema.parse(input), previous = this.data.nativeConversations[key];
+    const work = this.data.nativeWork[receipt.source_session_id];
+    if (receipt.phase !== "pending" || !previous || !work || previous.last_session_id !== receipt.source_session_id
+      || previous.native_thread_id !== receipt.native_reference || previous.binding_hash !== receipt.source_binding_hash
+      || work.scope.conversation_key !== key || work.scope.execution_binding_hash !== receipt.source_binding_hash
+      || work.scope.provider_binding_hash !== previous.provider_binding_hash || work.scope.workspace_id !== previous.workspace_id || work.scope.cwd !== previous.cwd)
+      throw new Error("Native policy dispatch requires its original conversation and execution owner.");
+    if (work.closure_unconfirmed || Object.values(work.items).some(item => !isNativeWorkTerminal(item.status))
+      || work.root_executions?.some(root => !root.native_execution_reference || root.requires_terminal_proof && !root.phase_status)
+      || work.goals?.some(goal => goal.phase === "pending" || goal.snapshot?.status === "active")
+      || work.forks?.some(fork => fork.phase === "pending") || this.data.mcpReviews[receipt.source_session_id]
+      || previous.policy_controls?.some(control => control.phase === "pending")
+      || previous.configuration_transitions?.some(control => control.phase === "pending")
+      || previous.injections?.some(control => control.phase === "pending") || previous.fork?.phase === "pending" || previous.rollback?.phase === "pending"
+      || previous.goal_controls?.some(control => control.phase === "pending") || previous.feedback_submissions?.some(control => control.phase === "pending"))
+      throw new Error("Native policy dispatch cannot bypass outstanding work, callbacks or uncertain mutations.");
+    const inventoryHash = createHash("sha256").update(JSON.stringify(work)).digest("hex");
+    if (receipt.execution_inventory_hash && receipt.execution_inventory_hash !== inventoryHash)
+      throw new Error("Native policy dispatch inventory changed before its durable fence.");
+    const next = nativeConversationSchema.parse({...previous, policy_controls: [...(previous.policy_controls ?? []),
+      {...receipt, execution_inventory_hash: inventoryHash}]});
+    this.data.nativeConversations[key] = next;
+    try {this.persist();} catch (failure) {this.data.nativeConversations[key] = previous; throw failure;}
+  }
+
+  completeNativePolicyControl(key: string, sessionId: string, commandId: string, input: HcpConversationResultPayload, event?: HcpHarnessEventPayload): void {
+    const previous = this.data.nativeConversations[key], work = this.data.nativeWork[sessionId];
+    const receipt = previous?.policy_controls?.find(control => control.command_id === commandId);
+    if (!previous || !work || !receipt || receipt.phase !== "pending" || receipt.source_session_id !== sessionId
+      || previous.last_session_id !== sessionId || previous.native_thread_id !== receipt.native_reference
+      || previous.binding_hash !== receipt.source_binding_hash || work.scope.execution_binding_hash !== receipt.source_binding_hash
+      || work.scope.conversation_key !== key || work.closure_unconfirmed || this.data.mcpReviews[sessionId]
+      || receipt.execution_inventory_hash !== createHash("sha256").update(JSON.stringify(work)).digest("hex"))
+      throw new Error("Native policy confirmation requires its retained original dispatch fence.");
+    const result = hcpConversationResultPayloadSchema.parse(input);
+    const completed = nativePolicyControlReceiptSchema.parse({...receipt, phase: "completed", result});
+    const bindings = [...(work.execution_bindings ?? [])];
+    const retain = (kind: "root" | "work", admission_id: string) => {
+      if (!bindings.some(binding => binding.kind === kind && binding.admission_id === admission_id))
+        bindings.push({kind, admission_id, binding_hash: work.scope.execution_binding_hash});
+    };
+    for (const root of work.root_executions ?? []) retain("root", root.admission_id);
+    for (const id of new Set([...Object.keys(work.items), ...Object.keys(work.retired)])) retain("work", id);
+    const nextWork = nativeWorkStateSchema.parse({...work, execution_bindings: bindings,
+      scope: {...work.scope, execution_binding_hash: receipt.target_binding_hash}});
+    const nextConversation = nativeConversationSchema.parse({...previous, binding_hash: receipt.target_binding_hash,
+      approval_policy: receipt.selection.approval_policy, approval_reviewer: receipt.selection.approval_reviewer,
+      updated_at: this.#now().toISOString(), policy_controls: previous.policy_controls!.map(control => control.command_id === commandId ? completed : control)});
+    if (event && (event.session_id !== sessionId || event.event_type !== "session.configured"))
+      throw new Error("Native policy configuration events require the same physical owner's session.");
+    const events = this.data.events[sessionId];
+    this.data.nativeConversations[key] = nextConversation; this.data.nativeWork[sessionId] = nextWork;
+    try {if (event) this.#appendEvent(hcpHarnessEventPayloadSchema.parse(event) as HcpHarnessEventPayload); this.persist();}
+    catch (failure) {
+      this.data.nativeConversations[key] = previous; this.data.nativeWork[sessionId] = work;
+      if (events) this.data.events[sessionId] = events; else delete this.data.events[sessionId];
+      throw failure;
+    }
   }
 
   saveNativeConversation(key: string, input: NativeConversation): void {
     if (!key || key.length > 512) throw new Error("Invalid native conversation key.");
     const conversation = nativeConversationSchema.parse(input);
     const previous = this.data.nativeConversations[key];
+    if (!isDeepStrictEqual(previous?.policy_controls ?? [], conversation.policy_controls ?? []))
+      throw new Error("Native policy control evidence requires its dedicated atomic dispatch and confirmation path.");
+    for (const receipt of previous?.goal_controls ?? []) {
+      const next = conversation.goal_controls?.find(item => item.command_id === receipt.command_id);
+      const {result: _previousResult, phase: _previousPhase, ...intent} = receipt;
+      const {result: _nextResult, phase: _nextPhase, ...nextIntent} = next ?? {};
+      if (!next || !isDeepStrictEqual(intent, nextIntent) || receipt.phase === "completed" && !isDeepStrictEqual(next, receipt))
+        throw new Error("Native goal control dispatch evidence cannot be removed or rewritten.");
+    }
+    if (conversation.goal_controls?.some(receipt => receipt.phase === "completed"
+      && !previous?.goal_controls?.some(prior => prior.command_id === receipt.command_id)))
+      throw new Error("Native goal control completion requires its prior durable dispatch fence.");
     for (const receipt of previous?.feedback_submissions ?? []) {
       const next = conversation.feedback_submissions?.find(item => item.command_id === receipt.command_id);
       if (!next) throw new Error("Native feedback dispatch evidence cannot be erased.");
@@ -307,13 +496,18 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     const provenReplacement = previous?.rollback?.phase === "completed" &&
       previous.rollback.replacement_native_thread_id === conversation.native_thread_id &&
       JSON.stringify(previous.rollback) === JSON.stringify(conversation.rollback) && previous.rollback.native_fresh === conversation.fresh;
-    const provenTransition = previous?.configuration_base_hash !== undefined && previous.configuration_base_hash === conversation.configuration_base_hash
+    const provenTransition = previous?.configuration_base_hash !== undefined
       && previous.configuration_transitions?.some(receipt => receipt.phase === "pending" && receipt.source_binding_hash === previous.binding_hash
+        && (previous.configuration_base_hash === conversation.configuration_base_hash
+          || receipt.change === "mcp_catalog" && previous.configuration_authority_hash !== undefined
+            && previous.configuration_authority_hash === conversation.configuration_authority_hash)
         && receipt.target_binding_hash === conversation.binding_hash && receipt.target_session_id === conversation.last_session_id
         && conversation.configuration_transitions?.some(next => next.phase === "completed"
           && JSON.stringify({...next, phase: "pending"}) === JSON.stringify(receipt))) === true;
-    if (previous?.configuration_base_hash && previous.configuration_base_hash !== conversation.configuration_base_hash)
+    if (previous?.configuration_base_hash && previous.configuration_base_hash !== conversation.configuration_base_hash && !provenTransition)
       throw new Error("Native conversation configuration base changed.");
+    if (previous?.configuration_authority_hash && previous.configuration_authority_hash !== conversation.configuration_authority_hash)
+      throw new Error("Native conversation authority cannot change through catalog replacement.");
     for (const receipt of previous?.configuration_transitions ?? []) {
       const next = conversation.configuration_transitions?.find(item => item.transition_id === receipt.transition_id);
       if (!next || JSON.stringify({...next, phase: receipt.phase}) !== JSON.stringify(receipt)
@@ -327,6 +521,7 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
         previous.provider_binding_hash !== conversation.provider_binding_hash || previous.provider_instance_id !== conversation.provider_instance_id ||
         previous.workspace_id !== conversation.workspace_id || previous.cwd !== conversation.cwd ||
         (!provenTransition && previous.approval_policy !== undefined && previous.approval_policy !== conversation.approval_policy) ||
+        (!provenTransition && (previous.approval_reviewer ?? "user") !== (conversation.approval_reviewer ?? "user")) ||
         (previous.native_thread_id !== conversation.native_thread_id && !provenReplacement)))
       throw new Error("Native conversation identity or execution scope changed.");
     if (!previous && Object.keys(this.data.nativeConversations).length >= 1024)
@@ -345,6 +540,8 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
 
   retireNativeConversation(key: string): void {
     const prior = this.data.nativeConversations[key];
+    if (prior?.policy_controls?.some(receipt => receipt.phase === "pending"))
+      throw new Error("An uncertain native policy dispatch cannot be erased by retirement.");
     delete this.data.nativeConversations[key];
     try {this.persist();} catch (error) {if (prior) this.data.nativeConversations[key] = prior; throw error;}
   }

@@ -37,16 +37,19 @@ import {
 import { runCodexTurn, runRetainedCodexTurn, initializeCodexConversation, materializeEmptyCodexConversation, type CodexRuntimeLease } from "./codex-runtime.js";
 import {CodexRpc} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
+import {forkRetainedCodexWork, readRetainedCodexHistory, reconcileRetainedCodexWork} from "./codex-retained-history.js";
 import {readCodexSettingsNotification} from "./codex-settings.js";
 import {CodexWorkCallbacks} from "./codex-work-callbacks.js";
+import {controlCodexGoal} from "./codex-goal-controls.js";
+import {realpath} from "node:fs/promises";
 import {z} from "zod";
 const nativeFeedback: HarnessNativeFeedbackCapabilities = {owner: "live_conversation", classifications: ["bug"], diagnostics: true};
 const retainedProfiles = [
   {id: "isolated", runtime_lifetime: "turn", native_work: false, session_events: false},
-  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, root_interrupt_effect: "root_only", root_settings_readback: true, empty_conversation: true, native_work_history: "live_owner", idle_configuration_transition: true,
-    native_feedback: nativeFeedback},
+  {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, mcp_attachments: true, native_owner_closure: "owned_session" as const, root_interrupt_effect: "root_only", root_settings_readback: true, approval_prompt_filter: true, sandbox_options: ["network_access", "writable_roots"] as Array<"network_access" | "writable_roots">, native_approval_review: true, native_plan_observations: ["snapshot"] as Array<"snapshot">, native_plan_proposals: true, native_reasoning_segments: true, native_goals: true, native_execution_outcomes: true, empty_conversation: true, native_work_history: "live_owner", idle_configuration_transition: true,
+    retained_native_work_history: true, native_work_fork: true, native_work_terminal_reconciliation: true, native_feedback: nativeFeedback},
 ] as const;
-function retainedVersion(version: string | undefined): boolean {return /^codex-cli 0\.160\.0$/.test(version ?? "");}
+function retainedVersion(version: string | undefined): boolean {return /^codex-cli (?:0\.160\.[01]|0\.161\.0)$/.test(version ?? "");}
 export type CodexHarnessAdapterOptions = {
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
@@ -61,9 +64,13 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     await Promise.all([...this.#leases.keys()].map(sessionId => this.stopSession({sessionId})));
   }
   readonly fileContextInputs = true;
+  readonly ownedImageInputs = true;
   readonly promptContextInputs = true;
   readonly executionProfiles = retainedProfiles;
   readonly nativeWork = true;
+  reconcileNativeWork(input: Parameters<NonNullable<HarnessAdapter["reconcileNativeWork"]>>[0]) {
+    return reconcileRetainedCodexWork(input);
+  }
   readonly sessionEvents = true;
   readonly #leases = new Map<string, CodexRuntimeLease>();
   readonly portableHistory = true;
@@ -230,7 +237,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
       const version = await this.#runProcess(input.provider.executable_path ?? "codex", ["--version"],
         {cwd: input.payload.cwd, env: providerEnvironment(input.provider)}, this.#probeTimeoutMs);
       if (version.timedOut || version.exitCode !== 0 || !retainedVersion(firstLine(version.stdout)))
-        throw new HarnessAdapterError("native_profile_unsupported", "Persistent Codex requires the verified 0.160.0 app-server protocol.");
+        throw new HarnessAdapterError("native_profile_unsupported", "Persistent Codex requires the verified 0.160.0, 0.160.1 or 0.161.0 app-server protocol.");
       if (this.#closed) throw new HarnessAdapterError("runner_closed", "Codex runtime owner closed during its version probe.");
       if (!input.emitSessionEvent || !input.registerSessionInteractions)
         throw new HarnessAdapterError("native_session_owner_required", "Interactive Codex requires registered session observation and interaction owners.");
@@ -238,13 +245,14 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         {...process.env, ...providerEnvironment(input.provider)});
       const work = new CodexOwnedWork(rpc, input);
       const callbacks = new CodexWorkCallbacks(rpc, work, input);
-      const lease: CodexRuntimeLease = {initialized: false, rpc, work, callbacks};
+      const lease: CodexRuntimeLease = {initialized: false, rpc, work, callbacks, goalMutationOrigins: firstLine(version.stdout) === "codex-cli 0.161.0"};
       lease.closeSettings = rpc.observeNotifications(message => {
         if (message.method === "thread/settings/updated") {
           const readback = readCodexSettingsNotification(message);
           if (!readback || !lease.started || readback.threadId === lease.started.thread.id) lease.settings = readback;
         }
-        if (message.method === "model/rerouted") lease.settings = undefined;
+        if (message.method === "model/rerouted" && (message.params as {threadId?: unknown})?.threadId === lease.started?.thread.id)
+          lease.settings = undefined;
       });
       void rpc.process.closed.then(() => {lease.settings = undefined; lease.closeSettings?.();});
       this.#leases.set(input.payload.session_id, lease);
@@ -258,7 +266,10 @@ export class CodexHarnessAdapter implements HarnessAdapter {
         if (!input.nativeConversation) await materializeEmptyCodexConversation(rpc, started.thread.id, input.payload.cwd);
         return {adapter_session_id: input.payload.session_id, native_thread_id: started.thread.id,
           native_policy_readback: {source: "native", execution_profile: "interactive",
+            approval_reviewer: started.approvalsReviewer === "auto_review" ? "native_auto" : "user",
             approval_policy: ({untrusted: "ask", "on-request": "auto_edits", never: "full_access"} as const)[started.approvalPolicy as "untrusted" | "on-request" | "never"],
+            ...(input.payload.approval_options ? {approval_options: structuredClone(input.payload.approval_options), approval_policy: "auto_edits" as const} : {}),
+            ...(input.payload.sandbox_options ? {sandbox_options: structuredClone(input.payload.sandbox_options)} : {}),
             sandbox_mode: ({readOnly: "read_only", workspaceWrite: "workspace_write", dangerFullAccess: "danger_full_access"} as const)[started.sandbox.type as "readOnly" | "workspaceWrite" | "dangerFullAccess"]}};
       } finally {clearTimeout(timer);}
     }
@@ -310,6 +321,12 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     await lease.work.verifyHistoryOwner(input.work, input.signal);
     return history;
   }
+  readRetainedNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readRetainedNativeWorkHistory"]>>[0]) {
+    return readRetainedCodexHistory(input);
+  }
+  forkNativeWork(input: Parameters<NonNullable<HarnessAdapter["forkNativeWork"]>>[0]) {
+    return forkRetainedCodexWork(input);
+  }
   async submitNativeFeedback(input: Parameters<NonNullable<HarnessAdapter["submitNativeFeedback"]>>[0]) {
     const lease = this.#leases.get(input.sessionId);
     if (!lease?.initialized || lease.started?.thread.id !== input.nativeThreadId || input.startPayload.execution_profile !== "interactive")
@@ -321,6 +338,28 @@ export class CodexHarnessAdapter implements HarnessAdapter {
       ...(input.request.reason ? {reason: input.request.reason} : {}),
     }, {signal: input.signal}));
     return {feedback_id: response.threadId};
+  }
+  async controlNativeGoal(input: Parameters<NonNullable<HarnessAdapter["controlNativeGoal"]>>[0]) {
+    const lease = this.#leases.get(input.sessionId);
+    if (lease && !input.inspectionOnly) {
+      if (!lease.initialized || lease.started?.thread.id !== input.nativeThreadId)
+        throw new HarnessAdapterError("native_goal_binding", "Goal controls require the original live native conversation.");
+      return controlCodexGoal({rpc: lease.rpc, threadId: input.nativeThreadId, cwd: input.cwd,
+        operation: input.operation, signal: input.signal, goalMutationOrigins: lease.goalMutationOrigins,
+        ...(input.beginMutation ? {beginMutation: input.beginMutation} : {}), ...(lease.goal ? {owner: lease.goal} : {})});
+    }
+    if (input.operation.action !== "read")
+      throw new HarnessAdapterError("native_goal_owner_unavailable", "An inspection transport cannot mutate or restore a native goal owner.");
+    input.signal.throwIfAborted();
+    const cwd = await realpath(input.cwd);
+    const rpc = new CodexRpc(input.provider.executable_path ?? "codex", cwd, providerEnvironment(input.provider));
+    const abort = () => {void rpc.process.stop();};
+    input.signal.addEventListener("abort", abort, {once: true});
+    try {
+      await rpc.request("initialize", {clientInfo: {name: "hcp-native-goal-inspection", version: "0.5.0"}, capabilities: {experimentalApi: true}}, {signal: input.signal});
+      rpc.notify("initialized");
+      return await controlCodexGoal({rpc, threadId: input.nativeThreadId, cwd, operation: input.operation, signal: input.signal});
+    } finally {input.signal.removeEventListener("abort", abort); await rpc.process.stop();}
   }
   #runProcess(
     executable: string,

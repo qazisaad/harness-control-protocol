@@ -1,6 +1,14 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {projectClaudeModels} from "./claude-models.js";
+
+test("native model discovery advertises only explicitly supported boolean settings", () => {
+  const [known, unknown] = projectClaudeModels([{value: "supported", displayName: "Supported",
+    supportsAdaptiveThinking: true, supportsFastMode: true}, {value: "unknown", displayName: "Unknown"}]);
+  assert.deepEqual(known?.capabilities.option_descriptors, [{id: "thinking", label: "Thinking", type: "boolean"},
+    {id: "fastMode", label: "Fast mode", type: "boolean"}]);
+  assert.deepEqual(unknown?.capabilities.option_descriptors, []);
+});
 import {ClaudeHarnessAdapter} from "./claude.js";
 import {RunnerConfigSchema} from "../../../config/index.js";
 

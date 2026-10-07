@@ -1,0 +1,34 @@
+{
+  "id": "fixture-native-policy-authority-duplicate",
+  "type": "harness.session.start",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session",
+    "workspace_id": "workspace",
+    "provider_instance_id": "provider",
+    "driver_kind": "claude",
+    "cwd": "/workspace",
+    "execution_profile": "interactive",
+    "continuation_group_key": "conversation",
+    "sandbox_mode": "danger_full_access",
+    "approval_policy": "ask",
+    "continue_session": false,
+    "model_selection": {
+      "model": "model"
+    },
+    "mcp_servers": [],
+    "policy_control_authority": {
+      "allowed_selections": [
+        {
+          "approval_policy": "ask",
+          "approval_reviewer": "user"
+        },
+        {
+          "approval_policy": "ask",
+          "approval_reviewer": "user"
+        }
+      ]
+    }
+  }
+}

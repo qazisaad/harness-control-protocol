@@ -7,6 +7,14 @@ const tool = {name: "lookup", input_schema: {type: "object", properties: {query:
 const binding = {threadId: "thread", turnId: "turn"};
 const signal = new AbortController().signal;
 
+test("verified native MCP observation must match the exact invocation before review or dispatch", async () => {
+  const bridge = new NativeMcpBridge([{name: "selected", tools: [tool], async callTool() {assert.fail("Foreign native proof dispatched");}}]);
+  const call = {...binding, namespace: bridge.definitions[0]!.name, tool: "lookup", callId: "call", arguments: {}};
+  const native = {source: "native" as const, native_reference: binding.threadId, call_reference: "call", execution_reference: binding.turnId};
+  for (const change of [{native_reference: "foreign"}, {call_reference: "foreign"}, {execution_reference: "foreign"}])
+    await assert.rejects(bridge.call({...call, native_request: {...native, ...change}}, binding, signal), /physical invocation/);
+});
+
 for (const policy of [{kind: "always"}, {kind: "argument", argument: "name", values: ["lookup"]}] satisfies McpReviewPolicy[]) {
   for (const accepted of [true, false]) {
     test(`review ${policy.kind} waits before dispatch and handles accepted=${accepted}`, async () => {

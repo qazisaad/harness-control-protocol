@@ -9,6 +9,19 @@ import type { HcpHarnessEventPayload } from "@harness-control/protocol";
 import { JsonRunnerStateStore } from "./index.js";
 
 describe("JsonRunnerStateStore", () => {
+  it("startup cleanup cannot discard a pending native root admission when the child inventory is empty", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hcp-root-admission-state-"));
+    const path = join(root, "state.json");
+    try {
+      const store = new JsonRunnerStateStore(path);
+      store.saveNativeWorkState("session", {scope: {provider_instance_id: "provider", provider_binding_hash: "provider-hash",
+        workspace_id: "workspace", cwd: root, execution_binding_hash: "execution-hash"}, items: {}, retired: {},
+        root_executions: [{admission_id: "pending", origin_turn_id: "original", native_reference: "root"}]});
+      store.removeEmptyNativeWorkState("session");
+      assert.deepEqual(new JsonRunnerStateStore(path).nativeWorkState("session")?.root_executions,
+        [{admission_id: "pending", origin_turn_id: "original", native_reference: "root"}]);
+    } finally {await rm(root, {recursive: true, force: true});}
+  });
   it("survives restart with retained ranges, monotonic sequences, and explicit partial snapshot semantics", async () => {
     const root: string = await mkdtemp(join(tmpdir(), "hcp-runner-state-"));
     const statePath: string = join(root, "runner-state.json");

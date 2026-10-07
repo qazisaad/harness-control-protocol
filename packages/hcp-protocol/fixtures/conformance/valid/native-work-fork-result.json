@@ -1,0 +1,23 @@
+{
+  "id": "fixture-native-work-read-result",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "command_id": "read-1",
+    "session_id": "session-1",
+    "operation": "work",
+    "filesystem_undo": false,
+    "work": {
+      "action": "fork",
+      "source": "native",
+      "work_id": "child",
+      "revision": 1,
+      "fork": {
+        "session_id": "child-fork",
+        "continuation_group_key": "child-fork-key",
+        "native_reference": "new-thread"
+      }
+    }
+  }
+}

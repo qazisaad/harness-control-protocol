@@ -1,0 +1,28 @@
+{
+  "id": "fixture-native-request-call-only",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 1,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "turn_id": "origin",
+    "event_type": "user_input.requested",
+    "data": {
+      "request_id": "hcp-reply-token",
+      "session_id": "session-1",
+      "turn_id": "origin",
+      "prompt": "Choose",
+      "input_kind": "text",
+      "required": true,
+      "redaction": "none",
+      "native_request": {
+        "source": "native",
+        "native_reference": "physical-session",
+        "message_reference": "native-message",
+        "call_reference": "native-call"
+      }
+    }
+  }
+}

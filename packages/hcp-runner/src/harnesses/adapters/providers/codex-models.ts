@@ -52,6 +52,8 @@ export async function codexModels(
           capabilities: {
             image_input: model.inputModalities?.includes("image") === true,
             option_descriptors: [
+              {id: "reasoningSummary", label: "Reasoning summary", type: "select", default_value: "auto",
+                values: ["auto", "concise", "detailed", "none"].map(value => ({value, label: value}))},
               {
                 id: "reasoningEffort",
                 label: "Reasoning effort",

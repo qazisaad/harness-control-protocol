@@ -11,7 +11,7 @@ import type {ContentPublisher} from "./content-projection.js";
 export type ClaudeSessionHelper = typeof claudeSessionHelper;
 // The SDK rewrites transcript UUIDs when forking; verify retained meaning independently of those IDs.
 function contextHash(turns: HistoryTurn[]): string {
-  return hash(turns.map(turn => ({...turn, id: "", items: turn.items.map(({id: _id, ...item}) => item)})));
+  return hash(turns.map(turn => ({...turn, id: "", items: turn.items.map(({id: _id, native_item_reference: _item, native_call_reference: _call, ...item}) => item)})));
 }
 const messageSchema = z.object({type: z.enum(["user", "assistant", "system"]), uuid: z.string(), session_id: z.string(),
   message: z.record(z.string(), z.json()).default({})});
@@ -34,10 +34,13 @@ function claudeHistoryTurns(messages: z.infer<typeof messageSchema>[], boundarie
     for (const [index, value] of blocks.entries()) {
       const block = z.record(z.string(), z.json()).parse(value);
       const id = typeof block.id === "string" ? block.id : typeof block.tool_use_id === "string" ? block.tool_use_id : `${message.uuid}:${index}`;
+      const nativeCall = block.type === "tool_use" ? block.id : block.type === "tool_result" ? block.tool_use_id : undefined;
+      const nativeReferences = typeof nativeCall === "string" && nativeCall.length ? {native_item_reference: nativeCall, native_call_reference: nativeCall} : {};
       const item = block.type === "text" ? {id, type: "text", role: message.type, text: block.text}
         : block.type === "thinking" ? {id, type: "reasoning", text: block.thinking}
-        : block.type === "tool_use" ? {id, type: "tool_call", tool_name: block.name, arguments: block.input}
-        : block.type === "tool_result" ? {id, type: "tool_result", content: block.content, status: block.is_error ? "failed" : "completed"}
+        : block.type === "tool_use" ? {id, ...nativeReferences, type: "tool_call", tool_name: block.name, arguments: block.input}
+        : block.type === "tool_result" ? {id, ...nativeReferences, type: "tool_result", content: block.content, status: block.is_error ? "failed" : "completed"}
+        : ["image", "document"].includes(String(block.type)) ? {id, type: "native_media", content: block}
         : {id, type: "provider_extension", content: {namespace: "claude", value: block}};
       turns.at(-1)!.items.push(z.record(z.string(), z.json()).parse(JSON.parse(JSON.stringify(item))));
     }

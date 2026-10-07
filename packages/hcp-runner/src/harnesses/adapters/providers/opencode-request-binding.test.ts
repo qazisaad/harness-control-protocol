@@ -4,7 +4,7 @@ import {verifyOpenCodeRequestOrigin} from "./opencode-request-binding.js";
 
 const request={sessionID:"session",tool:{messageID:"assistant",callID:"call"}};
 const message={info:{id:"assistant",sessionID:"session",role:"assistant",parentID:"admitted-prompt"},
-  parts:[{type:"tool",callID:"call",messageID:"assistant",sessionID:"session"}]};
+  parts:[{type:"tool",callID:"call",messageID:"assistant",sessionID:"session",state:{status:"running"}}]};
 test("failed native origin lookup cannot leave an unverified callback owner alive",async()=>{
   await assert.rejects(verifyOpenCodeRequestOrigin(request,"session","admitted-prompt",async()=>{throw new Error("lookup timed out");}),
     error=>error instanceof Error&&"code" in error&&error.code==="native_request_origin_unconfirmed");
@@ -28,4 +28,11 @@ test("a delayed callback from an earlier root cannot adopt the currently running
     {...message,parts:[{...message.parts[0],messageID:"foreign"}]},
     {...message,parts:[{...message.parts[0],sessionID:"foreign"}]},
   ])await assert.rejects(verifyOpenCodeRequestOrigin(request,"session","admitted-prompt",async()=>value),/admitted prompt and tool/);
+});
+
+
+test("terminal, missing-state and ambiguous native tool records cannot authorize a callback", async () => {
+  for (const parts of [[{...message.parts[0], state: {status: "completed"}}], [{...message.parts[0], state: {status: "error"}}],
+    [{...message.parts[0], state: undefined}], [message.parts[0], message.parts[0]]])
+    await assert.rejects(verifyOpenCodeRequestOrigin(request, "session", "admitted-prompt", async () => ({...message, parts})), /admitted prompt and tool/);
 });

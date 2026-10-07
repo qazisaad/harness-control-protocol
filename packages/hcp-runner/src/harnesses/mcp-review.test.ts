@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import type { HcpHarnessEventPayload, HcpSessionStartPayload } from "@harness-control/protocol";
+import {harnessApprovalRequestedEventDataSchema, harnessInputRequestedEventDataSchema, type HcpHarnessEventPayload, type HcpSessionStartPayload} from "@harness-control/protocol";
 import { MemoryRunnerStateStore } from "../state/index.js";
 import { HarnessMcpReview } from "./mcp-review.js";
 import { McpInputRequiredError, parseMcpPendingInput } from "../mcp/input-required.js";
@@ -25,6 +25,58 @@ function setup(publish?: (event: HcpHarnessEventPayload) => void, nativeWorkId?:
     native_thread_id: "native-thread", native_turn_id: "native-turn", native_call_id: "native-call"};
   return {store, owner, request, events, start};
 }
+
+test("verified native MCP identity remains separate from approval and form tokens through continuation", async () => {
+  const {store, owner, request: base, events} = setup();
+  const native = {source: "native" as const, native_reference: base.native_thread_id, call_reference: base.native_call_id,
+    execution_reference: base.native_turn_id, message_reference: "actual-assistant", item_reference: "actual-part"};
+  const request = {...base, native_request: native};
+  const waiting = owner.request(request, new AbortController().signal);
+  const approval = harnessApprovalRequestedEventDataSchema.parse(events[0]!.data);
+  assert.deepEqual(approval.native_request, native);assert.notEqual(approval.request_id, native.call_reference);
+  owner.decide({session_id: "session", turn_id: "turn", request_id: approval.request_id, action_hash: approval.action_hash, decision: "accept", actor_id: "reviewer"});
+  const grant = await waiting;assert.ok(grant);
+  let calls = 0;
+  await assert.rejects(owner.invoke({...request, native_request: {...native, item_reference: "changed-part"}}, async () => {assert.fail("Changed observation dispatched");}, new AbortController().signal, grant), /original MCP operation/);
+  const result = owner.invoke(request, async (_name, _args, _grant, continuation) => {
+    calls++;
+    if (!continuation) throw new McpInputRequiredError({resultType: "input_required", requestState: "private-native-fixture", inputRequests: {
+      question: {method: "elicitation/create", params: {message: "Choose", requestedSchema: {type: "object", properties: {name: {type: "string"}}, required: ["name"]}}}}});
+    return {is_error: false};
+  }, new AbortController().signal, grant);
+  for (let attempt = 0; attempt < 20 && !events.some(event => event.event_type === "input.requested"); attempt++) await new Promise(resolve => setImmediate(resolve));
+  const input = harnessInputRequestedEventDataSchema.parse(events.find(event => event.event_type === "input.requested")!.data);
+  assert.deepEqual(input.native_request, native);assert.notEqual(input.request_id, approval.request_id);
+  owner.respondToInput({session_id: "session", turn_id: "turn", request_id: input.request_id, actor_id: "responder", value: {question: {action: "accept", content: {name: "Ada"}}}});
+  await result;assert.equal(calls, 2);
+  for (const event of events) assert.deepEqual("native_request" in event.data ? event.data.native_request : undefined, native);
+  assert.deepEqual(store.getMcpReview("session")!.native_request, native);
+  assert.equal(JSON.stringify(events).includes("private-native-fixture"), false);
+});
+
+test("unstamped MCP platform review does not manufacture native request evidence", async () => {
+  const {owner, request, events} = setup();const lifetime = new AbortController();
+  const pending = owner.request(request, lifetime.signal);const interrupted = assert.rejects(pending, /interrupted/);
+  assert.equal("native_request" in events[0]!.data, false);lifetime.abort();await interrupted;
+});
+
+test("a form without initial approval still carries its verified native invocation", async () => {
+  let ready!: () => void;const requested = new Promise<void>(resolve => {ready = resolve;});
+  const {owner, request: base, events} = setup(event => {if (event.event_type === "input.requested") ready();});
+  const native = {source: "native" as const, native_reference: base.native_thread_id, call_reference: base.native_call_id, execution_reference: base.native_turn_id};
+  let calls = 0;
+  const execution = owner.invoke({...base, native_request: native}, async (_name, _args, _grant, continuation) => {
+    calls++;
+    if (!continuation) throw new McpInputRequiredError({resultType: "input_required", inputRequests: {question: {method: "elicitation/create",
+      params: {message: "Choose", requestedSchema: {type: "object", properties: {name: {type: "string"}}, required: ["name"]}}}}});
+    return {is_error: false};
+  }, new AbortController().signal);
+  await requested;
+  const input = harnessInputRequestedEventDataSchema.parse(events[0]!.data);assert.deepEqual(input.native_request, native);
+  owner.respondToInput({session_id: "session", turn_id: "turn", request_id: input.request_id, actor_id: "responder", value: {question: {action: "accept", content: {name: "Ada"}}}});
+  await execution;assert.equal(calls, 2);
+  assert.deepEqual("native_request" in events[1]!.data ? events[1]!.data.native_request : undefined, native);
+});
 
 for (const decision of ["accept", "decline"] as const) {
   test(`platform ${decision} is durable before the native request resumes`, async () => {
@@ -499,4 +551,13 @@ test("an early timer wakeup cannot abort or cancel input before its deadline", a
   }, new AbortController().signal);
   assert.equal(calls, 2);
   assert.ok(scheduled >= 2);
+});
+
+test("MCP review refuses unsupported rejection feedback without changing its durable decision", async () => {
+  const {owner, request, events} = setup(), waiting = owner.request(request, new AbortController().signal);
+  const approval = harnessApprovalRequestedEventDataSchema.parse(events[0]!.data);
+  const response = {session_id: "session", turn_id: "turn", request_id: approval.request_id, action_hash: approval.action_hash,
+    decision: "decline" as const, actor_id: "reviewer"};
+  assert.throws(() => owner.decide({...response, feedback: "unsupported"}), /does not support rejection feedback/);
+  owner.decide(response);await waiting;
 });

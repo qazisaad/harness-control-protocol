@@ -24,7 +24,7 @@ const finish = response => {
   emit({type: "message.part.updated", properties: {part: {id: "tool", messageID, sessionID: "fake-opencode-session", type: "tool", tool: "bash", state: {status: "running", input: {command: "echo late"}}}}});
   emit({type: "session.idle", properties: {sessionID: "fake-opencode-session"}});
   writeJson(response, {info: {id: messageID, sessionID: admitted?.hcpSessionId, parentID: response.hcpMessageId,
-    role: "assistant", providerID: admitted?.model?.providerID, modelID: admitted?.model?.modelID}, parts: [{type: "text", text: "hello"}]});
+    role: "assistant", time: {created: 90, completed: 100}, finish: "stop", providerID: admitted?.model?.providerID, modelID: admitted?.model?.modelID}, parts: [{type: "text", text: "hello"}]});
 };
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -89,6 +89,7 @@ const server = createServer(async (request, response) => {
       {permission: "question", pattern: "*", action: policy === "full_access" ? "deny" : "allow"},
       {permission: "task", pattern: "*", action: "deny"},
     ]);
+    if (process.env.HCP_TEST_OPENCODE_ORDERED_POLICY) expected.push(JSON.parse(process.env.HCP_TEST_OPENCODE_ORDERED_POLICY));
     if (!expected.some(rules => JSON.stringify(permissions) === JSON.stringify(rules))) {
       response.writeHead(400).end("Missing explicit session permissions");
       return;
@@ -134,7 +135,7 @@ const server = createServer(async (request, response) => {
       const tool={messageID:`assistant-tools-${payload.messageID}`,callID:`call-${payload.messageID}`};
       const drift=process.env.HCP_TEST_OPENCODE_REQUEST_ORIGIN_DRIFT;
       requestMessages.set(tool.messageID,{info:{id:tool.messageID,sessionID:executionId,role:"assistant",parentID:drift==="parent"?"older-prompt":payload.messageID},
-        parts:[{type:"tool",sessionID:executionId,messageID:tool.messageID,callID:drift==="tool"?"foreign-call":tool.callID}]});
+        parts:[{type:"tool",sessionID:executionId,messageID:tool.messageID,callID:drift==="tool"?"foreign-call":tool.callID,state:{status:"running"}}]});
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "another-session", permission: "bash", questions: []}});
       emit({type: text === "approval" ? "permission.asked" : "question.asked", properties: {id: text, sessionID: "fake-opencode-session", permission: "bash",
         ...(drift==="missing"?{}:{tool}),
@@ -168,6 +169,7 @@ const server = createServer(async (request, response) => {
     }
     writeJson(response, {info: {id: `answer-${payload.messageID}`, sessionID: executionId, role: "assistant", parentID: payload.messageID,
       providerID: payload.model?.providerID, modelID: payload.model?.modelID, variant: payload.variant,
+      time: {created: 90, completed: 100}, finish: "stop",
       tokens: {input: 10, output: 3, reasoning: 2, cache: {read: 20, write: 4}}}, parts: [{ type: "text", text: "hello" }] });
     return;
   }

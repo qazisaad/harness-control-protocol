@@ -201,11 +201,15 @@ export class RunnerConnection {
     this.#closing = true;
     this.#accepted = false;
     this.#unsubscribeEvents?.(); this.#unsubscribeEvents = undefined;
-    await this.#accountUsage.close();
-    await this.#harnessSessions.close();
-    this.#stopHeartbeat();
-    this.#stopReconnect();
-    await new Promise<void>((resolve) => {
+    try {
+      await this.#accountUsage.close();
+      await this.#harnessSessions.close();
+    } finally {
+      // Transport disposal cannot be held open by an honest unknown native closure.
+      // The shutdown error and durable execution fence remain intact.
+      this.#stopHeartbeat();
+      this.#stopReconnect();
+      await new Promise<void>((resolve) => {
       if (!this.#socket || this.#socket.readyState === WebSocket.CLOSED) {
         resolve();
         return;
@@ -215,7 +219,8 @@ export class RunnerConnection {
         resolve();
       });
       this.#socket.close();
-    });
+      });
+    }
   }
 
   #sendHello(): void {
@@ -287,9 +292,14 @@ export class RunnerConnection {
       case "host.accounts.snapshot":
         return;
       case "host.workspaces.request": {
+        const socket = this.#socket;
+        if (!this.#accepted) return;
+        const started = performance.now();
         const result = await this.#workspaces.execute(envelope.id, envelope.payload);
-        this.#send(createHcpEnvelope("host.workspaces.result", result));
-        await this.#sendCapabilities();
+        // Directory reads must not probe every provider or republish the catalog.
+        if (envelope.metadata?.interactive_refresh === true) await this.#sendCapabilities();
+        if (socket === this.#socket && this.#accepted) this.#send(createHcpEnvelope("host.workspaces.result", result, {duration_ms: performance.now() - started}));
+        if (envelope.payload.operation.kind !== "browse" && envelope.metadata?.interactive_refresh !== true) await this.#sendCapabilities();
         return;
       }
       case "host.workspaces.result":
@@ -649,9 +659,10 @@ export class RunnerConnection {
   }
 
   async #sendCapabilities(): Promise<void> {
+    const socket = this.#socket;
     const registry = new ProviderInstanceRegistry(this.#config, await this.#harnessSessions.providerDriverStatuses());
     const payload: HcpHostCapabilitiesUpdatedPayload = { ...registry.snapshot(), workspace_management: this.#workspaces.snapshot() };
-    this.#send(createHcpEnvelope("host.capabilities.updated", payload));
+    if (socket === this.#socket && this.#accepted) this.#send(createHcpEnvelope("host.capabilities.updated", payload));
   }
 
   #startHeartbeat(intervalSeconds: number): void {

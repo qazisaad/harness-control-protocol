@@ -207,7 +207,7 @@ describe("OpenCodeHarnessAdapter", () => {
         ["context.updated", "reasoning.delta", "content.delta", "usage.updated", "context.updated", "turn.completed"],
       );
       assert.deepEqual(terminal, []);
-      assert.deepEqual(streamed.at(-1)?.data.final_output, {final_text: "hello", usage: streamed.find(event => event.event_type === "usage.updated")?.data,
+      assert.deepEqual(streamed.at(-1)?.data.final_output, {final_text: "hello", final_text_truncated: false, usage: streamed.find(event => event.event_type === "usage.updated")?.data,
         context: streamed.filter(event => event.event_type === "context.updated").at(-1)?.data});
     } finally {
       if (started) await adapter.stopSession({ sessionId: "session-1" });
@@ -257,7 +257,7 @@ describe("OpenCodeHarnessAdapter", () => {
       );
       assert.deepEqual(terminal, []);
       assert.equal(streamed[0]?.data.status, "unavailable");
-      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello", context: streamed[0]?.data });
+      assert.deepEqual(streamed.at(-1)?.data.final_output, { final_text: "hello", final_text_truncated: false, context: streamed[0]?.data });
       assert.deepEqual(runtimeCalls, ["anthropic/claude-sonnet-4:Say hello."]);
       await adapter.stopSession({ sessionId: "session-1" });
       assert.deepEqual(runtimeCalls, ["anthropic/claude-sonnet-4:Say hello.", "close"]);
@@ -353,4 +353,19 @@ describe("OpenCodeHarnessAdapter", () => {
       await workspace.cleanup();
     }
   });
+});
+
+it("OpenCode native runtime receives verified owned image bodies beyond the inline wire limit", async () => {
+  const {createHash} = await import("node:crypto"), {harnessImageFileReferenceSchema} = await import("@harness-control/protocol");
+  const bytes = Buffer.alloc(600_000, 7), reference = harnessImageFileReferenceSchema.parse({file_id: "a".repeat(64), sha256: createHash("sha256").update(bytes).digest("hex"),
+    filename: "fixture.png", mime_type: "image/png", byte_length: bytes.byteLength});
+  let received: OpenCodeRuntimeTurnInput["images"];
+  const runtime: OpenCodeRuntime = {sessionId: "fixture", async sendTurn(input) {received = input.images;return "fixture";}, async cancelTurn() {},async close() {}};
+  const adapter = new OpenCodeHarnessAdapter({runtimeFactory: async () => runtime});const payload = openCodeStartPayload(process.cwd()), selected = openCodeProvider();
+  try {
+    const session = await adapter.startSession({payload, provider: selected});
+    const events = await adapter.sendTurn({session, provider: selected, startPayload: payload,
+      payload: {session_id: payload.session_id, turn_id: "image", input: "fixture", image_files: [reference]}, inputFileImages: [{reference, data_base64: bytes.toString("base64")}]});
+    assert.equal(events.at(-1)?.event_type, "turn.completed");assert.deepEqual(received, [{mime_type: "image/png", data_base64: bytes.toString("base64")}]);
+  } finally {await adapter.close();}
 });

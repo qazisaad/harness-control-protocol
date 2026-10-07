@@ -85,3 +85,29 @@ test("session observations survive root completion, remain ordered under reentry
     unsubscribe();
   } finally {await rm(cwd, {recursive: true, force: true});}
 });
+
+
+for (const stopFails of [false, true]) test(`failed startup can clear dead interactions without registering another owner (stopFails=${stopFails})`, async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-start-interaction-cleanup-"));
+  let register!: NonNullable<Parameters<HarnessAdapter["startSession"]>[0]["registerSessionInteractions"]>;
+  let emit!: NonNullable<Parameters<HarnessAdapter["startSession"]>[0]["emitSessionEvent"]>;
+  const owner = {owns: () => false, respondApproval() {}, respondInput() {}};let stops = 0;
+  const adapter: HarnessAdapter = {driverKind: "example", sessionEvents: true,
+    async probe() {return {driver_kind: "example", installed: true, available: true, models: []};}, async validateStart() {},
+    async startSession(input) {register = input.registerSessionInteractions!;emit = input.emitSessionEvent!;register(owner);throw new Error("Original native startup refusal");},
+    async sendTurn() {return [];}, async cancelTurn() {return [];}, async stopSession() {
+      stops++;register(undefined);assert.throws(() => register(owner), /owner is no longer active/);
+      assert.throws(() => emit(observation("late")), /owner is no longer active/);
+      if (stopFails) throw new Error("Native closure unconfirmed");return [];
+    }};
+  const config = RunnerConfigSchema.parse({runner_id: "fixture", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}], provider_instances: [{id: "provider", driver_kind: "example"}]});
+  const manager = new HarnessSessionManager(config, {adapterRegistry: new HarnessAdapterRegistry([adapter])});
+  try {
+    await assert.rejects(manager.startSession({session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example",
+      model_selection: {model: "fixture"}, sandbox_mode: "read_only", approval_policy: "ask", continue_session: false, mcp_servers: []}),
+      error => error instanceof Error && (stopFails ? "code" in error && error.code === "adapter_start_cleanup_failed" && error.message.includes("Native closure unconfirmed") : error.message === "Original native startup refusal"));
+    assert.equal(stops, 1);assert.equal(manager.activeSessionCount(), 0);
+    const replay = manager.replayEventsAfter({sessions: [{session_id: "session", last_event_sequence: 0}]}).events;
+    assert.equal(replay.length, stopFails ? 0 : 1);if (!stopFails) assert.equal(replay[0]!.event_type, "session.exited");
+  } finally {await manager.close();await rm(cwd, {recursive: true, force: true});}
+});

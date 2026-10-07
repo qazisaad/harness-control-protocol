@@ -1,8 +1,12 @@
+import {HARNESS_CONTENT_MAX_BYTES} from "@harness-control/protocol";
 import {HarnessAdapterError} from "../types.js";
 
 /** A native event stream is persistent: clean EOF still loses its observation owner. */
 export async function consumeNativeSse(stream:ReadableStream<Uint8Array>, onData:(value:unknown)=>void,
-  signal:AbortSignal):Promise<void> {
+  signal:AbortSignal, options: {maxFrameBytes?: number} = {}):Promise<void> {
+  const maxFrameBytes = options.maxFrameBytes ?? HARNESS_CONTENT_MAX_BYTES;
+  if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes < 1 || maxFrameBytes > HARNESS_CONTENT_MAX_BYTES)
+    throw new HarnessAdapterError("native_sse_frame_limit", "Invalid native event frame bound.");
   const reader=stream.getReader(),decoder=new TextDecoder("utf-8",{fatal:true});
   const abort=()=>{void reader.cancel(signal.reason).catch(()=>{});};
   signal.addEventListener("abort",abort,{once:true});
@@ -20,7 +24,7 @@ export async function consumeNativeSse(stream:ReadableStream<Uint8Array>, onData
     if(value.startsWith("data:")) {
       const field=value.slice(5).replace(/^ /,"");
       bytes+=Buffer.byteLength(field)+1;
-      if(bytes>8*1024*1024||data.length>=10000)throw new HarnessAdapterError("native_sse_frame_limit","The native event frame exceeded its bounded retention.");
+      if(bytes>maxFrameBytes||data.length>=10000)throw new HarnessAdapterError("native_sse_frame_limit","The native event frame exceeded its bounded retention.");
       data.push(field);
     }
   };
@@ -39,7 +43,7 @@ export async function consumeNativeSse(stream:ReadableStream<Uint8Array>, onData
       const chunk=await reader.read();
       try{buffered+=decoder.decode(chunk.value,{stream:!chunk.done});}
       catch{throw new HarnessAdapterError("native_sse_invalid_utf8","The native event stream contained invalid UTF-8.");}
-      if(Buffer.byteLength(buffered)>8*1024*1024)throw new HarnessAdapterError("native_sse_frame_limit","The native event frame exceeded its bounded retention.");
+      if(Buffer.byteLength(buffered)>maxFrameBytes)throw new HarnessAdapterError("native_sse_frame_limit","The native event frame exceeded its bounded retention.");
       lines(chunk.done);
       if(chunk.done) {
         if(signal.aborted)return;

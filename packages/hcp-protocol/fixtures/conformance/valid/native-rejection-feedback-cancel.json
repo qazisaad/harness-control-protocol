@@ -1,0 +1,15 @@
+{
+  "id": "fixture-feedback",
+  "type": "harness.approval.respond",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "request_id": "request",
+    "session_id": "session",
+    "turn_id": "turn",
+    "action_hash": "hash",
+    "decision": "cancel",
+    "actor_id": "actor",
+    "feedback": " Please revise the plan.  "
+  }
+}

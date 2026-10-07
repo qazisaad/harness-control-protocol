@@ -12,8 +12,8 @@ export function openCodeMessageId(): string {
 }
 
 const stepSchema = z.object({id: z.string(), messageID: z.string(), sessionID: z.string(), type: z.literal("step-finish"),
-  cost: z.number().nonnegative(), tokens: z.object({input: z.number().int().nonnegative(), output: z.number().int().nonnegative(),
-    reasoning: z.number().int().nonnegative(), cache: z.object({read: z.number().int().nonnegative(), write: z.number().int().nonnegative()})})});
+  cost: z.number().finite().nonnegative(), tokens: z.object({input: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), output: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    reasoning: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), cache: z.object({read: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), write: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)})})});
 type Step = z.infer<typeof stepSchema>;
 
 /** Counts only steps belonging to this admitted root prompt; arrival order is irrelevant. */
@@ -57,8 +57,10 @@ export class OpenCodeUsage {
       input += step.tokens.input + step.tokens.cache.read + step.tokens.cache.write;
       output += step.tokens.output + step.tokens.reasoning; cost += step.cost;
     }
+    if (![input, output, input + output, cached, created, reasoning].every(Number.isSafeInteger) || !Number.isFinite(cost))
+      throw new HarnessAdapterError("native_usage_limit", "OpenCode usage exceeded exact numeric accounting bounds.");
     const unresolved = [...this.#steps.values()].some(step => !this.#owners.has(step.messageID));
-    return {scope: "turn", status: this.#conflict || unresolved ? "partial" : "complete", source: "opencode.message.step-finish",
+    return {actor: "root", native_reference: this.sessionId, native_execution_reference: this.promptId, scope: "turn", status: this.#conflict || unresolved ? "partial" : "complete", source: "opencode.message.step-finish",
       input_tokens: input, output_tokens: output, total_tokens: input + output, cached_input_tokens: cached,
       cache_creation_input_tokens: created, reasoning_output_tokens: reasoning, cost_usd: cost};
   }

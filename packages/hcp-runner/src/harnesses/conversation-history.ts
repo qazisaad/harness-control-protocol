@@ -27,7 +27,7 @@ export function publicHistory(thread: Thread, publish?: ContentPublisher, reques
   const end = thread.turns.length - offset;
   for (const turn of thread.turns.slice(Math.max(0, end - (request?.limit ?? 100)), end).reverse()) {
     const items = turn.items.map(item => Object.fromEntries(Object.entries(item).filter(([key]) =>
-      ["id", "type", "text", "command", "cwd", "status", "aggregatedOutput", "exitCode", "changes", "content", "role", "tool_name", "output", "arguments", "error"].includes(key))
+      ["id", "native_item_reference", "native_call_reference", "type", "text", "command", "cwd", "status", "aggregatedOutput", "exitCode", "changes", "content", "role", "tool_name", "output", "arguments", "error"].includes(key))
       .map(([key, value]) => {
         const encoded = JSON.stringify(value);
         if (Buffer.byteLength(encoded) <= 32 * 1024) return [key, value];
@@ -60,4 +60,3 @@ export function publicHistory(thread: Thread, publish?: ContentPublisher, reques
   return {history_hash: historyHash, turn_count: thread.turns.length, truncated: truncated || consumed < thread.turns.length, turns,
     ...(consumed < thread.turns.length ? {next_cursor: Buffer.from(JSON.stringify({hash: historyHash, offset: consumed, thread: thread.id})).toString("base64url")} : {})};
 }
-

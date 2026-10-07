@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {openCodeEffectiveOptions, assertOpenCodeModelOptions} from "./opencode-options.js";
+import {openCodeEffectiveOptions, assertOpenCodeModelOptions, assertAnonymousOpenCodeModel} from "./opencode-options.js";
 
 const expected = {sessionId: "session", messageId: "prompt", model: {providerID: "provider", modelID: "model"}};
 const admitted = {info: {id: "prompt", sessionID: "session", role: "user", model: expected.model}};
@@ -35,4 +35,17 @@ test(`OpenCode root options reject unconfirmed ${drift}`, () => {
   if (drift === "request-model") request.info.model.modelID = "foreign";
   assert.throws(() => openCodeEffectiveOptions(request, drift === "missing-response" ? undefined : result,
     {...expected, ...(drift === "variant" ? {variant: "high"} : {})}), /did not confirm/);
+});
+
+
+test("anonymous dispatch requires the exact connected public model and native zero-cost evidence", () => {
+  const model = {id: "free", providerID: "opencode", cost: {input: 0, output: 0, cache: {read: 0, write: 0}}};
+  const catalog = {connected: ["opencode"], all: [{id: "opencode", models: {free: model}}]};
+  assertAnonymousOpenCodeModel(catalog, {model: "opencode/free"});
+  for (const cost of [undefined, {...model.cost, input: 1}, {...model.cost, output: 1}, {...model.cost, cache: {read: 1, write: 0}}]) {
+    assert.throws(() => assertAnonymousOpenCodeModel({...catalog, all: [{id: "opencode", models: {free: {...model, cost}}}]}, {model: "opencode/free"}), /zero-cost/);
+  }
+  assert.throws(() => assertAnonymousOpenCodeModel({...catalog, connected: []}, {model: "opencode/free"}), /zero-cost/);
+  assert.throws(() => assertAnonymousOpenCodeModel(catalog, {model: "opencode/paid"}), /zero-cost/);
+  assert.throws(() => assertAnonymousOpenCodeModel(catalog, {model: "another/free"}), /zero-cost/);
 });

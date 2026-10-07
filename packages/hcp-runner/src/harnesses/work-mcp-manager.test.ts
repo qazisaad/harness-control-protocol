@@ -49,7 +49,8 @@ test("a child MCP request keeps its original owner across root completion, new r
     await manager.sendTurn({session_id: "session", turn_id: "second", input: "follow up"});
     const reviewer = first.reviewNativeWorkMcp!("child");
     assert.throws(() => first.reviewNativeWorkMcp!("unknown"), /confirmed live work/);
-    const request = {attachment_name: "tools", tool_name: "read", arguments: {}, native_thread_id: "native-child", native_turn_id: "child-turn", native_call_id: "call"};
+    const native = {source: "native" as const, native_reference: "native-child", execution_reference: "child-turn", call_reference: "call"};
+    const request = {attachment_name: "tools", tool_name: "read", arguments: {}, native_thread_id: "native-child", native_turn_id: "child-turn", native_call_id: "call", native_request: native};
     const controller = new AbortController();
     const pending = reviewer.request(request, controller.signal);
     const approval = store.getMcpReview("session")!;
@@ -64,9 +65,11 @@ test("a child MCP request keeps its original owner across root completion, new r
     const grant = await pending;
     assert.ok(grant);
     await reviewer.complete(grant, {is_error: false});
-    const waiting = reviewer.request({...request, native_call_id: "lost-call"}, controller.signal);
+    const lostNative = {...native, call_reference: "lost-call"};
+    const waiting = reviewer.request({...request, native_call_id: "lost-call", native_request: lostNative}, controller.signal);
     const rejection = assert.rejects(waiting, /interrupted/);
     const lost = store.getMcpReview("session")!;
+    assert.deepEqual(lost.native_request, lostNative);
     emit({event_type: "native.work.owner_lost", data: {reason: "transport_lost"}});
     await rejection;
     await assert.rejects(manager.respondToMcpReview({session_id: "session", turn_id: "first", request_id: lost.request_id,
@@ -76,6 +79,7 @@ test("a child MCP request keeps its original owner across root completion, new r
     await restarted.recoverMcpReviews(event => recovered.push(event), () => assert.fail("lost child callback resumed through a root"));
     assert.ok(recovered.some(event => event.event_type === "native.request.lost" && event.turn_id === "first" &&
       (event.data as Record<string, unknown>).native_work_id === "child"));
+    assert.deepEqual((recovered.find(event => event.event_type === "native.request.lost")!.data as Record<string, unknown>).native_request, lostNative);
     assert.equal(new JsonRunnerStateStore(path).getMcpReview("session")?.request_id, lost.request_id);
   } finally {await manager.stopSession("session", "test complete"); await rm(cwd, {recursive: true, force: true});}
 });

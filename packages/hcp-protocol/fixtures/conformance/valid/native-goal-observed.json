@@ -1,0 +1,24 @@
+{
+  "id": "fixture-native-goal-observed",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 4,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "event_type": "native.goal.observed",
+    "data": {
+      "source": "native_transcript",
+      "scope": "session",
+      "native_reference": "native-root",
+      "native_message_reference": "native-command",
+      "kind": "command",
+      "goal": {
+        "objective": "Finish objective",
+        "status": "active",
+        "observed_checks": 0
+      }
+    }
+  }
+}

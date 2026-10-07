@@ -1,4 +1,5 @@
 import type {OnElicitation} from "@anthropic-ai/claude-agent-sdk";
+import {harnessNativeRequestIdentitySchema} from "@harness-control/protocol";
 import {z} from "zod";
 import type {NativeInteractions} from "../../native-interactions.js";
 
@@ -8,8 +9,9 @@ export function claudeElicitation(resolve: () => Owner | undefined): OnElicitati
   return async (request, options) => {
     const owner = resolve();
     if (!owner || !owner.serverNames.includes(request.serverName) || request.mode === "url" || !request.requestedSchema) return {action: "cancel"};
+    const identity = harnessNativeRequestIdentitySchema.parse({source: "native", native_reference: owner.threadId, request_reference: options.requestId});
     const value = await owner.interactions.form({threadId: owner.threadId, ...(owner.turnId ? {turnId: owner.turnId} : {}), itemId: options.requestId}, request.message,
-      request.requestedSchema, AbortSignal.any([owner.signal, options.signal]));
+      request.requestedSchema, AbortSignal.any([owner.signal, options.signal]), identity);
     return value === null ? {action: "cancel"} : {action: "accept", content: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).parse(value)};
   };
 }

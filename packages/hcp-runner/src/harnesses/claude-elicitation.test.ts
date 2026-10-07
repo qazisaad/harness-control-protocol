@@ -26,6 +26,8 @@ test("native MCP form replies enforce every advertised constraint and exact call
     const pending = f.callback({serverName: "selected", message: "Enter details", mode: "form", requestedSchema: form}, {requestId: "sdk-request", signal: f.controller.signal});
     await until(() => f.events.length > 0);
     const id = f.events[0]!.data.request_id as string;
+    assert.deepEqual(f.events[0]!.data.native_request, {source: "native", native_reference: "native", request_reference: "sdk-request"});
+    assert.notEqual(id, "sdk-request");
     const response = {session_id: "session", turn_id: "turn", request_id: id, actor_id: "app", value: {name: "valid", count: 2, choice: "one"}};
     assert.throws(() => f.interactions.respondInput({...response, turn_id: "foreign"}));
     for (const value of [{name: "x", count: 2, choice: "one"}, {name: "valid", count: 4, choice: "one"}, {name: "valid", count: 1.5, choice: "one"},
@@ -33,6 +35,7 @@ test("native MCP form replies enforce every advertised constraint and exact call
     f.interactions.respondInput(response);
     assert.deepEqual(await pending, {action: "accept", content: response.value});
     assert.equal(f.events.at(-1)!.event_type, "user_input.resolved");
+    assert.deepEqual(f.events.at(-1)!.data.native_request, f.events[0]!.data.native_request);
     assert.equal("value" in f.events.at(-1)!.data, false);
   } finally {f.interactions.close();}
 });

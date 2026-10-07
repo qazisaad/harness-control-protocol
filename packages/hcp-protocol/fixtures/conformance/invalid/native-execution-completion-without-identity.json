@@ -1,0 +1,23 @@
+{
+  "id": "fixture-native-execution-completion-without-identity",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 4,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "event_type": "native.execution.completed",
+    "data": {
+      "source": "native",
+      "scope": "root",
+      "admission_id": "dispatch-1",
+      "native_reference": "root",
+      "status": "completed",
+      "final_output": {
+        "final_text": "Completed native phase"
+      }
+    },
+    "turn_id": "turn-1"
+  }
+}

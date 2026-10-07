@@ -110,7 +110,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  if(m.method==='thread/start') { selectedTool=m.params.dynamicTools?.[0]; send({id:m.id,result:{thread:{id:'native-thread'},sandbox:{type:process.env.MODE==='policy'?'dangerFullAccess':'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true},approvalPolicy:'never',approvalsReviewer:process.env.MODE==='reviewer'?'auto_review':m.params.approvalsReviewer}}); }
  if(m.method==='thread/section/move')send({id:m.id,result:{}});
  if(m.method==='thread/read')send({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd(),path:process.cwd()+'/native-rollout.jsonl',turns:[]}}});
- if(m.method==='thread/settings/update') { notify('thread/settings/updated',{threadId:m.params.threadId,threadSettings:{model:m.params.model,effort:m.params.collaborationMode.settings.reasoning_effort,
+ if(m.method==='thread/settings/update') { notify('thread/settings/updated',{threadId:m.params.threadId,threadSettings:{model:m.params.model,summary:m.params.summary,effort:m.params.collaborationMode.settings.reasoning_effort,
    collaborationMode:m.params.collaborationMode,cwd:process.cwd(),approvalPolicy:'never',approvalsReviewer:'user',sandboxPolicy:{type:'workspaceWrite',writableRoots:[],excludeTmpdirEnvVar:true,excludeSlashTmp:true}}}); send({id:m.id,result:{}}); }
  if(m.method==='turn/interrupt') {send({id:m.id,result:{}}); notify('turn/completed',{threadId:m.params.threadId,turn:{id:m.params.turnId,status:'interrupted',error:null}});}
  if(m.method==='thread/unsubscribe') send({id:m.id,result:{status:'unsubscribed'}});
@@ -130,6 +130,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   if(process.env.MODE==='request') return send({id:'approval-1',method:'item/commandExecution/requestApproval',params});
   if(process.env.MODE==='malformed') return process.stdout.write('not json\n');
   const finish=()=>{
+  if(process.env.MODE==='reroute'){notify('model/rerouted',{...params,turnId:'foreign-turn',fromModel:'test-model',toModel:'FOREIGN_MODEL',reason:'fixture'});notify('model/rerouted',{...params,fromModel:'test-model',toModel:'native-replacement',reason:'highRiskCyberActivity'});}
   const tokenUsage={total:{inputTokens:900,outputTokens:100,totalTokens:1000},last:{totalTokens:50},modelContextWindow:200000};
   notify('thread/tokenUsage/updated',{...params,tokenUsage});
   notify('thread/tokenUsage/updated',{...params,turnId:'old-turn',tokenUsage:{...tokenUsage,last:{totalTokens:99999}}});
@@ -140,6 +141,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   setTimeout(()=>{process.stdout.write(bytes.subarray(i));
    if(process.env.MODE==='sleep') return;
    setTimeout(()=>{
+    notify('item/started',{...params,item:{id:'native-mcp-item',type:'mcpToolCall',server:'fixture-server',tool:'lookup',arguments:{query:'fixture'},status:'inProgress'}});
+    notify('item/completed',{...params,item:{id:'native-mcp-item',type:'mcpToolCall',server:'fixture-server',tool:'lookup',arguments:{query:'fixture'},status:'completed',result:{content:[{type:'text',text:'fixture result'}]},error:null}});
     notify('item/completed',{...params,item:{id:'message',type:'agentMessage',phase:'final_answer',text:'x'.repeat(80000)}});
     notify('turn/completed',{threadId:'native-thread',turn:{id:turnId,status:process.env.MODE==='failed'?'failed':'completed',error:null}});
    },30);
@@ -159,6 +162,7 @@ for (const mode of [
   "request",
   "policy",
   "mcp-leak",
+  "reroute",
   "sleep",
 ]) {
   it(`Codex app-server ${mode} through real stdio and production reducer`, async (t) => {
@@ -196,11 +200,24 @@ for (const mode of [
     events.push(...terminal);
     assert.equal(
       events.at(-1)?.event_type,
-      ["success", "admission"].includes(mode) ? "turn.completed" : "turn.failed",
+      ["success", "admission", "reroute"].includes(mode) ? "turn.completed" : "turn.failed",
     );
-    if (["success", "admission"].includes(mode)) {
+    if (["success", "admission", "reroute"].includes(mode)) {
       assert.equal(JSON.stringify(events).includes("FOREIGN_ROOT"), false);
       const context = events.filter(event => event.event_type === "context.updated").at(-1)!.data;
+      if (mode === "reroute") {
+        assert.equal(JSON.stringify(events).includes("FOREIGN_MODEL"), false);
+        assert.deepEqual(context.selection, {model: "native-replacement"});
+        assert.ok(events.some(event => event.event_type === "context.updated" && event.data.reason === "native_model_changed"));
+        assert.equal(events.filter(event => event.event_type === "model.rerouted").length, 1);
+      }
+      const liveTool = events.find(event => event.event_type === "item.completed" && event.data.item_id === "native-mcp-item")!;
+      const observed = liveTool.data.portable as {native_reference: string; native_execution_reference: string; items: {type: string; tool_name?: string; arguments?: unknown; call_id?: string}[]};
+      assert.equal(observed.native_reference, "native-thread");
+      assert.equal(observed.native_execution_reference, "native-turn");
+      assert.equal(observed.items[0]?.tool_name, "lookup");
+      assert.deepEqual(observed.items[0]?.arguments, {storage: "inline", value: {query: "fixture"}});
+      assert.equal(observed.items[1]?.call_id, "native-mcp-item");
       assert.equal(context.used_tokens, 50);
       assert.equal(context.capacity_tokens, 200000);
       assert.equal(context.measurement_scope, "last_request");
@@ -355,8 +372,11 @@ it("Codex persistent profile rejects unverified native versions before launching
   selected.env = {VERSION: "codex-cli 0.159.0", RECORD: record};
   const adapter = new CodexHarnessAdapter();
   try {
-    await assert.rejects(adapter.startSession({payload: {...start("codex", cwd), execution_profile: "interactive"}, provider: selected}),
-      (error: unknown) => error instanceof HarnessAdapterError && error.code === "native_profile_unsupported");
+    for (const version of ["codex-cli 0.159.0", "codex-cli 0.160.2", "codex-cli 0.161.1", "codex-cli 0.161.0-beta.1"]) {
+      selected.env = {VERSION: version, RECORD: record};
+      await assert.rejects(adapter.startSession({payload: {...start("codex", cwd), execution_profile: "interactive"}, provider: selected}),
+        (error: unknown) => error instanceof HarnessAdapterError && error.code === "native_profile_unsupported");
+    }
     await assert.rejects(readFile(record), {code: "ENOENT"});
   } finally {await adapter.stopSession({sessionId: "session"}); await rm(cwd, {recursive: true, force: true});}
 });
@@ -403,6 +423,33 @@ it("Claude root context uses latest request counters and excludes subagent and a
   assert.equal(output.usage.total_tokens, 1100);
   verifyTranscript(events);
 });
+it("Claude synthetic native command output supplies no model or context measurement", async () => {
+  const adapter = new ClaudeHarnessAdapter({queryFactory: fakeQuery([{type: "assistant", parent_tool_use_id: null,
+    message: {model: "<synthetic>", content: [{type: "text", text: "Goal set: command result"}], usage: {input_tokens: 0, output_tokens: 0}}},
+    {...success, modelUsage: {"<synthetic>": {inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, contextWindow: 1000}}}])});
+  const events: HarnessAdapterEvent[] = [];
+  events.push(...await adapter.sendTurn(turn(start("claude", tmpdir()), provider("claude"), event => events.push(event))));
+  assert.ok(events.filter(event => event.event_type === "context.updated").every(event => event.data.status === "unavailable"));
+  const output = events.at(-1)!.data.final_output as {context: {status: string; capacity_tokens?: number}};
+  assert.equal(output.context.status, "unavailable"); assert.equal(output.context.capacity_tokens, undefined);
+});
+it("isolated Claude streams preserve native block locations and exclude child text", async () => {
+  const frame = (event: Record<string, unknown>, parent: string | null = null) => ({type: "stream_event", parent_tool_use_id: parent, event});
+  const adapter = new ClaudeHarnessAdapter({queryFactory: fakeQuery([
+    frame({type: "message_start", message: {id: "physical-message"}}),
+    frame({type: "content_block_start", index: 0, content_block: {type: "thinking", thinking: "Initial thought"}}),
+    frame({type: "content_block_delta", index: 0, delta: {type: "thinking_delta", thinking: " continued"}}),
+    frame({type: "content_block_start", index: 1, content_block: {type: "text", text: "Answer"}}),
+    frame({type: "content_block_delta", index: 0, delta: {type: "text_delta", text: "Foreign child"}}, "child"), success,
+  ])});
+  const events: HarnessAdapterEvent[] = [];
+  events.push(...await adapter.sendTurn(turn(start("claude", tmpdir()), provider("claude"), event => events.push(event))));
+  assert.equal(events.at(-1)?.event_type, "turn.completed");
+  const deltas = events.filter(event => ["content.delta", "reasoning.delta"].includes(event.event_type));
+  assert.deepEqual(deltas.map(event => event.data.delta), ["Initial thought", " continued", "Answer"]);
+  assert.deepEqual(deltas.map(event => (event.data.native_part as {index: number}).index), [0, 0, 1]);
+});
+
 for (const [kind, initialization] of Object.entries({workspace: {cwd: process.cwd()}, mode: {permissionMode: "default"},
   mcp: {mcp_servers: [{name: "unselected", status: "connected"}]}, plugins: {plugins: [{name: "unselected", path: "/plugin"}]}})) {
   it(`Claude rejects ${kind} initialization mismatch before publishing a retained binding`, async () => {
@@ -665,4 +712,56 @@ it("a second Claude turn resumes the confirmed native conversation", async () =>
   assert.equal(selections[1]?.resume, selections[0]?.sessionId);
   assert.equal(selections[1]?.sessionId, undefined);
   await adapter.stopSession({ sessionId: "session" });
+});
+
+it("Codex native RPC receives complete owned image bytes beyond the inline HCP limit", async () => {
+  const {createHash} = await import("node:crypto"), {harnessImageFileReferenceSchema} = await import("@harness-control/protocol");
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-owned-codex-image-")), executable = join(cwd, "codex.cjs"), record = join(cwd, "requests.jsonl");
+  await writeFile(executable, fixture);await chmod(executable, 0o755);
+  const selected = provider("codex", executable);selected.env = {MODE: "retained", VERSION: "codex-cli 0.160.1", RECORD: record};
+  const payload = {...start("codex", cwd), execution_profile: "interactive" as const}, adapter = new CodexHarnessAdapter();
+  const bytes = Buffer.alloc(600_000, 7), reference = harnessImageFileReferenceSchema.parse({file_id: "a".repeat(64), sha256: createHash("sha256").update(bytes).digest("hex"),
+    filename: "fixture.png", mime_type: "image/png", byte_length: bytes.byteLength});
+  try {
+    const session = await adapter.startSession({payload, provider: selected, emitSessionEvent: () => {}, registerSessionInteractions: () => {}});
+    const events = await adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: "session", turn_id: "image", input: "fixture", image_files: [reference]},
+      inputFileImages: [{reference, data_base64: bytes.toString("base64")}]});assert.equal(events.at(-1)?.event_type, "turn.completed");
+    const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(requests.find(request => request.method === "turn/start").params.input[1], {type: "image", url: `data:image/png;base64,${bytes.toString("base64")}`});
+  } finally {await adapter.stopSession({sessionId: "session"});await rm(cwd, {recursive: true, force: true});}
+});
+it("isolated Claude SDK user input receives exact owned image bytes without text-only substitution", async () => {
+  const {createHash} = await import("node:crypto"), {harnessImageFileReferenceSchema} = await import("@harness-control/protocol");
+  const bytes = Buffer.alloc(600_000, 7), reference = harnessImageFileReferenceSchema.parse({file_id: "a".repeat(64), sha256: createHash("sha256").update(bytes).digest("hex"),
+    filename: "fixture.png", mime_type: "image/png", byte_length: bytes.byteLength});
+  let observed: unknown;
+  const factory: ClaudeQueryFactory = ({prompt, options}) => {
+    const stream = (async function* () {
+      const message = await (prompt as AsyncIterable<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>)[Symbol.asyncIterator]().next();observed = message.value?.message.content;
+      yield {type: "system", subtype: "init", session_id: options!.sessionId, cwd: options!.cwd, permissionMode: options!.permissionMode,
+        mcp_servers: [], plugins: [], tools: [], model: options!.model, apiKeySource: "none", claude_code_version: "fixture",
+        slash_commands: [], output_style: "default", skills: [], uuid: "00000000-0000-0000-0000-000000000000"} as SDKMessage;
+      yield success as SDKMessage;
+    })();return Object.assign(stream, {close() {}}) as Query;
+  };
+  const adapter = new ClaudeHarnessAdapter({queryFactory: factory});
+  const payload = start("claude", tmpdir()), selected = provider("claude");
+  try {
+    const events = await adapter.sendTurn({...turn(payload, selected), payload: {session_id: "session", turn_id: "image", input: "fixture", image_files: [reference]},
+      inputFileImages: [{reference, data_base64: bytes.toString("base64")}]});assert.equal(events.at(-1)?.event_type, "turn.completed");
+    assert.deepEqual(observed, [{type: "text", text: "fixture"}, {type: "image", source: {type: "base64", media_type: "image/png", data: bytes.toString("base64")}}]);
+  } finally {await adapter.close();}
+});
+
+it("Codex 0.161.0 retains one acknowledged native conversation and transport without a model startup", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-codex-161-fixture-")), executable = join(cwd, "codex.cjs"), record = join(cwd, "requests.jsonl");
+  await writeFile(executable, fixture);await chmod(executable, 0o755);
+  const selected = provider("codex", executable);selected.env = {MODE: "retained", VERSION: "codex-cli 0.161.0", RECORD: record};
+  const payload = {...start("codex", cwd), execution_profile: "interactive" as const}, adapter = new CodexHarnessAdapter();
+  try {
+    const session = await adapter.startSession({payload, provider: selected, emitSessionEvent: () => {}, registerSessionInteractions: () => {}});assert.equal(session.native_thread_id, "native-thread");
+    const startup = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));assert.equal(startup.filter(request => request.method === "turn/start").length, 0);
+    for (const turn_id of ["first", "second"]) assert.equal((await adapter.sendTurn({...turn(payload, selected), session, payload: {session_id: payload.session_id, turn_id, input: "fixture"}})).at(-1)?.event_type, "turn.completed");
+    const requests = (await readFile(record, "utf8")).trim().split("\n").map(line => JSON.parse(line));assert.equal(new Set(requests.map(request => request.nativePid)).size, 1);assert.equal(requests.filter(request => request.method === "thread/start").length, 1);
+  } finally {await adapter.stopSession({sessionId: payload.session_id});await rm(cwd, {recursive: true, force: true});}
 });

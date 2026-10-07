@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Ajv2020 from "ajv/dist/2020.js";
 import { test } from "node:test";
 import type { HcpSessionStartPayload, HcpApprovalResponsePayload, HcpInputResponsePayload } from "@harness-control/protocol";
 import { NativeInteractions } from "./native-interactions.js";
@@ -135,4 +136,109 @@ test("lost native work callbacks keep provenance without becoming session-scoped
   assert.equal(lost.data.request_scope,undefined);
   assert.throws(()=>new NativeInteractions(start,{session_id:"session",request_scope:"session"},
     {threadId:binding.threadId,turnId:()=>undefined},()=>{},"owned-child"),/admitted root origin/);
+});
+
+
+for (const kind of ["approval", "input", "lost"] as const) test(`native request identity stays separate from the HCP token through ${kind}`, async () => {
+  const f = fixture();
+  const identity = {source: "native" as const, native_reference: "native-thread", request_reference: "actual-native-request",
+    message_reference: "native-message", call_reference: "native-call"};
+  try {
+    const pending = kind === "input" ? f.owner.questions({...binding, questions: [{id: "q", header: "Choice", question: "Pick"}]}, f.signal.signal, identity)
+      : f.owner.approval(binding, "command", f.signal.signal, identity);
+    await f.ready;
+    assert.deepEqual(f.events[0]!.data.native_request, identity);
+    assert.notEqual(f.events[0]!.data.request_id, identity.request_reference);
+    identity.request_reference = "caller-mutation";
+    if (kind === "lost") {f.signal.abort(); await assert.rejects(pending, /interrupted/);}
+    else if (kind === "approval") {f.owner.respondApproval(f.approval()); await pending;}
+    else {f.owner.respondInput(f.input({answers: {q: {answers: ["A"]}}})); await pending;}
+    assert.equal((f.events.at(-1)!.data.native_request as {request_reference: string}).request_reference, "actual-native-request");
+  } finally {f.owner.close();}
+});
+
+test("native request evidence for another physical conversation refuses before publication", async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(f.owner.approval(binding, "command", f.signal.signal,
+      {source: "native", native_reference: "foreign", request_reference: "request"}), /another physical conversation/);
+    assert.equal(f.events.length, 0);
+  } finally {f.owner.close();}
+});
+
+test("rejection feedback is exact, capability-bound and part of immutable callback replay", async () => {
+  const f = fixture();
+  try {
+    const result = f.owner.approval(binding, "other", f.signal.signal, undefined, {rejectionFeedback: true});await f.ready;
+    assert.equal(f.events[0]!.data.rejection_feedback_supported, true);
+    assert.throws(() => f.owner.respondApproval({...f.approval(), feedback: "invalid accept"}), /rejection feedback/);
+    assert.throws(() => f.owner.respondApproval({...f.approval(), decision: "decline", feedback: "x".repeat(8193)}), /rejection feedback/);
+    assert.throws(() => f.owner.respondApproval({...f.approval(), action_hash: "wrong", decision: "decline", feedback: "feedback"}), /stale, invalid/);
+    const reply = {...f.approval(), decision: "decline" as const, feedback: " Please revise  😀 "};
+    f.owner.respondApproval(reply);f.owner.respondApproval(reply);
+    assert.deepEqual(await result, {decision: "decline", feedback: reply.feedback});
+    assert.equal(f.events.filter(event => event.event_type === "approval.resolved").length, 1);
+    assert.equal(f.events[1]!.data.feedback, reply.feedback);
+    assert.throws(() => f.owner.respondApproval({...reply, feedback: "different"}), /stale, invalid/);
+  } finally {f.owner.close();}
+});
+test("unadvertised native feedback refuses without consuming the pending decision", async () => {
+  const f = fixture();
+  try {
+    const result = f.owner.approval(binding, "other", f.signal.signal);await f.ready;
+    assert.equal(f.events[0]!.data.rejection_feedback_supported, undefined);
+    assert.throws(() => f.owner.respondApproval({...f.approval(), decision: "cancel", feedback: "unsupported"}), /rejection feedback/);
+    f.owner.respondApproval({...f.approval(), decision: "cancel"});assert.deepEqual(await result, {decision: "cancel"});
+  } finally {f.owner.close();}
+});
+
+test("native question form retains exact headers and option descriptions without losing selection semantics", async () => {
+  const f = fixture();try {
+    const result = f.owner.questions({...binding, questions: [{id: "scope", header: " Native heading ", question: "Pick a scope",
+      multiSelect: true, options: [{label: "Small", description: " One file \n"}, {label: "Large", description: ""}]}]}, f.signal.signal);
+    await f.ready;
+    const schema = f.events[0]!.data.form_schema as {properties: {answers: {properties: {scope: {title: string; description: string; properties: {answers: {maxItems: number; items: {enum: string[]; anyOf: unknown[]}}}}}}}};
+    const field = schema.properties.answers.properties.scope;
+    const validator = new Ajv2020.default({strict: false}).compile(schema);
+    assert.equal(validator({answers: {scope: {answers: ["Small", "Large"]}}}), true);
+    assert.equal(validator({answers: {scope: {answers: ["Small", "Small"]}}}), false);
+    assert.equal(validator({answers: {scope: {answers: ["Unknown"]}}}), false);
+    assert.equal(field.title, " Native heading ");assert.equal(field.description, "Pick a scope");
+    assert.deepEqual(field.properties.answers.items.enum, ["Small", "Large"]);assert.equal(field.properties.answers.maxItems, 16);
+    assert.deepEqual(field.properties.answers.items.anyOf, [{const: "Small", description: " One file \n"}, {const: "Large", description: ""}]);
+    assert.throws(() => f.owner.respondInput(f.input({answers: {scope: {answers: ["Small", "Small"]}}})));
+    const value = {answers: {scope: {answers: ["Small", "Large"]}}};f.owner.respondInput(f.input(value));assert.deepEqual(await result, value);
+  } finally {f.owner.close();}
+});
+test("native question annotations preserve open answers and repeated native choice labels", async () => {
+  const f = fixture();try {
+    const result = f.owner.questions({...binding, questions: [{id: "scope", header: "", question: "Pick or enter",
+      isOther: true, options: [{label: "A", description: "First"}, {label: "A", description: "Second"}]}]}, f.signal.signal);
+    await f.ready;
+    const schema = f.events[0]!.data.form_schema as {properties: {answers: {properties: {scope: {title: string; properties: {answers: {items: {anyOf: unknown[]; enum?: unknown}}}}}}}};
+    const field = schema.properties.answers.properties.scope;assert.equal(field.title, "");
+    const validator = new Ajv2020.default({strict: false}).compile(schema);
+    assert.equal(validator({answers: {scope: {answers: ["A"]}}}), true);
+    assert.equal(validator({answers: {scope: {answers: ["Exact custom answer"]}}}), true);
+    assert.equal(validator({answers: {scope: {answers: [""]}}}), false);
+    assert.equal(field.properties.answers.items.enum, undefined);
+    assert.deepEqual(field.properties.answers.items.anyOf, [{const: "A", description: "First"}, {const: "A", description: "Second"}, {type: "string", minLength: 1, maxLength: 8192}]);
+    const value = {answers: {scope: {answers: ["Exact custom answer"]}}};f.owner.respondInput(f.input(value));assert.deepEqual(await result, value);
+  } finally {f.owner.close();}
+});
+
+test("free native question answers use the JSON Schema Unicode length boundary", async () => {
+  for (const options of [undefined, [{label: "A", description: "Choice"}]]) {
+    const f = fixture();try {
+      const result = f.owner.questions({...binding, questions: [{id: "answer", header: "Answer", question: "Enter an answer", isOther: true,
+        ...(options ? {options} : {})}]}, f.signal.signal);
+      await f.ready;
+      const schema = f.events[0]!.data.form_schema as Record<string, unknown>;
+      const validator = new Ajv2020.default({strict: false}).compile(schema);
+      const value = (length: number) => ({answers: {answer: {answers: ["😀".repeat(length)]}}});
+      assert.equal(validator(value(8192)), true);assert.equal(validator(value(8193)), false);
+      assert.throws(() => f.owner.respondInput(f.input(value(8193))));
+      f.owner.respondInput(f.input(value(8192)));assert.deepEqual(await result, value(8192));
+    } finally {f.owner.close();}
+  }
 });

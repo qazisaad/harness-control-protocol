@@ -1,0 +1,49 @@
+{
+  "id": "fixture-portable-native-item",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 1,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "turn_id": "origin",
+    "event_type": "item.completed",
+    "data": {
+      "item_id": "native-item",
+      "portable": {
+        "source": "native",
+        "native_reference": "native-thread",
+        "native_item_reference": "native-item",
+        "native_call_reference": "native-call",
+        "native_execution_reference": "native-phase",
+        "fidelity": "full",
+        "items": [
+          {
+            "id": "native-call",
+            "type": "tool_call",
+            "status": "completed",
+            "tool_name": "lookup",
+            "tool_namespace": "catalog",
+            "arguments": {
+              "storage": "inline",
+              "value": {
+                "query": "fixture"
+              }
+            }
+          },
+          {
+            "id": "result:native-call",
+            "type": "tool_result",
+            "status": "completed",
+            "call_id": "native-call",
+            "result": {
+              "storage": "inline",
+              "value": "complete result"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

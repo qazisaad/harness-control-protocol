@@ -11,9 +11,10 @@ for (const interactive of [false,true]) test(`native cached permission is offere
     ...(interactive?{execution_profile:"interactive"}: {})}, {session_id:"session",turn_id:"root",input:"run"},
     {threadId:"native",turnId:()=>"turn"},event=>events.push(event));
   const pending=codexApproval(owner,{threadId:"native",turnId:"turn",itemId:"command",command:"controlled command",
-    availableDecisions:["accept","acceptForSession",{acceptWithExecpolicyAmendment:{execpolicy_amendment:["dangerous-persistent-rule"]}},"cancel"]},"command",new AbortController().signal,interactive);
+    availableDecisions:["accept","acceptForSession",{acceptWithExecpolicyAmendment:{execpolicy_amendment:["dangerous-persistent-rule"]}},"cancel"]},"command",new AbortController().signal,interactive,{requestId:"actual-rpc-request"});
   await new Promise(resolve=>setImmediate(resolve));
   const event=events.find(event=>event.event_type==="approval.requested")!;
+  assert.deepEqual(event.data.native_request, {source:"native",native_reference:"native",request_reference:"actual-rpc-request",execution_reference:"turn",item_reference:"command"});
   assert.deepEqual(event.data.allowed_decisions,interactive?["accept","accept_for_session","cancel"]:["accept","cancel"]);
   owner.respondApproval({session_id:"session",turn_id:"root",request_id:event.data.request_id as string,action_hash:event.data.action_hash as string,
     actor_id:"user",decision:interactive?"accept_for_session":"accept"});

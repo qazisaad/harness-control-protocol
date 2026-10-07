@@ -1,3 +1,5 @@
+import {harnessImageFilesSchema, harnessOwnedImageInputsSchema, HARNESS_OWNED_IMAGE_MIME_TYPES, HARNESS_OWNED_IMAGE_MAX_COUNT, HARNESS_OWNED_IMAGE_MAX_TOTAL_BYTES, type HarnessImageFileReference, type HarnessOwnedImageInputs} from "./image-files.js";
+export * from "./image-files.js";
 import { hcpAccountsReadPayloadSchema, hcpAccountsSnapshotPayloadSchema, type HcpAccountsReadPayload, type HcpAccountsSnapshotPayload } from "./accounts.js";
 export * from "./accounts.js";
 import { hcpConversationRequestPayloadSchema, hcpConversationResultPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "./conversation.js";
@@ -5,9 +7,22 @@ import {harnessContentReferenceSchema, type HarnessContentReference} from "./con
 export * from "./conversation.js";
 export type {NativeConversationHistory} from "./conversation-history.js";
 export * from "./content.js";
+import {harnessToolSelectionSchema, harnessNativeToolSelectionCapabilitiesSchema, harnessEffectiveToolSelectionSchema, type HarnessToolSelection} from "./tool-selection.js";
+export * from "./tool-selection.js";
+import {harnessPermissionRulesCapabilitiesSchema} from "./permission-rules.js";
+export * from "./permission-rules.js";
+import {harnessApprovalOptionsSchema, type HarnessApprovalOptions} from "./approval-options.js";
+export * from "./approval-options.js";
+import {harnessNativePolicyControlAuthoritySchema, nativePolicySelectionKey, type HarnessNativePolicyControlAuthority} from "./policy-control.js";
+export * from "./policy-control.js";
+import {harnessSandboxOptionsSchema, type HarnessSandboxOptions} from "./sandbox.js";
+export * from "./sandbox.js";
 import {harnessNativeWorkRecordSchema} from "./native-work.js";
+import {harnessNativeGoalRequestSchema, harnessNativeGoalRecordSchema, harnessNativeGoalTranscriptSchema, type HarnessNativeGoalRequest} from "./native-goal.js";
+export * from "./native-goal.js";
 export * from "./native-work.js";
 export * from "./portable-history.js";
+import {harnessPortableItemObservationSchema} from "./portable-history.js";
 import {harnessTurnFilesSchema, harnessFileInputCapabilitiesSchema, type HarnessTurnFile} from "./input-file.js";
 export * from "./input-file.js";
 import {harnessPromptContextSchema, harnessPromptContextPreparedSchema, type HarnessPromptContext} from "./prompt-context.js";
@@ -20,6 +35,8 @@ import {harnessNativeOutputObservationSchema} from "./native-output.js";
 export * from "./native-output.js";
 import {harnessNativeRetryObservationSchema} from "./native-retry.js";
 export * from "./native-retry.js";
+import {harnessRootUsageSnapshotSchema} from "./root-usage.js";
+export * from "./root-usage.js";
 import { z } from "zod";
 
 export const HCP_VERSION = "hcp.v0" as const;
@@ -70,6 +87,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "session.configured",
   "settings.effective",
   "settings.options.effective",
+  "settings.tools.effective",
   "session.state.changed",
   "session.exited",
   "thread.started",
@@ -92,6 +110,7 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "turn.plan.updated",
   "turn.proposed.delta",
   "turn.proposed.completed",
+  "turn.proposed.observed",
   "turn.diff.updated",
   "item.started",
   "item.updated",
@@ -137,6 +156,10 @@ export const KNOWN_HCP_EVENT_TYPES = [
   "context.updated",
   "context.input.prepared",
   "native.work.updated",
+  "native.execution.admitted",
+  "native.execution.completed",
+  "native.goal.updated",
+  "native.goal.observed",
   "native.work.retired",
   "native.work.owner_lost",
   "native.request.lost",
@@ -270,6 +293,7 @@ export type HarnessModel = {
 
 export type HarnessExecutionCapabilities = {
   file_inputs?: z.infer<typeof harnessFileInputCapabilitiesSchema>;
+  owned_image_inputs?: HarnessOwnedImageInputs;
   prompt_context?: boolean;
   execution_profiles?: HarnessExecutionProfileCapabilities[];
   portable_history?: boolean;
@@ -303,15 +327,43 @@ export const harnessExecutionProfileIdSchema = z.string().regex(/^[a-z][a-z0-9_-
 export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessExecutionProfileIdSchema,
   runtime_lifetime: z.enum(["turn", "session"]), native_work: z.boolean(), session_events: z.boolean(),
   required_configuration_inheritance: z.lazy(() => harnessConfigurationInheritanceSchema).optional(),
+  /** Successful unload proves closure of this owned physical generation, never retained history. */
+  native_owner_closure: z.literal("owned_session").optional(),
   mcp_attachments: z.boolean().optional(),
   /** Startup establishes a native conversation before any root prompt; omission is unknown. */
   empty_conversation: z.boolean().optional(),
   /** Native readback of root model/options and fixed execution policy; omission is unknown. */
   root_settings_readback: z.boolean().optional(),
+  native_tool_selection: harnessNativeToolSelectionCapabilitiesSchema.optional(),
+  approval_prompt_filter: z.boolean().optional(),
+  native_permission_prompting: z.literal("reject_unapproved").optional(),
+  native_permission_rules: harnessPermissionRulesCapabilitiesSchema.optional(),
+  /** Native proposed-plan deltas and authoritative completed item content, when emitted. */
+  native_plan_proposals: z.boolean().optional(),
+  /** Complete native proposal input is observed intent, not effective approval or execution completion. */
+  native_plan_proposal_observations: z.array(z.literal("tool_input")).min(1).max(1).optional(),
+  /** Native summary/content segment pointers and structured completed reasoning, when emitted. */
+  native_reasoning_segments: z.boolean().optional(),
+  /** Structured native plan observations; tool input is intent, not effective todo state. */
+  native_plan_observations: z.array(z.enum(["snapshot", "tool_input"])).min(1).max(2).optional(),
+  sandbox_options: z.array(z.enum(["network_access", "writable_roots"])).min(1).max(2).optional(),
+  native_approval_review: z.boolean().optional(),
+  native_approval_feedback: z.literal("rejection").optional(),
+  native_goals: z.boolean().optional(),
+  native_execution_outcomes: z.boolean().optional(),
+  native_goal_observations: z.literal("native_transcript").optional(),
   /** Read-only child transcripts require the current native execution owner. */
   native_work_history: z.literal("live_owner").optional(),
+  /** Custody-verified read-only transcript access, independent of physical execution ownership. */
+  retained_native_work_history: z.boolean().optional(),
+  /** Independent forks of custody-verified child transcripts, never revival of child execution. */
+  native_work_fork: z.boolean().optional(),
+  native_work_terminal_reconciliation: z.boolean().optional(),
   /** Explicit idle continuation policy/profile replacement, confirmed before any model turn. */
   idle_configuration_transition: z.boolean().optional(),
+  /** Authorized idle policy mutation preserves the physical query; it asserts no unchanged history. */
+  native_policy_control: z.literal("idle_native_owner").optional(),
+  idle_mcp_catalog_transition: z.boolean().optional(),
   /** An explicit app request may submit provider feedback through its live owner. */
   native_feedback: harnessNativeFeedbackCapabilitiesSchema.optional(),
   /** Native account quota frames observed through this session; no account identity is inferred. */
@@ -327,8 +379,13 @@ export type HarnessExecutionProfileCapabilities = z.infer<typeof harnessExecutio
 
 export const harnessNativePolicyReadbackSchema = z.object({source: z.literal("native"),
   execution_profile: harnessExecutionProfileIdSchema, approval_policy: z.enum(["ask", "auto_edits", "full_access"]),
-  sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"])}).strict();
+  approval_options: harnessApprovalOptionsSchema.optional(),
+  approval_reviewer: z.enum(["user", "native_auto"]).optional(),
+  sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"]), sandbox_options: harnessSandboxOptionsSchema.optional()}).strict();
 export type HarnessNativePolicyReadback = z.infer<typeof harnessNativePolicyReadbackSchema>;
+export const harnessNativeMcpCatalogReadbackSchema = z.object({source: z.literal("native"),
+  attachments: z.array(z.string().min(1).max(512)).max(128).refine(names => new Set(names).size === names.length)}).strict();
+export type HarnessNativeMcpCatalogReadback = z.infer<typeof harnessNativeMcpCatalogReadbackSchema>;
 
 export const harnessConfigurationInheritanceSchema = z.object({user_settings: z.boolean().optional(), project_settings: z.boolean().optional(),
   hooks: z.boolean().optional(), mcp_servers: z.boolean().optional(), plugins: z.boolean().optional()}).strict();
@@ -497,7 +554,9 @@ export type RunnerStdioMcpProfileAttachment = {
 export type McpServerAttachment = StreamableHttpMcpServerAttachment | RunnerStdioMcpProfileAttachment;
 
 export type HcpSessionStartPayload = {
-  conversation_transition?: {transition_id: string; expected_history_hash: string};
+  expected_native_reference?: string;
+  policy_control_authority?: HarnessNativePolicyControlAuthority;
+  conversation_transition?: {transition_id: string; expected_history_hash: string; change?: "policy" | "mcp_catalog"};
   execution_profile?: string;
   instructions?: HarnessInstructions | string;
   configuration_inheritance?: HarnessConfigurationInheritance;
@@ -508,13 +567,17 @@ export type HcpSessionStartPayload = {
   continuation_group_key?: string;
   cwd: string;
   sandbox_mode: "read_only" | "workspace_write" | "danger_full_access";
+  sandbox_options?: HarnessSandboxOptions;
   approval_policy: "ask" | "auto_edits" | "full_access";
+  tool_selection?: HarnessToolSelection;
+  approval_options?: HarnessApprovalOptions;
+  approval_reviewer?: "user" | "native_auto";
   continue_session: boolean;
   model_selection: HarnessModelSelection;
   workspace_preflight?: WorkspacePreflight;
   local_capability_lease?: LocalCapabilityLease;
   mcp_servers: McpServerAttachment[];
-  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[]; files?: HarnessTurnFile[]; context?: HarnessPromptContext };
+  first_turn?: { turn_id: string; input: string; not_after: string; mode?: "execute" | "plan"; images?: HcpImageInput[]; image_files?: HarnessImageFileReference[]; files?: HarnessTurnFile[]; context?: HarnessPromptContext };
 };
 
 export type HcpSessionSnapshotRequestPayload = {
@@ -526,8 +589,10 @@ export type HcpTurnSendPayload = {
   turn_id: string;
   input: string;
   action?: "prompt" | "compact";
+  goal?: HarnessNativeGoalRequest;
   mode?: "execute" | "plan";
   images?: HcpImageInput[];
+  image_files?: HarnessImageFileReference[];
   files?: HarnessTurnFile[];
   context?: HarnessPromptContext;
   model_selection?: HarnessModelSelection;
@@ -551,6 +616,7 @@ export type HcpApprovalResponsePayload = {
   action_hash: string;
   decision: "accept" | "accept_for_session" | "decline" | "cancel";
   actor_id: string;
+  feedback?: string;
 };
 
 export type HcpInputResponsePayload = {
@@ -902,7 +968,10 @@ export type LocalActionErrorPayload = {
 
 export type HarnessUsageSnapshot = {
   scope?: "turn" | "conversation";
-  status?: "complete" | "partial";
+  status?: "complete" | "partial" | "unavailable";
+  actor?: "root";
+  native_reference?: string;
+  native_execution_reference?: string;
   source?: string;
   cached_input_tokens?: number;
   cache_creation_input_tokens?: number;
@@ -919,18 +988,12 @@ export type HarnessTurnFinalOutput = {
   context?: HarnessContextUsage;
   content_ref?: HarnessContentReference;
   final_text?: string;
+  final_text_truncated?: boolean;
+  final_text_ref?: HarnessContentReference;
   structured_output?: unknown;
   diff_summary?: string;
-  changed_files?: Array<{
-    path: string;
-    change_type: "added" | "modified" | "deleted" | "renamed";
-  }>;
-  artifact_refs?: Array<{
-    id: string;
-    kind: "diff" | "file" | "log" | "image" | "other";
-    label?: string;
-    size_bytes?: number;
-  }>;
+  changed_files?: Array<{path: string; change_type: "added" | "modified" | "deleted" | "renamed"}>;
+  artifact_refs?: Array<{id: string; kind: "diff" | "file" | "log" | "image" | "other"; label?: string; size_bytes?: number}>;
   usage?: HarnessUsageSnapshot;
   exit_reason?: string;
 };
@@ -1174,6 +1237,7 @@ export const harnessProviderSnapshotSchema = z
       native_history: z.boolean().optional(),
       empty_conversation: z.boolean().optional(),
       file_inputs: harnessFileInputCapabilitiesSchema.optional(),
+      owned_image_inputs: harnessOwnedImageInputsSchema.optional(),
       prompt_context: z.boolean().optional(),
       live_history_read: z.boolean().optional(),
       native_history_injection: z.boolean().optional(),
@@ -1426,15 +1490,17 @@ export const mcpServerAttachmentSchema = z.discriminatedUnion("transport", [
 ]);
 
 export const HARNESS_IMAGE_MAX_BYTES = 384 * 1024;
-export const HARNESS_IMAGE_MIME_TYPES = ["image/gif", "image/jpeg", "image/png", "image/webp"] as const;
+export const HARNESS_IMAGE_MIME_TYPES = HARNESS_OWNED_IMAGE_MIME_TYPES;
 export const hcpImageInputSchema = z.object({mime_type: z.enum(HARNESS_IMAGE_MIME_TYPES),
   data_base64: z.string().min(4).max(HARNESS_IMAGE_MAX_BYTES * 4 / 3).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict();
 export type HcpImageInput = z.infer<typeof hcpImageInputSchema>;
 /** An observed root configuration does not rewrite the settings of already running work. */
 export const harnessEffectiveSettingsSchema = z.object({scope: z.literal("root"), source: z.literal("native"),
   model_selection: harnessModelSelectionSchema, mode: z.enum(["execute", "plan"]),
+  approval_options: harnessApprovalOptionsSchema.optional(),
+  approval_reviewer: z.enum(["user", "native_auto"]).optional(),
   approval_policy: z.enum(["ask", "auto_edits", "full_access"]),
-  sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"])}).strict();
+  sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"]), sandbox_options: harnessSandboxOptionsSchema.optional()}).strict();
 export type HarnessEffectiveSettings = z.infer<typeof harnessEffectiveSettingsSchema>;
 /** Native model-option evidence does not imply policy or sandbox readback. */
 export const harnessEffectiveModelOptionsSchema = z.object({scope: z.literal("root"), source: z.literal("native"),
@@ -1443,9 +1509,19 @@ export type HarnessEffectiveModelOptions = z.infer<typeof harnessEffectiveModelO
 const harnessImagesSchema = z.array(hcpImageInputSchema).min(1).max(4).refine(images =>
   images.reduce((bytes, image) => bytes + image.data_base64.length, 0) <= HARNESS_IMAGE_MAX_BYTES * 4 / 3, "Image aggregate exceeds the transport limit.");
 
+function validateImageAdmission(input: {images?: HcpImageInput[] | undefined; image_files?: HarnessImageFileReference[] | undefined}, ctx: z.RefinementCtx): void {
+  const inline = input.images ?? [], owned = input.image_files ?? [];
+  const bytes = inline.reduce((sum, image) => sum + image.data_base64.length / 4 * 3 - (image.data_base64.endsWith("==") ? 2 : image.data_base64.endsWith("=") ? 1 : 0), 0) + owned.reduce((sum, image) => sum + image.byte_length, 0);
+  if (inline.length + owned.length > HARNESS_OWNED_IMAGE_MAX_COUNT || bytes > HARNESS_OWNED_IMAGE_MAX_TOTAL_BYTES)
+    ctx.addIssue({code: "custom", message: "Combined native images exceed their count or byte bound."});
+}
+
 export const hcpSessionStartPayloadSchema = z
   .object({
-    conversation_transition: z.object({transition_id: z.string().min(1).max(512), expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/)}).strict().optional(),
+    expected_native_reference: nonEmptyStringSchema.max(512).optional(),
+    policy_control_authority: harnessNativePolicyControlAuthoritySchema.optional(),
+    conversation_transition: z.object({transition_id: z.string().min(1).max(512), expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/),
+      change: z.enum(["policy", "mcp_catalog"]).optional()}).strict().optional(),
     instructions: z.union([harnessInstructionsSchema, z.string().max(128 * 1024)]).optional(),
     execution_profile: harnessExecutionProfileIdSchema.optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
@@ -1456,8 +1532,12 @@ export const hcpSessionStartPayloadSchema = z
     continuation_group_key: nonEmptyStringSchema.optional(),
     cwd: nonEmptyStringSchema,
     sandbox_mode: z.enum(["read_only", "workspace_write", "danger_full_access"]),
+    sandbox_options: harnessSandboxOptionsSchema.optional(),
     approval_policy: z.enum(["ask", "auto_edits", "full_access"]),
     continue_session: z.boolean(),
+    tool_selection: harnessToolSelectionSchema.optional(),
+    approval_options: harnessApprovalOptionsSchema.optional(),
+  approval_reviewer: z.enum(["user", "native_auto"]).optional(),
     model_selection: harnessModelSelectionSchema,
     workspace_preflight: workspacePreflightSchema.optional(),
     local_capability_lease: localCapabilityLeaseSchema.optional(),
@@ -1468,11 +1548,21 @@ export const hcpSessionStartPayloadSchema = z
       not_after: timestampSchema,
       mode: z.enum(["execute", "plan"]).optional(),
       images: harnessImagesSchema.optional(),
+      image_files: harnessImageFilesSchema.optional(),
       files: harnessTurnFilesSchema.optional(),
       context: harnessPromptContextSchema.optional(),
-    }).strict().optional(),
+    }).strict().superRefine(validateImageAdmission).optional(),
   })
   .strict().superRefine((value, ctx) => {
+    if (value.expected_native_reference && (!value.continue_session || !value.continuation_group_key || value.first_turn))
+      ctx.addIssue({code: "custom", path: ["expected_native_reference"], message: "Expected native identity requires an explicit no-model retained continuation."});
+    if (value.policy_control_authority) {
+      if (value.execution_profile !== "interactive" || !value.continuation_group_key)
+        ctx.addIssue({code: "custom", path: ["policy_control_authority"], message: "Native policy controls require an interactive retained conversation."});
+      const initial = `${value.approval_policy}:${value.approval_reviewer ?? "user"}`;
+      if (!value.policy_control_authority.allowed_selections.some(selection => nativePolicySelectionKey(selection) === initial))
+        ctx.addIssue({code: "custom", path: ["policy_control_authority"], message: "The initial policy must be inside its explicit control authority."});
+    }
     if (value.conversation_transition && (!value.continue_session || !value.continuation_group_key || value.first_turn))
       ctx.addIssue({code: "custom", message: "A conversation transition requires explicit continuation and cannot include a model turn."});
   });
@@ -1489,15 +1579,21 @@ export const hcpTurnSendPayloadSchema = z
     turn_id: nonEmptyStringSchema,
     input: z.string(),
     action: z.enum(["prompt", "compact"]).optional(),
+    goal: harnessNativeGoalRequestSchema.optional(),
     mode: z.enum(["execute", "plan"]).optional(),
     images: harnessImagesSchema.optional(),
+    image_files: harnessImageFilesSchema.optional(),
     files: harnessTurnFilesSchema.optional(),
     context: harnessPromptContextSchema.optional(),
     model_selection: harnessModelSelectionSchema.optional(),
   })
   .strict().superRefine((value, ctx) => {
-    if (value.action === "compact" && (value.input !== "" || value.images?.length || value.files?.length || value.context || value.mode === "plan"))
+    validateImageAdmission(value, ctx);
+    if (value.action === "compact" && (value.goal || value.input !== "" || value.images?.length || value.image_files?.length || value.files?.length || value.context || value.mode === "plan"))
       ctx.addIssue({code: "custom", message: "Compaction accepts no prompt, images, files, context or Plan mode."});
+    if (value.goal?.action === "resume" && (value.input !== "" || value.images?.length || value.image_files?.length || value.files?.length || value.context))
+      ctx.addIssue({code: "custom", message: "Native goal resumption accepts no new prompt or context."});
+    if (value.goal && value.mode === "plan") ctx.addIssue({code: "custom", message: "Native goal admission requires Execute mode."});
   });
 
 export const hcpTurnCancelPayloadSchema = z
@@ -1515,16 +1611,17 @@ export const hcpSessionStopPayloadSchema = z
   })
   .strict();
 
-export const hcpApprovalResponsePayloadSchema = z
-  .object({
-    request_id: nonEmptyStringSchema,
-    session_id: nonEmptyStringSchema,
-    turn_id: nonEmptyStringSchema,
-    action_hash: nonEmptyStringSchema,
-    decision: z.enum(["accept", "accept_for_session", "decline", "cancel"]),
-    actor_id: nonEmptyStringSchema,
-  })
-  .strict();
+const rejectionFeedbackContract = {allOf: [{if: {required: ["feedback"]},
+  then: {properties: {decision: {enum: ["decline", "cancel"]}}}}]};
+function refineRejectionFeedback(value: {decision: string; feedback?: string | undefined}, context: z.RefinementCtx): void {
+  if (value.feedback !== undefined && !["decline", "cancel"].includes(value.decision))
+    context.addIssue({code: "custom", path: ["feedback"], message: "Feedback requires a rejection decision."});
+}
+export const hcpApprovalResponsePayloadSchema = z.object({
+  request_id: nonEmptyStringSchema, session_id: nonEmptyStringSchema, turn_id: nonEmptyStringSchema,
+  action_hash: nonEmptyStringSchema, decision: z.enum(["accept", "accept_for_session", "decline", "cancel"]),
+  actor_id: nonEmptyStringSchema, feedback: z.string().min(1).max(8192).optional(),
+}).strict().superRefine(refineRejectionFeedback).meta(rejectionFeedbackContract);
 
 const inputResponseFieldsSchema = z
   .object({
@@ -2324,7 +2421,7 @@ export const harnessContextUsageSchema = z.discriminatedUnion("status", [
   harnessContextUsageBaseSchema.extend({status: z.literal("unavailable"), reason: z.string().min(1).max(512).optional()}).strict(),
 ]);
 
-export const harnessUsageSnapshotSchema = z
+const legacyHarnessUsageSnapshotSchema = z
   .object({
     scope: z.enum(["turn", "conversation"]).optional(),
     status: z.enum(["complete", "partial"]).optional(),
@@ -2339,10 +2436,14 @@ export const harnessUsageSnapshotSchema = z
   })
   .strict();
 
+export const harnessUsageSnapshotSchema = z.union([legacyHarnessUsageSnapshotSchema, harnessRootUsageSnapshotSchema]);
+
 export const harnessTurnFinalOutputSchema = z
   .object({
     context: harnessContextUsageSchema.optional(),
     final_text: z.string().optional(),
+    final_text_truncated: z.boolean().optional(),
+    final_text_ref: harnessContentReferenceSchema.optional(),
     content_ref: harnessContentReferenceSchema.optional(),
     structured_output: z.unknown().optional(),
     diff_summary: z.string().optional(),
@@ -2397,7 +2498,10 @@ export const hcpRawDiagnosticPayloadSchema = z
 
 const sessionEventDataSchema = z
   .object({
+    policy_revision: z.number().int().min(0).max(1024).optional(),
+    native_reference: z.string().min(1).max(4096).optional(),
     native_policy_readback: harnessNativePolicyReadbackSchema.optional(),
+    native_mcp_catalog_readback: harnessNativeMcpCatalogReadbackSchema.optional(),
     mode: z.enum(["execute", "plan"]).optional(),
     configuration_inheritance: harnessConfigurationInheritanceSchema.optional(),
     execution_profile: harnessExecutionProfileIdSchema.optional(),
@@ -2450,30 +2554,91 @@ const turnLifecycleEventDataSchema = z
     status: nonEmptyStringSchema.optional(),
     plan: z.unknown().optional(),
     delta: z.string().optional(),
+    item_id: nonEmptyStringSchema.max(512).optional(),
+    native_execution_reference: nonEmptyStringSchema.max(512).optional(),
     diff_summary: z.string().optional(),
     content_ref: harnessContentReferenceSchema.optional(),
     error: hcpErrorSchema.optional(),
   })
   .strict();
 
-const itemEventDataSchema = z
+/** Array positions locate observed steps; they are not provider-issued item identities. */
+export const harnessNativePlanStepSchema = z.object({index: z.number().int().min(0).max(4095), text: z.string(),
+  status: z.enum(["pending", "running", "completed", "cancelled", "unknown"]), native_status: nonEmptyStringSchema.max(128),
+  active_form: z.string().optional(), priority: nonEmptyStringSchema.max(128).optional()}).strict();
+export const harnessNativePlanStepsSchema = z.array(harnessNativePlanStepSchema).max(4096);
+const nativePlanStepsValueSchema = z.union([harnessNativePlanStepsSchema,
+  z.object({truncated: z.literal(true), summary: z.string(), content_ref: harnessContentReferenceSchema.optional()}).strict()]);
+const nativePlanObservationBaseSchema = z.object({source: z.literal("native"), kind: z.enum(["execution_plan", "todo_list"]),
+  native_reference: nonEmptyStringSchema.max(512), native_execution_reference: nonEmptyStringSchema.max(512).optional(),
+  steps: nativePlanStepsValueSchema, explanation: z.union([z.string(),
+    z.object({truncated: z.literal(true), summary: z.string(), content_ref: harnessContentReferenceSchema.optional()}).strict()]).optional()}).strict();
+export const harnessNativePlanObservationSchema = z.discriminatedUnion("observation", [
+  nativePlanObservationBaseSchema.extend({observation: z.literal("snapshot"), native_item_reference: nonEmptyStringSchema.max(512).optional()}),
+  nativePlanObservationBaseSchema.extend({observation: z.literal("tool_input"), native_item_reference: nonEmptyStringSchema.max(512)})]);
+export const harnessTurnPlanUpdatedEventDataSchema = turnLifecycleEventDataSchema.extend({native_plan: harnessNativePlanObservationSchema.optional()});
+export type HarnessNativePlanStep = z.infer<typeof harnessNativePlanStepSchema>;
+export type HarnessNativePlanObservation = z.infer<typeof harnessNativePlanObservationSchema>;
+
+/** Experimental native plan deltas are previews; completed native content is authoritative. */
+export const harnessProposedPlanDeltaSchema = z.object({item_id: nonEmptyStringSchema.max(512), native_execution_reference: nonEmptyStringSchema.max(512), delta: z.string().max(32768)}).strict();
+export const harnessProposedPlanCompletedSchema = z.object({item_id: nonEmptyStringSchema.max(512),
+  native_execution_reference: nonEmptyStringSchema.max(512),
+  plan: z.union([z.string(), z.object({truncated: z.literal(true), summary: z.string(), content_ref: harnessContentReferenceSchema.optional()}).strict()]),
+  status: z.literal("completed")}).strict();
+export type HarnessProposedPlanDelta = z.infer<typeof harnessProposedPlanDeltaSchema>;
+export type HarnessProposedPlanCompleted = z.infer<typeof harnessProposedPlanCompletedSchema>;
+
+/** Complete observed native tool input; it neither completes an item nor accepts a proposal. */
+export const harnessNativePlanProposalInputSchema = z.object({source: z.literal("native"), observation: z.literal("tool_input"),
+  native_reference: nonEmptyStringSchema.max(512), native_item_reference: nonEmptyStringSchema.max(512),
+  request_reference: nonEmptyStringSchema.max(512).optional(), native_execution_reference: nonEmptyStringSchema.max(512).optional(),
+  plan: z.union([z.string(), z.object({truncated: z.literal(true), summary: z.string(), content_ref: harnessContentReferenceSchema.optional()}).strict()]),
+}).strict();
+export type HarnessNativePlanProposalInput = z.infer<typeof harnessNativePlanProposalInputSchema>;
+
+/** Exact location inside a native message, without inventing a provider-issued item ID. */
+export const harnessNativeTextPartReferenceSchema = z.object({message_reference: nonEmptyStringSchema.max(512),
+  index: z.number().int().min(0).max(4095)}).strict();
+export type HarnessNativeTextPartReference = z.infer<typeof harnessNativeTextPartReferenceSchema>;
+export const harnessNativeReasoningSegmentSchema = z.object({kind: z.enum(["summary", "content"]),
+  index: z.number().int().min(0).max(4095)}).strict();
+export const harnessNativeReasoningContentSchema = z.object({summary: z.array(z.string()).max(4096),
+  content: z.array(z.string()).max(4096)}).strict();
+export type HarnessNativeReasoningSegment = z.infer<typeof harnessNativeReasoningSegmentSchema>;
+export type HarnessNativeReasoningContent = z.infer<typeof harnessNativeReasoningContentSchema>;
+
+export const harnessItemEventDataSchema = z
   .object({
     item_id: nonEmptyStringSchema.optional(),
+    /** Actual native message containing this item, when reported. */
+    message_id: nonEmptyStringSchema.max(512).optional(),
     item_type: nonEmptyStringSchema.optional(),
+    native_part: harnessNativeTextPartReferenceSchema.optional(),
+    native_execution_reference: nonEmptyStringSchema.max(512).optional(),
     status: nonEmptyStringSchema.optional(),
     content: z.unknown().optional(),
     summary: z.string().optional(),
+    portable: harnessPortableItemObservationSchema.optional(),
   })
   .strict();
+
+export type HarnessItemEventData = z.infer<typeof harnessItemEventDataSchema>;
 
 export const harnessTextDeltaEventDataSchema = z
   .object({
     stream_kind: nonEmptyStringSchema.optional(),
     item_id: nonEmptyStringSchema.max(512).optional(),
     message_id: nonEmptyStringSchema.max(512).optional(),
+    /** Native block location; never an application-minted physical item ID. */
+    native_part: harnessNativeTextPartReferenceSchema.optional(),
+    native_execution_reference: nonEmptyStringSchema.max(512).optional(),
+    native_segment: harnessNativeReasoningSegmentSchema.optional(),
     delta: z.string(),
   })
-  .strict();
+  .strict().superRefine((value, context) => {
+    if (value.native_segment && !value.item_id) context.addIssue({code: "custom", path: ["item_id"], message: "Native reasoning segments require their actual item identity."});
+  }).meta({dependentRequired: {native_segment: ["item_id"]}});
 export type HarnessTextDeltaEventData = z.infer<typeof harnessTextDeltaEventDataSchema>;
 
 const commandEventDataSchema = z
@@ -2541,8 +2706,22 @@ const mcpStatusEventDataSchema = z
   })
   .strict();
 
-const approvalRequestedEventDataSchema = z
+/** Provider identity is observational; it never restores a lost callback owner. */
+// These validators also serve public consumers that narrow generic event data by event type.
+const nativeRequestIdentityFields = z.object({source: z.literal("native"),
+  native_reference: z.string().min(1).max(512), request_reference: z.string().min(1).max(512).optional(),
+  message_reference: z.string().min(1).max(512).optional(), call_reference: z.string().min(1).max(512).optional(),
+  item_reference: z.string().min(1).max(512).optional(), execution_reference: z.string().min(1).max(512).optional()}).strict();
+export const harnessNativeRequestIdentitySchema = z.union([
+  nativeRequestIdentityFields.extend({request_reference: z.string().min(1).max(512)}),
+  nativeRequestIdentityFields.extend({call_reference: z.string().min(1).max(512)}),
+  nativeRequestIdentityFields.extend({item_reference: z.string().min(1).max(512)}),
+]);
+export type HarnessNativeRequestIdentity = z.infer<typeof harnessNativeRequestIdentitySchema>;
+
+export const harnessApprovalRequestedEventDataSchema = z
   .object({
+    native_request: harnessNativeRequestIdentitySchema.optional(),
     native_work_id: z.string().min(1).max(512).optional(),
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
@@ -2554,6 +2733,7 @@ const approvalRequestedEventDataSchema = z
     risk_class: z.enum(["low", "medium", "high"]),
     action: z.unknown(),
     action_hash: nonEmptyStringSchema,
+    rejection_feedback_supported: z.literal(true).optional(),
     allowed_decisions: z.array(z.enum(["accept", "accept_for_session", "decline", "cancel"])).min(1),
     expires_at: timestampSchema,
     display: z
@@ -2565,8 +2745,9 @@ const approvalRequestedEventDataSchema = z
   })
   .strict();
 
-const approvalResolvedEventDataSchema = z
+export const harnessApprovalResolvedEventDataSchema = z
   .object({
+    native_request: harnessNativeRequestIdentitySchema.optional(),
     native_work_id: z.string().min(1).max(512).optional(),
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
@@ -2574,12 +2755,14 @@ const approvalResolvedEventDataSchema = z
     action_hash: nonEmptyStringSchema,
     decision: z.enum(["accept", "accept_for_session", "decline", "cancel"]),
     actor_id: nonEmptyStringSchema,
+    feedback: z.string().min(1).max(8192).optional(),
     resolved_at: timestampSchema.optional(),
   })
-  .strict();
+  .strict().superRefine(refineRejectionFeedback).meta(rejectionFeedbackContract);
 
 const inputRequestedFieldsSchema = z
   .object({
+    native_request: harnessNativeRequestIdentitySchema.optional(),
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
     prompt: z.string(),
@@ -2601,13 +2784,14 @@ const inputRequestedFieldsSchema = z
     redaction: z.enum(["none", "secret"]),
   })
   .strict();
-const inputRequestedEventDataSchema = z.union([
+export const harnessInputRequestedEventDataSchema = z.union([
   inputRequestedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), native_work_id: z.string().min(1).max(512).optional()}),
   inputRequestedFieldsSchema.extend({request_scope: z.literal("session")}),
 ]);
 
 const inputResolvedFieldsSchema = z
   .object({
+    native_request: harnessNativeRequestIdentitySchema.optional(),
     request_id: nonEmptyStringSchema,
     session_id: nonEmptyStringSchema,
     actor_id: nonEmptyStringSchema.optional(),
@@ -2616,7 +2800,7 @@ const inputResolvedFieldsSchema = z
     resolved_at: timestampSchema.optional(),
   })
   .strict();
-const inputResolvedEventDataSchema = z.union([
+export const harnessInputResolvedEventDataSchema = z.union([
   inputResolvedFieldsSchema.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), native_work_id: z.string().min(1).max(512).optional()}),
   inputResolvedFieldsSchema.extend({request_scope: z.literal("session")}),
 ]);
@@ -2667,6 +2851,7 @@ const toolEventDataSchema = z
 
 const modelReroutedEventDataSchema = z
   .object({
+    native_work_id: z.string().min(1).max(512).optional(),
     from_model: nonEmptyStringSchema.optional(),
     to_model: nonEmptyStringSchema.optional(),
     reason: z.string().optional(),
@@ -2714,6 +2899,7 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType.startsWith("mcp.")) {
     return mcpStatusEventDataSchema;
   }
+  if (eventType === "session.exited") return sessionEventDataSchema.extend({native_owner_closed: z.literal(true).optional()});
   if (eventType.startsWith("session.")) {
     return sessionEventDataSchema;
   }
@@ -2737,11 +2923,17 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   ) {
     return turnTerminalEventDataSchema;
   }
+  if (eventType === "turn.proposed.observed") return harnessNativePlanProposalInputSchema;
+  if (eventType === "turn.plan.updated") return harnessTurnPlanUpdatedEventDataSchema;
   if (eventType.startsWith("turn.")) {
+    if (eventType === "turn.proposed.delta") return z.union([
+      turnLifecycleEventDataSchema.omit({item_id: true, native_execution_reference: true}), harnessProposedPlanDeltaSchema]);
+    if (eventType === "turn.proposed.completed") return z.union([
+      turnLifecycleEventDataSchema.omit({item_id: true, native_execution_reference: true}), harnessProposedPlanCompletedSchema]);
     return turnLifecycleEventDataSchema;
   }
   if (eventType.startsWith("item.")) {
-    return itemEventDataSchema;
+    return harnessItemEventDataSchema;
   }
   if (eventType === "content.delta" || eventType === "reasoning.delta") {
     return harnessTextDeltaEventDataSchema;
@@ -2750,16 +2942,16 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
     return commandEventDataSchema;
   }
   if (eventType === "approval.requested") {
-    return approvalRequestedEventDataSchema;
+    return harnessApprovalRequestedEventDataSchema;
   }
   if (eventType === "approval.resolved") {
-    return approvalResolvedEventDataSchema;
+    return harnessApprovalResolvedEventDataSchema;
   }
   if (eventType === "input.requested" || eventType === "user_input.requested") {
-    return inputRequestedEventDataSchema;
+    return harnessInputRequestedEventDataSchema;
   }
   if (eventType === "input.resolved" || eventType === "user_input.resolved") {
-    return inputResolvedEventDataSchema;
+    return harnessInputResolvedEventDataSchema;
   }
   if (eventType.startsWith("request.")) {
     return requestEventDataSchema;
@@ -2786,13 +2978,24 @@ function schemaForKnownEventType(eventType: KnownHcpEventType): z.ZodType<unknow
   if (eventType === "context.input.prepared") return harnessPromptContextPreparedSchema;
   if (eventType === "settings.effective") return harnessEffectiveSettingsSchema;
   if (eventType === "settings.options.effective") return harnessEffectiveModelOptionsSchema;
+  if (eventType === "settings.tools.effective") return harnessEffectiveToolSelectionSchema;
   if (eventType === "native.work.updated") return z.object({work: harnessNativeWorkRecordSchema}).strict();
+  if (eventType === "native.goal.observed") return harnessNativeGoalTranscriptSchema;
+  if (eventType === "native.goal.updated") return harnessNativeGoalRecordSchema;
+  if (eventType === "native.execution.admitted") return z.object({source: z.literal("native"), scope: z.literal("root"),
+    admission_id: z.string().min(1).max(512), native_reference: z.string().min(1).max(512),
+    native_execution_reference: z.string().min(1).max(512), goal_admission_id: z.string().min(1).max(512).optional()}).strict();
+  if (eventType === "native.execution.completed") return z.object({source: z.literal("native"), scope: z.literal("root"),
+    admission_id: z.string().min(1).max(512), native_reference: z.string().min(1).max(512),
+    native_execution_reference: z.string().min(1).max(512), goal_admission_id: z.string().min(1).max(512).optional(),
+    status: z.enum(["completed", "interrupted", "failed"]), final_output: harnessTurnFinalOutputSchema.optional()}).strict();
   if (eventType === "native.output.updated") return z.object({output: harnessNativeOutputObservationSchema}).strict();
   if (eventType === "native.retry.updated") return z.object({retry: harnessNativeRetryObservationSchema}).strict();
   if (eventType === "native.work.retired") return z.object({work_id: z.string().min(1).max(512), revision: z.number().int().positive()}).strict();
   if (eventType === "native.work.owner_lost") return z.object({reason: z.enum(["native_exit", "transport_lost", "runtime_error"]), closure_unconfirmed: z.literal(true).optional()}).strict();
   if (eventType === "native.request.lost") {
     const fields = z.object({request_id: nonEmptyStringSchema, session_id: nonEmptyStringSchema,
+      native_request: harnessNativeRequestIdentitySchema.optional(),
       reason: z.enum(["interrupted", "expired", "owner_closed"]), lost_at: timestampSchema}).strict();
     return z.union([
       fields.extend({turn_id: nonEmptyStringSchema, request_scope: z.literal("turn").optional(), request_kind: z.enum(["approval", "input"]), native_work_id: z.string().min(1).max(512).optional()}),
@@ -2868,9 +3071,9 @@ export const hcpHarnessEventPayloadSchema = z
   .strict()
   .superRefine((payload, context) => {
     const eventType: string = payload.event_type;
-    if (["native.output.updated", "native.retry.updated"].includes(eventType) && payload.turn_id !== undefined)
+    if (["native.output.updated", "native.retry.updated", "native.goal.observed"].includes(eventType) && payload.turn_id !== undefined)
       context.addIssue({code: "custom", path: ["turn_id"], message: "Unattributed native session observations cannot claim an originating app turn."});
-    if (["settings.effective", "settings.options.effective", "context.input.prepared"].includes(eventType) && payload.turn_id === undefined)
+    if (["settings.effective", "settings.options.effective", "context.input.prepared", "native.execution.admitted", "native.execution.completed", "native.goal.updated"].includes(eventType) && payload.turn_id === undefined)
       context.addIssue({code: "custom", path: ["turn_id"], message: "Root settings and prepared context require their admitted HCP turn identity."});
     const dataSchema: z.ZodType<unknown> = isKnownHcpEventType(eventType)
       ? knownHcpEventDataSchemas[eventType]
@@ -3261,3 +3464,10 @@ export * from "./pairing.js";
 
 export * from "./mcp-review.js";
 export * from "./native-review.js";
+
+export type HarnessApprovalRequestedEventData = z.infer<typeof harnessApprovalRequestedEventDataSchema>;
+export type HarnessApprovalResolvedEventData = z.infer<typeof harnessApprovalResolvedEventDataSchema>;
+export type HarnessInputRequestedEventData = z.infer<typeof harnessInputRequestedEventDataSchema>;
+export type HarnessInputResolvedEventData = z.infer<typeof harnessInputResolvedEventDataSchema>;
+
+export * from "./history-media.js";

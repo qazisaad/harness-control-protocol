@@ -9,7 +9,7 @@ import type {ContentPublisher} from "./content-projection.js";
 const messagesSchema = z.array(z.object({info: z.object({id: z.string(), sessionID: z.string(), role: z.enum(["user", "assistant"])}).passthrough(),
   parts: z.array(z.record(z.string(), z.json()))})).max(10_000);
 function contextHash(turns: HistoryTurn[]) {
-  return hash(turns.map(turn => ({...turn, id: "", items: turn.items.map(({id: _id, ...item}) => item)})));
+  return hash(turns.map(turn => ({...turn, id: "", items: turn.items.map(({id: _id, native_item_reference: _item, native_call_reference: _call, ...item}) => item)})));
 }
 async function history(runtime: Pick<OpenCodeRuntime, "readHistory">, sessionId: string): Promise<HistoryTurn[]> {
   if (!runtime.readHistory) throw new HarnessAdapterError("conversation_operation_unsupported", "The OpenCode runtime has no retained-history implementation.");
@@ -25,7 +25,10 @@ async function history(runtime: Pick<OpenCodeRuntime, "readHistory">, sessionId:
       const state = part.type === "tool" ? z.object({status: z.string(), input: z.json(), output: z.json().optional(), error: z.json().optional()}).parse(part.state) : undefined;
       const item = part.type === "text" ? {id: part.id, type: "text", role: message.info.role, text: part.text}
         : part.type === "reasoning" ? {id: part.id, type: "reasoning", text: part.text}
-        : state ? {id: part.id, type: "tool_call", tool_name: part.tool, arguments: state.input, status: state.status, output: state.output, error: state.error}
+        : state ? {id: part.id, native_item_reference: part.id,
+          ...(typeof part.callID === "string" && part.callID.length ? {native_call_reference: part.callID} : {}),
+          type: "tool_call", tool_name: part.tool, arguments: state.input, status: state.status, output: state.output, error: state.error}
+        : part.type === "file" ? {id: part.id, native_item_reference: part.id, type: "native_media", content: part}
         : {id: part.id, type: "provider_extension", content: {namespace: "opencode", value: Object.fromEntries(Object.entries(part)
             .filter(([key]) => !["id", "sessionID", "messageID", "time"].includes(key)))}};
       turns.at(-1)!.items.push(z.record(z.string(), z.json()).parse(JSON.parse(JSON.stringify(item))));
@@ -46,7 +49,7 @@ export async function readOpenCodeOwnedHistory(readMessages: () => Promise<unkno
   return publicHistory({id: nativeReference, turns}, publish, {kind: "read", ...page}, "opencode");
 }
 
-export async function openCodeConversation(input: HarnessAdapterConversationInput, runtime: OpenCodeRuntime): Promise<HcpConversationResultPayload> {
+export async function openCodeConversation(input: HarnessAdapterConversationInput, runtime: Pick<OpenCodeRuntime, "readHistory" | "forkHistory">): Promise<HcpConversationResultPayload> {
   const {request, conversation, commandId} = input;
   let nativeId = conversation.native_thread_id;
   let turns = await history(runtime, nativeId);
@@ -90,6 +93,8 @@ export async function openCodeConversation(input: HarnessAdapterConversationInpu
     const copied = await history(runtime, nativeId);
     if (nativeId === conversation.native_thread_id || contextHash(copied) !== contextHash(retained))
       throw new HarnessAdapterError("native_mutation_unknown", "OpenCode did not confirm an independent copy of the selected context.");
+    if (hash(await history(runtime, conversation.native_thread_id)) !== operation.expected_history_hash)
+      throw new HarnessAdapterError("native_mutation_unknown", "OpenCode source history changed during native fork dispatch.");
     turns = copied;
     if (operation.kind === "fork") return {command_id: commandId, session_id: request.session_id, operation: "fork", filesystem_undo: false,
       fork: {session_id: operation.target_session_id, continuation_group_key: operation.continuation_group_key, native_reference: nativeId}};

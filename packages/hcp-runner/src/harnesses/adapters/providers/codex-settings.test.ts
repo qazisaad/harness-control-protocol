@@ -48,6 +48,36 @@ test("native settings reject changed authority, clamped effort and a different m
     assert.equal(f.subscribed(),false);
   }
 });
+test("native automatic review requires exact effective reviewer evidence, including cached settings",async()=>{
+  const f=fixture();
+  const expected={...f.expected,approvalsReviewer:"auto_review" as const};
+  await assert.rejects(updateCodexRootSettings(f.rpc,expected,new AbortController().signal),/authorized effective/);
+  const native={...f.settings,approvalsReviewer:"auto_review"};
+  f.rpc.request=async()=>{f.send(native);return {};};
+  assert.equal((await updateCodexRootSettings(f.rpc,expected,new AbortController().signal)).approvalsReviewer,"auto_review");
+  const cached=readCodexSettingsNotification({method:"thread/settings/updated",params:{threadId:"root",threadSettings:native}})!;
+  await assert.rejects(updateCodexRootSettings(f.rpc,f.expected,new AbortController().signal,cached),/authorized effective/);
+});
+test("service tier changes and resets require native readback before root admission",async()=>{
+  const f=fixture();
+  f.rpc.request=async(_method,params)=>{
+    const tier=(params as {serviceTier:string|null}).serviceTier;
+    f.send({...f.settings,serviceTier:tier});return {};
+  };
+  assert.equal((await updateCodexRootSettings(f.rpc,{...f.expected,serviceTier:"fast"},new AbortController().signal)).serviceTier,"fast");
+  const previous=readCodexSettingsNotification({method:"thread/settings/updated",params:{threadId:"root",threadSettings:{...f.settings,serviceTier:"fast"}}})!;
+  assert.equal((await updateCodexRootSettings(f.rpc,f.expected,new AbortController().signal,previous)).serviceTier,null);
+  f.rpc.request=async()=>{f.send({...f.settings,serviceTier:"fast"});return {};};
+  await assert.rejects(updateCodexRootSettings(f.rpc,f.expected,new AbortController().signal),/authorized effective/);
+});
+test("native service-tier aliases keep the actual canonical tier in readback",async()=>{
+  const f=fixture();
+  f.rpc.request=async()=>{f.send({...f.settings,serviceTier:"priority"});return {};};
+  assert.equal((await updateCodexRootSettings(f.rpc,{...f.expected,serviceTier:"fast"},new AbortController().signal)).serviceTier,"priority");
+  await assert.rejects(updateCodexRootSettings(f.rpc,{...f.expected,serviceTier:"default"},new AbortController().signal),/authorized effective/);
+  f.rpc.request=async()=>{f.send({...f.settings,serviceTier:"default"});return {};};
+  assert.equal((await updateCodexRootSettings(f.rpc,f.expected,new AbortController().signal)).serviceTier,"default");
+});
 test("native workspace settings cannot gain temporary directories or writable roots",async()=>{
   const f=fixture();const sandbox={type:"workspaceWrite",writableRoots:[tmpdir()],excludeTmpdirEnvVar:true,excludeSlashTmp:true};
   f.rpc.request=async()=>{f.send({...f.settings,sandboxPolicy:{...sandbox,excludeTmpdirEnvVar:false}});return {};};
@@ -90,4 +120,57 @@ test("a cold confirmation handshake cannot admit a root if the native restoratio
   };
   await assert.rejects(updateCodexRootSettings(f.rpc,f.expected,abort.signal),/restoration unavailable/);
   assert.equal(calls,3);assert.equal(f.subscribed(),false);
+});
+
+test("owned native settings retain explicit network authority even on cached no-op settings", async () => {
+  const f = fixture(), sandbox = {type: "workspaceWrite", writableRoots: [tmpdir()], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true};
+  const expected = {...f.expected, sandbox};
+  for (const networkAccess of [undefined, true]) {
+    const {networkAccess: _network, ...withoutNetwork} = sandbox;
+    const settings = {...f.settings, sandboxPolicy: {...withoutNetwork, ...(networkAccess === undefined ? {} : {networkAccess})}};
+    f.rpc.request = async () => {f.send(settings);return {};};
+    await assert.rejects(updateCodexRootSettings(f.rpc, expected, new AbortController().signal), /network policy/);
+    const cached = readCodexSettingsNotification({method: "thread/settings/updated", params: {threadId: "root", threadSettings: settings}})!;
+    f.rpc.request = async () => assert.fail("An observed no-op does not require a mutation");
+    await assert.rejects(updateCodexRootSettings(f.rpc, expected, new AbortController().signal, cached), /network policy/);
+  }
+  f.rpc.request = async () => {f.send({...f.settings, sandboxPolicy: sandbox});return {};};
+  assert.equal((await updateCodexRootSettings(f.rpc, expected, new AbortController().signal)).sandboxPolicy.networkAccess, false);
+});
+
+test("cached effective settings compare granular prompt authority structurally and refuse broadened flows", async () => {
+  const f = fixture();
+  const policy = {granular: {sandbox_approval: false, rules: true, skill_approval: false, request_permissions: false, mcp_elicitations: false}};
+  const snapshot = readCodexSettingsNotification({method: "thread/settings/updated", params: {threadId: "root", threadSettings: {...f.settings, effort: "low", approvalPolicy: policy}}});
+  assert.ok(snapshot);
+  const expected = {...f.expected, approvalPolicy: structuredClone(policy)};
+  const accepted = await updateCodexRootSettings(f.rpc, expected, new AbortController().signal, snapshot);
+  assert.deepEqual(accepted.approvalPolicy, policy);
+  await assert.rejects(updateCodexRootSettings(f.rpc, {...expected, approvalPolicy: {granular: {...policy.granular, sandbox_approval: true}}},
+    new AbortController().signal, snapshot), /authorized effective/);
+});
+
+test("reasoning summary requires native readback and removal restores auto instead of retaining detailed", async () => {
+  const f = fixture();
+  f.rpc.request = async (_method, params) => {
+    const summary = (params as {summary: string}).summary;
+    f.send({...f.settings, summary}); return {};
+  };
+  const detailed = await updateCodexRootSettings(f.rpc, {...f.expected, summary: "detailed"}, new AbortController().signal);
+  assert.equal(detailed.summary, "detailed");
+  const previous = readCodexSettingsNotification({method: "thread/settings/updated", params: {threadId: "root", threadSettings: detailed}})!;
+  assert.equal((await updateCodexRootSettings(f.rpc, {...f.expected, summary: "auto"}, new AbortController().signal, previous)).summary, "auto");
+  f.rpc.request = async () => {f.send({...f.settings, summary: "none"}); return {};};
+  await assert.rejects(updateCodexRootSettings(f.rpc, {...f.expected, summary: "detailed"}, new AbortController().signal), /authorized effective/);
+  f.rpc.request = async () => {f.send(); return {};};
+  await assert.rejects(updateCodexRootSettings(f.rpc, {...f.expected, summary: "detailed"}, new AbortController().signal), /authorized effective/);
+});
+
+test("summary selection rejects unsupported, duplicate and non-string values before native admission", async () => {
+  const {selectedEffort} = await import("./native-turn.js");
+  for (const value of ["verbose", true, 0, null])
+    assert.throws(() => selectedEffort({model: "model", options: [{id: "reasoningSummary", value: value as never}]}, "codex"), /reasoning summary/);
+  assert.throws(() => selectedEffort({model: "model", options: [{id: "reasoningSummary", value: "auto"}, {id: "reasoningSummary", value: "detailed"}]}, "codex"), /Duplicate/);
+  assert.throws(() => selectedEffort({model: "model", options: [{id: "reasoningSummary", value: "detailed"}]}, "claude"), /Unsupported/);
+  assert.equal(selectedEffort({model: "model", options: [{id: "reasoningSummary", value: "detailed"}, {id: "reasoningEffort", value: "high"}]}, "codex"), "high");
 });

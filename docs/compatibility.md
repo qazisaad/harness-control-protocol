@@ -43,6 +43,16 @@ The native Codex/Claude drivers replace the old completion-only CLI paths. Their
 
 ## Runner Compatibility
 
+### 0.5.0 migration candidate
+
+Upgrade protocol, SDK, runner and the consuming control plane's generated schema together. The envelope remains `hcp.v0`; strict older parsers reject the new known `native.execution.admitted` event and new capability/result/event data fields, including optional native part and request identity. Pairing continues to compare the exported schema digest. This candidate has not been published.
+
+Native work history results now require `owner_status`, separating live and retained reads. Retained inspection does not restore an execution owner. Child fork and terminal reconciliation require explicit capabilities, unchanged revision/custody and durable command receipts. Unknown session closure remains fenced across restart. New private custody, root admission and configuration authority fields are optional on old state; missing evidence cannot authorize new recovery or catalog replacement.
+
+`turn.started` remains application admission. Consumers needing native checkpoint boundaries must use `native.execution.admitted`; multiple native executions can belong to one application turn. `session.configured.native_reference` is emitted only with native conversation readiness. An absent reference is unavailable.
+
+Explicit MCP catalog transitions retain non-tool authority and require exact native registry readback. `approval_reviewer: "native_auto"` is capability-gated and confirmed through native policy/settings. Codex service-tier selection preserves the effective native value, including `fast` → `priority` and clearing → `default`. Task progress counters are native work observations, not additional billed conversation usage.
+
 Compatible runner changes include:
 
 - Stronger validation that rejects previously invalid or unsafe inputs.

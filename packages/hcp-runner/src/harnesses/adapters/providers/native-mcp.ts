@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import {harnessNativeRequestIdentitySchema} from "@harness-control/protocol";
 import { HarnessAdapterError, type HarnessMcpToolset, type HarnessMcpReviewer, type HarnessMcpDispatch } from "../types.js";
 import type { McpToolCallResult, McpReviewPolicy, McpReviewGrant } from "../../../mcp/McpAttachmentClient.js";
 
@@ -7,6 +8,7 @@ const callSchema = z.object({
   threadId: z.string().min(1), turnId: z.string().min(1), callId: z.string().min(1),
   namespace: z.string().nullable().optional(), tool: z.string().min(1),
   arguments: z.record(z.string(), z.unknown()),
+  native_request: harnessNativeRequestIdentitySchema.optional(),
 });
 export type NativeMcpCall = z.infer<typeof callSchema>;
 type Content = {type: "inputText"; text: string} | {type: "inputImage"; imageUrl: string} | {type: "inputAudio"; audioUrl: string};
@@ -73,6 +75,10 @@ export class NativeMcpBridge {
   async call(params: unknown, binding: {threadId: string; turnId: string}, signal: AbortSignal): Promise<NativeMcpResult> {
     signal.throwIfAborted();
     const call = callSchema.parse(params);
+    if (call.native_request && (call.native_request.native_reference !== call.threadId ||
+        call.native_request.call_reference !== undefined && call.native_request.call_reference !== call.callId ||
+        call.native_request.execution_reference !== undefined && call.native_request.execution_reference !== call.turnId))
+      throw new HarnessAdapterError("mcp_native_request_binding", "Native MCP observation differs from its physical invocation.");
     const toolset = call.namespace ? this.#toolsets.get(call.namespace) : undefined;
     if (call.threadId !== binding.threadId || call.turnId !== binding.turnId ||
         !toolset || !toolset.names.has(call.tool)) {
@@ -91,13 +97,15 @@ export class NativeMcpBridge {
       if (requiresReview) {
         if (!this.reviewer) throw new HarnessAdapterError("mcp_review_unavailable", "This tool requires platform review before execution.");
         const decision = await this.reviewer.request({attachment_name: toolset.name, tool_name: call.tool, arguments: structuredClone(call.arguments),
-          native_thread_id: call.threadId, native_turn_id: call.turnId, native_call_id: call.callId}, signal);
+          native_thread_id: call.threadId, native_turn_id: call.turnId, native_call_id: call.callId,
+          ...(call.native_request ? {native_request: structuredClone(call.native_request)} : {})}, signal);
         signal.throwIfAborted();
         if (decision === null) return {success: false, contentItems: [{type: "inputText" as const, text: "The user declined this tool call."}]};
         grant = decision;
       }
       const request = {attachment_name: toolset.name, tool_name: call.tool, arguments: structuredClone(call.arguments),
-        native_thread_id: call.threadId, native_turn_id: call.turnId, native_call_id: call.callId};
+        native_thread_id: call.threadId, native_turn_id: call.turnId, native_call_id: call.callId,
+        ...(call.native_request ? {native_request: structuredClone(call.native_request)} : {})};
       const result = this.reviewer?.invoke
         ? await this.reviewer.invoke(request, toolset.callTool, signal, grant)
         : await toolset.callTool(call.tool, call.arguments, grant);

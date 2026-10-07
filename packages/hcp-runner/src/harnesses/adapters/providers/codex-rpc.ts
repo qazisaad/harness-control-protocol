@@ -1,3 +1,4 @@
+import {HARNESS_CONTENT_MAX_BYTES} from "@harness-control/protocol";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 import { HarnessAdapterError } from "../types.js";
@@ -5,7 +6,7 @@ import { NativeProcess } from "./native-process.js";
 import { processFailureMessage } from "./cli-process.js";
 
 const messageSchema = z.object({
-  id: z.union([z.string(), z.number()]).optional(),
+  id: z.union([z.string().min(1).max(512), z.number().int().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER)]).optional(),
   method: z.string().optional(),
   params: z.unknown().optional(),
   result: z.unknown().optional(),
@@ -16,9 +17,11 @@ export type RpcMessage = z.infer<typeof messageSchema>;
 export class CodexRpcRequestError extends HarnessAdapterError {
   constructor(message: string, readonly nativeCode?: number) {super("codex_request_failed", message);}
 }
+export type RpcRequestContext = {readonly requestId: string | number};
 export type RpcRequestHandler = (
   params: unknown,
   signal: AbortSignal,
+  context?: RpcRequestContext,
 ) => Promise<unknown>;
 type Pending = {
   resolve: (value: unknown) => void;
@@ -56,12 +59,12 @@ export class CodexRpc {
         this.#buffer += this.#decoder.write(chunk);
         let newline: number;
         while ((newline = this.#buffer.indexOf("\n")) >= 0) {
-          if (newline > 8 * 1024 * 1024) throw new Error("Oversized frame");
+          if (Buffer.byteLength(this.#buffer.slice(0, newline)) > HARNESS_CONTENT_MAX_BYTES) throw new Error("Oversized frame");
           const line = this.#buffer.slice(0, newline);
           this.#buffer = this.#buffer.slice(newline + 1);
           this.#receive(messageSchema.parse(JSON.parse(line)));
         }
-        if (Buffer.byteLength(this.#buffer) > 8 * 1024 * 1024)
+        if (Buffer.byteLength(this.#buffer) > HARNESS_CONTENT_MAX_BYTES)
           throw new Error("Oversized frame");
       } catch {
         this.#fail(
@@ -122,11 +125,11 @@ export class CodexRpc {
   }
 
   /** A persistent router can delegate an exact root request to the currently admitted turn. */
-  handleTurnRequest(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
+  handleTurnRequest(method: string, params: unknown, signal: AbortSignal, context?: RpcRequestContext): Promise<unknown> {
     signal.throwIfAborted();
     const handler = this.#handlers.get(method);
     if (!handler) throw new HarnessAdapterError("native_request_owner_missing", "No admitted root owns this native callback.");
-    return handler(params, signal);
+    return handler(params, signal, context);
   }
 
   observeNotifications(observer: (message: RpcMessage) => void): () => void {
@@ -150,7 +153,7 @@ export class CodexRpc {
     const turn = z.object({threadId: z.string().min(1), turnId: z.string().min(1)}).safeParse(params);
     if (turn.success) this.#requestTurns.set(id, turn.data);
     try {
-      const result = await handler(params, AbortSignal.any([this.#requestsAbort.signal, controller.signal]));
+      const result = await handler(params, AbortSignal.any([this.#requestsAbort.signal, controller.signal]), Object.freeze({requestId: id}));
       if (!this.#failure && !controller.signal.aborted) this.#write({ id, result });
     } catch {
       if (!this.#failure && !controller.signal.aborted) {

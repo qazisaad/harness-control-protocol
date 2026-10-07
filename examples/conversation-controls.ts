@@ -2,7 +2,7 @@ import {randomUUID, createHash} from "node:crypto";
 import type {HarnessAdapter, HarnessAdapterConversationInput, HarnessAdapterTurnInput, HarnessAdapterStartInput,
   HarnessAdapterEvent} from "@harness-control/runner/harnesses";
 import {HarnessAdapterError} from "@harness-control/runner/harnesses";
-import type {HcpConversationResultPayload, HarnessInstructions} from "@harness-control/protocol";
+import type {HcpConversationResultPayload, HarnessInstructions, HarnessNativeRequestIdentity} from "@harness-control/protocol";
 
 type Turn = {id: string; status: string; items: Array<Record<string, string>>};
 const revision = (turns: Turn[]) => createHash("sha256").update(JSON.stringify(turns)).digest("hex");
@@ -16,7 +16,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
   readonly sessionEvents = true;
   readonly nativeWork = true;
   readonly executionProfiles = [{id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, native_work_history: "live_owner" as const,
-    empty_conversation: true, idle_configuration_transition: true,
+    root_settings_readback: true, sandbox_options: ["network_access" as const],
+    empty_conversation: true, idle_configuration_transition: true, idle_mcp_catalog_transition: true,
     native_feedback: {owner: "live_conversation" as const, classifications: ["bug"], diagnostics: true},
     account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const, mcp_detach: "idle_session" as const}];
   readonly mcpNames = new Map<string, Set<string>>();
@@ -28,7 +29,8 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     for (const name of input.names) names.delete(name);
     return {source: "native" as const, detached: [...input.names], remaining: [...names]};
   }
-  readonly requests = new Map<string, {id: string; turnId?: string}>();
+  readonly requests = new Map<string, {id: string; turnId?: string; nativeRequest: HarnessNativeRequestIdentity}>();
+  readonly nativeReferences = new Map<string, string>();
   inputsReceived = 0;
   nativeCancellations = 0;
   feedbackSubmissions = 0;
@@ -84,7 +86,7 @@ export class ControlHarnessAdapter implements HarnessAdapter {
           throw new HarnessAdapterError("input_binding", "Wrong native input owner.");
         if (JSON.stringify(response.value) !== JSON.stringify({answer: "continue"})) throw new HarnessAdapterError("input_shape", "Expected fixture answer.");
         input.emitSessionEvent!({event_type: "user_input.resolved", ...(request.turnId ? {turn_id: request.turnId} : {}), data: {
-          request_id: request.id, session_id: response.session_id, ...(request.turnId ? {turn_id: request.turnId} : {request_scope: "session"}), actor_id: response.actor_id, cancelled: false, resolved_at: new Date().toISOString()}});
+          request_id: request.id, session_id: response.session_id, native_request: request.nativeRequest, ...(request.turnId ? {turn_id: request.turnId} : {request_scope: "session"}), actor_id: response.actor_id, cancelled: false, resolved_at: new Date().toISOString()}});
         this.inputsReceived++; this.requests.delete(input.payload.session_id);
       },
     });
@@ -92,16 +94,22 @@ export class ControlHarnessAdapter implements HarnessAdapter {
     const nativeId = input.nativeConversation?.native_thread_id ?? randomUUID();
     if (!input.nativeConversation) this.histories.set(nativeId, []);
     if (!this.histories.has(nativeId)) throw new HarnessAdapterError("history_unavailable", "Fixture history is unavailable.");
+    this.nativeReferences.set(input.payload.session_id, nativeId);
     return {adapter_session_id: nativeId, native_thread_id: nativeId, native_policy_readback: {source: "native" as const,
-      execution_profile: input.payload.execution_profile ?? "isolated", approval_policy: input.payload.approval_policy, sandbox_mode: input.payload.sandbox_mode}};
+      ...(input.payload.sandbox_options ? {sandbox_options: input.payload.sandbox_options} : {}),
+      execution_profile: input.payload.execution_profile ?? "isolated", approval_policy: input.payload.approval_policy, sandbox_mode: input.payload.sandbox_mode},
+      ...(input.payload.conversation_transition?.change === "mcp_catalog" ? {native_mcp_catalog_readback: {
+        source: "native" as const, attachments: [...this.mcpNames.get(input.payload.session_id)!]}} : {})};
   }
   emitObservation(sessionId: string, phase: string) {
     this.observations.get(sessionId)!({event_type: "extension.example.observation", data: {summary: "Native observation", fields: {phase}}});
   }
   requestLateInput(sessionId: string, turnId?: string) {
-    const id = randomUUID(); this.requests.set(sessionId, {id, ...(turnId ? {turnId} : {})});
+    const id = randomUUID();
+    const nativeRequest: HarnessNativeRequestIdentity = {source: "native", native_reference: this.nativeReferences.get(sessionId)!, request_reference: `fixture-request-${randomUUID()}`};
+    this.requests.set(sessionId, {id, nativeRequest, ...(turnId ? {turnId} : {})});
     this.observations.get(sessionId)!({event_type: "user_input.requested", ...(turnId ? {turn_id: turnId} : {}), data: {
-      request_id: id, session_id: sessionId, ...(turnId ? {turn_id: turnId} : {request_scope: "session"}), prompt: "Continue background work?", input_kind: "form", required: true,
+      request_id: id, session_id: sessionId, native_request: nativeRequest, ...(turnId ? {turn_id: turnId} : {request_scope: "session"}), prompt: "Continue background work?", input_kind: "form", required: true,
       form_schema: {type: "object", properties: {answer: {type: "string"}}, required: ["answer"], additionalProperties: false},
       expires_at: new Date(Date.now() + 60_000).toISOString(), redaction: "none"}});
     return id;
@@ -138,8 +146,10 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       });
     }
     const turns = this.histories.get(nativeId)!;
+    const admission = input.beginNativeExecution?.(nativeId);
     if (input.payload.action === "compact") text = "compacted";
     turns.push({id: input.payload.turn_id, status: "completed", items: [{id: input.payload.turn_id, type: "text", text}]});
+    if (admission) input.confirmNativeExecution?.(admission, input.payload.turn_id);
     const full = input.payload.files?.length || input.payload.context ? text : text.repeat(30_000);
     const reference = input.publishContent!(full);
     const context = {status: "measured" as const, source: "example.native.context", observed_at: new Date().toISOString(),
@@ -177,8 +187,19 @@ export class ControlHarnessAdapter implements HarnessAdapter {
       input.save({...conversation, rollback: {command_id: commandId, source_hash: revision(turns), target_hash: revision(retained), phase: "completed"}});
     }
     const current = this.histories.get(conversation.native_thread_id)!;
+    let offset = 0;
+    if (operation.kind === "read" && operation.cursor) {
+      const [sourceHash, value] = operation.cursor.split(":");
+      offset = Number(value);
+      if (sourceHash !== revision(current) || !Number.isSafeInteger(offset) || offset < 0 || offset > current.length)
+        throw new HarnessAdapterError("history_changed", "The fixture cursor no longer identifies this native snapshot.");
+    }
+    const end = current.length - offset;
+    const selected = operation.kind === "read" ? current.slice(Math.max(0, end - (operation.limit ?? 100)), end) : current;
+    const consumed = offset + selected.length;
     return {command_id: commandId, session_id: request.session_id, operation: operation.kind, filesystem_undo: false,
-      history: {history_hash: revision(current), turn_count: current.length, truncated: false, turns: current.map(turn => ({...turn,
+      history: {history_hash: revision(current), turn_count: current.length, truncated: consumed < current.length,
+        ...(consumed < current.length ? {next_cursor: `${revision(current)}:${consumed}`} : {}), turns: selected.map(turn => ({...turn,
         portable_fidelity: "full", portable_items: turn.items.map(item => ({id: item.id!, status: "completed", type: "message", role: "assistant",
           body: {storage: "inline", value: item.text!}}))}))}};
   }

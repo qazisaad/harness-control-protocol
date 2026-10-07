@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {mkdtemp, readFile, rm, symlink, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, realpath, rm, symlink, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join, relative} from "node:path";
 import {test} from "node:test";
@@ -11,7 +11,7 @@ import {MemoryRunnerStateStore} from "../state/index.js";
 import {harnessInputFileOperationSchema, hcpTurnSendPayloadSchema, type HarnessInputFileReference, type HcpSessionStartPayload} from "@harness-control/protocol";
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "hcp-files-test-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "hcp-files-test-")));
   const cwd = join(root, "workspace");
   const {mkdir} = await import("node:fs/promises");
   await mkdir(cwd);
@@ -125,9 +125,9 @@ test("relative private directories are canonicalized and independent stores cann
 test("upload quotas reserve declared lengths and release unused uploads without evicting history", async () => {
   const f = await fixture();
   try {
-    for (let i = 0; i < 8; i++) f.store.operation(f.scope, `large-${i}`, {kind: "input_file", request: {action: "create", ...f.description, byte_length: 32 * 1024 * 1024}});
+    for (let i = 0; i < 100; i++) f.store.operation(f.scope, `large-${i}`, {kind: "input_file", request: {action: "create", ...f.description, byte_length: 50 * 1024 * 1024}});
     assert.throws(() => f.create(), /store is full/);
-    const reference = f.store.operation(f.scope, "large-0", {kind: "input_file", request: {action: "create", ...f.description, byte_length: 32 * 1024 * 1024}}).reference;
+    const reference = f.store.operation(f.scope, "large-0", {kind: "input_file", request: {action: "create", ...f.description, byte_length: 50 * 1024 * 1024}}).reference;
     assert.equal(f.store.operation(f.scope, "release", {kind: "input_file", request: {action: "release", file_id: reference.file_id}}).state, "released");
     assert.equal(f.create().state, "uploading");
   } finally {await f.cleanup();}
@@ -135,7 +135,7 @@ test("upload quotas reserve declared lengths and release unused uploads without 
 
 test("wire input rejects paths, invalid display names, oversized chunks and files on compaction", () => {
   const description = {filename: "file.txt", mime_type: "text/plain", byte_length: 1, sha256: "a".repeat(64)};
-  for (const change of [{filename: "../escape"}, {path: "/etc/passwd"}, {filename: "line\nname"}, {byte_length: 33 * 1024 * 1024}])
+  for (const change of [{filename: "../escape"}, {path: "/etc/passwd"}, {filename: "line\nname"}, {byte_length: 50 * 1024 * 1024 + 1}])
     assert.equal(harnessInputFileOperationSchema.safeParse({kind: "input_file", request: {action: "create", ...description, ...change}}).success, false);
   assert.equal(harnessInputFileOperationSchema.safeParse({kind: "input_file", request: {action: "append", file_id: "b".repeat(64), offset: 0, data_base64: Buffer.alloc(65538).toString("base64")}}).success, false);
   assert.equal(hcpTurnSendPayloadSchema.safeParse({session_id: "session", turn_id: "turn", input: "", action: "compact", files: [{reference: {...description, file_id: "b".repeat(64)}, delivery: "file_context"}]}).success, false);
@@ -179,5 +179,96 @@ test("manager uploads before native conversation creation, projects only selecte
     const nativePath = JSON.parse(seen[0]!.slice(seen[0]!.indexOf("[{")))[0].path as string;
     await assert.rejects(readFile(nativePath), /ENOENT/);
     await assert.rejects(readFile(join(f.directory, `${reference.file_id}.bin`)), /ENOENT/);
+  } finally {await f.cleanup();}
+});
+
+async function sealedImage(f: Awaited<ReturnType<typeof fixture>>, bytes = Buffer.alloc(600_000, 7)) {
+  const {harnessImageFileReferenceSchema} = await import("@harness-control/protocol");
+  const reference = harnessImageFileReferenceSchema.parse(f.store.operation(f.scope, "image-create", {kind: "input_file", request: {action: "create", filename: "fixture.png", mime_type: "image/png",
+    byte_length: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex")}}).reference);
+  for (let offset = 0; offset < bytes.byteLength; offset += 65536) f.store.operation(f.scope, `image-append-${offset}`, {kind: "input_file", request: {action: "append", file_id: reference.file_id, offset, data_base64: bytes.subarray(offset, offset + 65536).toString("base64")}});
+  f.store.operation(f.scope, "image-seal", {kind: "input_file", request: {action: "seal", file_id: reference.file_id}});
+  return {reference, bytes};
+}
+test("owned images resolve exact large binary bodies and pin retention without materializing workspace paths", async () => {
+  const f = await fixture();try {
+    const {reference, bytes} = await sealedImage(f);
+    const projected = f.store.nativeImages(f.scope, [reference]);assert.equal(projected[0]!.data_base64, bytes.toString("base64"));assert.deepEqual(projected[0]!.reference, reference);
+    await assert.rejects(readFile(join(f.cwd, ".hcp-inputs", reference.file_id, "input.png")), {code: "ENOENT"});
+    assert.throws(() => f.store.operation(f.scope, "release-delivered-image", {kind: "input_file", request: {action: "release", file_id: reference.file_id}}), /retained by native history/);
+    const restored = new OwnedHarnessInputFileStore(f.directory);assert.deepEqual(restored.nativeImages(f.scope, [reference]), projected);
+    restored.fork(f.scope, "conversation:child");restored.retire(f.scope);
+    assert.equal(restored.nativeImages({...f.scope, owner: "conversation:child"}, [reference])[0]!.data_base64, projected[0]!.data_base64);
+    restored.retire({...f.scope, owner: "conversation:child"});await assert.rejects(readFile(join(f.directory, `${reference.file_id}.bin`)), {code: "ENOENT"});
+  } finally {await f.cleanup();}
+});
+test("owned image delivery refuses foreign scope, unsealed bytes, changed references and corrupted storage", async () => {
+  const f = await fixture();try {
+    const {reference, bytes} = await sealedImage(f);
+    assert.throws(() => f.store.nativeImages({...f.scope, owner: "conversation:foreign"}, [reference]), /unavailable/);
+    assert.throws(() => f.store.nativeImages(f.scope, [{...reference, filename: "changed.png"}]), /unavailable/);
+    const {harnessImageFileReferenceSchema} = await import("@harness-control/protocol");
+    const unsealed = harnessImageFileReferenceSchema.parse(f.store.operation(f.scope, "unsealed-image", {kind: "input_file", request: {action: "create", filename: "second.png", mime_type: "image/png", byte_length: 1, sha256: "a".repeat(64)}}).reference);
+    assert.throws(() => f.store.nativeImages(f.scope, [unsealed]), /unavailable/);
+    await writeFile(join(f.directory, `${reference.file_id}.bin`), Buffer.alloc(bytes.length, 8));
+    assert.throws(() => f.store.nativeImages(f.scope, [reference]), /integrity/);
+  } finally {await f.cleanup();}
+});
+test("manager delivers owned images through typed native bytes and retains their exact reference across continuation", async () => {
+  const f = await fixture();const {uploadHcpImageFile} = await import("@harness-control/sdk");const {nativeTurnImages} = await import("./adapters/providers/native-images.js");
+  let turns = 0;const seen: string[] = [];
+  const adapter: HarnessAdapter = {driverKind: "example", ownedImageInputs: true,
+    async probe() {return {driver_kind: "example", installed: true, available: true, models: []};},async validateStart() {},async startSession() {return {adapter_session_id: "native"};},
+    async sendTurn(input) {turns++;assert.equal(input.payload.images, undefined);seen.push(nativeTurnImages(input)[0]!.data_base64);input.persistNativeThread?.("native");
+      return [{event_type: "turn.completed", turn_id: input.payload.turn_id, data: {final_output: {final_text: "fixture"}}}];},async stopSession() {return [];},async cancelTurn() {return [];}};
+  const config = RunnerConfigSchema.parse({runner_id: "images", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: f.cwd}], provider_instances: [{id: "provider", driver_kind: "example"}]});
+  const state = new MemoryRunnerStateStore();const manager = () => new HarnessSessionManager(config, {stateStore: state, inputFileStore: f.store, adapterRegistry: new HarnessAdapterRegistry([adapter])});
+  let runner = manager();const start: HcpSessionStartPayload = {session_id: "first", workspace_id: "workspace", provider_instance_id: "provider", driver_kind: "example", cwd: f.cwd,
+    sandbox_mode: "read_only", approval_policy: "ask", model_selection: {model: "example"}, mcp_servers: [], continue_session: false, continuation_group_key: "images"};
+  const bytes = new Uint8Array(600_000).fill(7);let command = 0;
+  try {
+    await runner.startSession(start);
+    const uploaded = await uploadHcpImageFile({filename: "fixture.png", mime_type: "image/png", bytes}, async request => {
+      const result = await runner.conversationOperation(`image-${++command}`, {session_id: "first", operation: {kind: "input_file", request}});assert.ok(result.input_file);return result.input_file;
+    });
+    assert.equal(turns, 0);await runner.sendTurn({session_id: "first", turn_id: "one", input: "fixture", image_files: [uploaded.reference]});
+    assert.equal(seen[0], Buffer.from(bytes).toString("base64"));
+    await runner.stopSession("first", "fixture continuation");runner = manager();await runner.startSession({...start, session_id: "second", continue_session: true});
+    await runner.sendTurn({session_id: "second", turn_id: "two", input: "fixture", image_files: [uploaded.reference]});assert.equal(seen[1], seen[0]);
+    await runner.stopSession("second", "fixture closure");
+  } finally {await runner.close();await f.cleanup();}
+});
+
+
+test("maximum-size owned files upload through bounded frames and materialize with exact integrity", async () => {
+  const f = await fixture();
+  try {
+    const {uploadHcpInputFile} = await import("@harness-control/sdk");
+    const bytes = new Uint8Array(50 * 1024 * 1024).fill(37);let command = 0, chunks = 0;
+    const uploaded = await uploadHcpInputFile({filename: "large.bin", mime_type: "application/octet-stream", bytes}, async request => {
+      if (request.action === "append") {chunks++;assert.ok(JSON.stringify(request).length < 90000);}
+      return f.store.operation(f.scope, `large-upload-${command++}`, {kind: "input_file", request});
+    });
+    assert.equal(chunks, 800);assert.equal(uploaded.reference.byte_length, bytes.byteLength);
+    const context = f.store.materialize(f.scope, [{reference: uploaded.reference, delivery: "file_context"}]);
+    const path = JSON.parse(context.slice(context.indexOf("[{")))[0].path as string;
+    assert.equal(createHash("sha256").update(await readFile(path)).digest("hex"), uploaded.reference.sha256);
+    assert.equal(f.store.operation(f.scope, "large-read", {kind: "input_file", request: {action: "read", file_id: uploaded.reference.file_id}}).state, "retained");
+    assert.throws(() => f.store.operation(f.scope, "large-release", {kind: "input_file", request: {action: "release", file_id: uploaded.reference.file_id}}), /retire the idle conversation/);
+  } finally {await f.cleanup();}
+});
+test("100 selected file contexts retain exact identities and a larger batch refuses before materialization", async () => {
+  const f = await fixture();
+  try {
+    const files = Array.from({length: 100}, (_, index) => {
+      const reference = f.create(`small-${index}`).reference;f.append(reference);
+      f.store.operation(f.scope, `seal-${index}`, {kind: "input_file", request: {action: "seal", file_id: reference.file_id}});
+      return {reference, delivery: "file_context" as const};
+    });
+    assert.throws(() => f.store.materialize(f.scope, [...files, files[0]!]), /at most 100/);
+    const context = f.store.materialize(f.scope, files);
+    const projected = JSON.parse(context.slice(context.indexOf("[{")));
+    assert.equal(projected.length, 100);assert.equal(new Set(projected.map((value: {path: string}) => value.path)).size, 100);
+    for (const file of files) assert.equal(f.store.operation(f.scope, "read", {kind: "input_file", request: {action: "read", file_id: file.reference.file_id}}).state, "retained");
   } finally {await f.cleanup();}
 });

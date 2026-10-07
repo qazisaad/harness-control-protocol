@@ -1,0 +1,23 @@
+{
+  "id": "fixture-content-object-size-exceeded",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "command_id": "content",
+    "operation": "content",
+    "filesystem_undo": false,
+    "content": {
+      "reference": {
+        "content_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "byte_length": 134217729,
+        "format": "text",
+        "expires_at": "2026-01-02T00:00:00.000Z"
+      },
+      "offset": 134217727,
+      "data_base64": "eA=="
+    }
+  }
+}

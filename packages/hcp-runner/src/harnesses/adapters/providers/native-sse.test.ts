@@ -27,7 +27,7 @@ for(const [name,raw,reason]of[
 test("oversized frames release the reader and preserve earlier valid events",async()=>{
   const events:unknown[]=[];let cancelled=false;
   const body=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(encode('data: {"before":true}\n\n'));controller.enqueue(encode('data: '+"x".repeat(8*1024*1024)));},cancel(){cancelled=true;}});
-  await assert.rejects(consumeNativeSse(body,value=>events.push(value),new AbortController().signal),/bounded retention/);
+  await assert.rejects(consumeNativeSse(body,value=>events.push(value),new AbortController().signal,{maxFrameBytes:8*1024*1024}),/bounded retention/);
   assert.deepEqual(events,[{before:true}]);assert.equal(cancelled,true);assert.equal(body.locked,false);
 });
 
@@ -38,4 +38,17 @@ test("controlled cancellation releases a blocked reader without reporting unexpe
   const pending=consumeNativeSse(body,()=>assert.fail("invented cancellation event"),controller.signal);
   await new Promise(resolve=>setImmediate(resolve));controller.abort();await pending;
   assert.equal(cancelled,true);assert.equal(body.locked,false);
+});
+
+
+test("large native image frames preserve complete JSON without losing their observation owner", async () => {
+  const {createHash} = await import("node:crypto");
+  const payload = {type: "message.part.updated", data: "x".repeat(14 * 1024 * 1024)};
+  const raw = encode("data: " + JSON.stringify(payload) + "\n\n");
+  const chunks: Uint8Array[] = [];for (let offset = 0; offset < raw.length; offset += 65536) chunks.push(raw.subarray(offset, offset + 65536));
+  let observed = 0;
+  await assert.rejects(consumeNativeSse(stream(chunks), value => {
+    observed++;assert.equal(createHash("sha256").update(JSON.stringify(value)).digest("hex"), createHash("sha256").update(JSON.stringify(payload)).digest("hex"));
+  }, new AbortController().signal), /closed unexpectedly/);
+  assert.equal(observed, 1);
 });

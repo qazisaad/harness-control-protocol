@@ -29,6 +29,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   notify('thread/status/changed',{threadId:'child',status:{type:'active',activeFlags:[]}});
   notify('item/started',{threadId:'root',turnId:'root-turn',item:{id:'launch',type:'subAgentActivity',agentThreadId:'child',agentPath:'/root/child',kind:'started'}});
   notify('turn/started',{threadId:'child',turn:{id:'child-turn',status:'inProgress'}});
+  if(process.env.MODE==='model-reroute'||process.env.MODE==='foreign-reroute')notify('model/rerouted',{threadId:'child',turnId:process.env.MODE==='foreign-reroute'?'foreign-turn':'child-turn',fromModel:'original-model',toModel:'native-child-model',reason:'highRiskCyberActivity'});
   notify('turn/completed',{threadId:'root',turn:{id:'root-turn',status:'completed',error:null}});
   send({id:m.id,result:{turn:{id:'root-turn'}}});
  } else if(m.method==='thread/read') {
@@ -256,5 +257,22 @@ test("Codex child transcript lookup rechecks exact ownership and never resumes o
     assert.deepEqual(await f.rpc.request("stats", {}), {interrupts: 0, subscriptions: []});
     await f.owner.stop();
     await assert.rejects(f.owner.verifyHistoryOwner(work, new AbortController().signal), /matching execution owner/);
+  } finally {await f.close();}
+});
+
+for (const mode of ["model-reroute", "foreign-reroute"])
+test(`Codex child effective model preserves admitted execution ownership (${mode})`, async () => {
+  const f = await fixture(mode);
+  try {
+    if (mode === "foreign-reroute") {
+      await assert.rejects(f.launch(), /owner was lost/);
+      assert.equal(f.events.some(event => event.event_type === "model.rerouted"), false);
+    } else {
+      await f.launch();
+      assert.equal(f.work().model, "native-child-model");
+      const event = f.events.find(event => event.event_type === "model.rerouted")!;
+      assert.equal(event.turn_id, "app-root"); assert.equal(event.data.native_work_id, f.work().work_id);
+      assert.equal(event.data.to_model, "native-child-model");
+    }
   } finally {await f.close();}
 });

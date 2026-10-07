@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { mcpReviewActionBytes, mcpReviewActionSchema, mcpDelegatedReviewRequestSchema, MCP_REVIEW_META_KEY, MCP_REVIEW_MAX_ACTION_BYTES, MCP_REVIEW_MAX_REQUEST_ID_LENGTH } from "@harness-control/protocol";
-import { hcpSessionStartPayloadSchema, hcpTurnSendPayloadSchema, type HcpSessionStartPayload, type HcpTurnSendPayload, type HcpHarnessEventPayload } from "@harness-control/protocol";
+import { harnessNativeRequestIdentitySchema, hcpSessionStartPayloadSchema, hcpTurnSendPayloadSchema, type HcpSessionStartPayload, type HcpTurnSendPayload, type HcpHarnessEventPayload } from "@harness-control/protocol";
 import { z } from "zod";
 import { mcpInputReplySchema, mcpPendingInputSchema, mcpInputExpiresAt } from "../mcp/input-required.js";
 
@@ -25,6 +25,7 @@ export const persistedMcpReviewSchema = z.object({
   native_turn_id: z.string().min(1),
   native_call_id: z.string().min(1),
   native_work_id: z.string().min(1).max(512).optional(),
+  native_request: harnessNativeRequestIdentitySchema.optional(),
   request_id: z.string().min(1).max(MCP_REVIEW_MAX_REQUEST_ID_LENGTH),
   ...reviewAction,
   expires_at: z.string().datetime({offset: true}),
@@ -43,6 +44,10 @@ export const persistedMcpReviewSchema = z.object({
   ]),
 }).strict().refine(value => value.start.session_id === value.turn.session_id,
   "MCP continuation requires matching session and turn identities.")
+  .refine(value => !value.native_request || value.native_request.native_reference === value.native_thread_id &&
+    (value.native_request.call_reference === undefined || value.native_request.call_reference === value.native_call_id) &&
+    (value.native_request.execution_reference === undefined || value.native_request.execution_reference === value.native_turn_id),
+  "MCP native observation must preserve its physical invocation.")
   .transform(value => ({...value, start: value.start as HcpSessionStartPayload, turn: value.turn as HcpTurnSendPayload}));
 
 export type PersistedMcpReview = z.infer<typeof persistedMcpReviewSchema>;
@@ -54,6 +59,8 @@ export function validateMcpTransition(previous: PersistedMcpReview | undefined, 
   const old = previous?.outcome;
   if (event && ("native_work_id" in event.data ? event.data.native_work_id : undefined) !== next.native_work_id)
     throw new Error("MCP review event changed its native work attribution.");
+  if (event && !isDeepStrictEqual("native_request" in event.data ? event.data.native_request : undefined, next.native_request))
+    throw new Error("MCP review event changed its verified native observation.");
   if (outcome.phase === "review_waiting" || outcome.phase === "review_resuming") {
     const pending = outcome.phase === "review_waiting" ? outcome.pending : outcome.reply.pending;
     const delegated = mcpDelegatedReviewRequestSchema.parse(pending._meta?.[MCP_REVIEW_META_KEY]);

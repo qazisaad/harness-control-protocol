@@ -13,7 +13,12 @@ export async function verifyOpenCodeRequestOrigin(properties: Record<string,unkn
   catch{throw new HarnessAdapterError("native_request_origin_unconfirmed","The native callback's origin could not be read back.");}
   const value=z.object({info:z.object({id,sessionID:id,role:z.literal("assistant"),parentID:id}),
     parts:z.array(z.record(z.string(),z.unknown())).max(1024)}).safeParse(message);
-  if(!value.success||value.data.info.id!==request.data.tool.messageID||value.data.info.sessionID!==sessionId||value.data.info.parentID!==promptId||
-    !value.data.parts.some(part=>part.type==="tool"&&part.callID===request.data.tool.callID&&part.messageID===request.data.tool.messageID&&part.sessionID===sessionId))
+  if (!value.success) throw new HarnessAdapterError("native_request_origin_unconfirmed", "The native callback does not belong to the admitted prompt and tool.");
+  const parts = value.data.parts.filter(part => part.callID === request.data.tool.callID);
+  const part = parts[0];
+  const live = z.object({type: z.literal("tool"), callID: id, messageID: id, sessionID: id,
+    state: z.object({status: z.enum(["pending", "running"])})}).safeParse(part);
+  if(value.data.info.id!==request.data.tool.messageID||value.data.info.sessionID!==sessionId||value.data.info.parentID!==promptId||
+    parts.length !== 1 || !live.success || live.data.messageID !== request.data.tool.messageID || live.data.sessionID !== sessionId)
     throw new HarnessAdapterError("native_request_origin_unconfirmed","The native callback does not belong to the admitted prompt and tool.");
 }

@@ -178,3 +178,31 @@ test("a stalled borrowed Codex history read releases its deadline without stoppi
   assert.deepEqual(methods, ["thread/read"]);
   assert.equal(stopped, 0);
 });
+
+test("a long conversation can roll back more than one public history page in one verified native mutation", async () => {
+  const {hcpConversationRequestPayloadSchema} = await import("@harness-control/protocol");
+  const original = Array.from({length: 111}, (_, index) => ({id: `native-${index}`, status: "completed", items: [{id: `item-${index}`, type: "agentMessage", text: `Answer ${index}`}]}));
+  let turns = original, mutations = 0;
+  const rpc = {async request(method: string, params: unknown) {
+    if (method === "config/read") return {config: {}};
+    if (method === "thread/rollback") {
+      assert.deepEqual(params, {threadId: "native-long", numTurns: 101}); mutations++;
+      turns = turns.slice(0, -101);
+    } else assert.ok(["thread/read", "thread/resume"].includes(method));
+    return {thread: {id: "native-long", historyMode: "legacy", turns}};
+  }} as unknown as CodexRpc;
+  let state: NativeConversation = {native_thread_id: "native-long", binding_hash: "a".repeat(64), provider_binding_hash: "b".repeat(64),
+    updated_at: new Date().toISOString(), cwd: "/tmp", last_session_id: "long", provider_instance_id: "codex", workspace_id: "workspace"};
+  const provider = ProviderInstanceConfigSchema.parse({id: "codex", driver_kind: "codex"});
+  const read = await nativeConversationOperation("read-long", {session_id: "long", operation: {kind: "read", limit: 100}}, state,
+    provider, () => {throw new Error("Read cannot mutate custody");}, undefined, undefined, rpc, "inspection");
+  assert.equal(read.history!.turn_count, 111); assert.equal(read.history!.turns.length, 100);
+  const request = hcpConversationRequestPayloadSchema.parse({session_id: "long", operation: {kind: "rollback", num_turns: 101,
+    expected_history_hash: read.history!.history_hash}});
+  const save = (value: NativeConversation) => {state = value;};
+  const rolled = await nativeConversationOperation("rollback-long", request, state, provider, save, undefined, undefined, rpc, "inspection");
+  assert.equal(rolled.history!.turn_count, 10); assert.equal(rolled.filesystem_undo, false);
+  assert.deepEqual(turns, original.slice(0, 10)); assert.equal(state.rollback?.phase, "completed");
+  const duplicate = await nativeConversationOperation("rollback-long", request, state, provider, save, undefined, undefined, rpc, "inspection");
+  assert.deepEqual(duplicate, rolled); assert.equal(mutations, 1);
+});

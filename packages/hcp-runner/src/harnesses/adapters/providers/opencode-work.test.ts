@@ -31,7 +31,7 @@ test("a newer root cannot answer a retained native child approval",async()=>{
   const f=await activeChild();
   f.work.start.payload={...f.work.start.payload,execution_profile:"background",approval_policy:"ask"};
   f.messages.set("child-assistant",{info:{id:"child-assistant",sessionID:"child",role:"assistant",parentID:"child-prompt"},
-    parts:[{type:"tool",sessionID:"child",messageID:"child-assistant",callID:"child-call"}]});
+    parts:[{type:"tool",sessionID:"child",messageID:"child-assistant",callID:"child-call",state:{status:"running"}}]});
   let interactionOwner:HarnessNativeInteractions|undefined,resolveSeen!:(event:HarnessAdapterEvent)=>void,resolveReply!:()=>void;
   const seen=new Promise<HarnessAdapterEvent>(resolve=>{resolveSeen=resolve;});
   const replied=new Promise<void>(resolve=>{resolveReply=resolve;});
@@ -156,4 +156,27 @@ test("OpenCode child transcript lookup rechecks original parent and workspace wi
   f.work.transport.session = async () => ({id: "child", parentID: "root", directory: tmpdir()});
   f.work.lose();
   await assert.rejects(f.work.verifyHistoryOwner(work, new AbortController().signal), /owner was lost/);
+});
+
+test("child policy waits require exact durable native launch custody before the prompt", async () => {
+  const f = fixture();const controller = new AbortController();
+  const proof = f.work.awaitChildPolicyOwner("child", controller.signal);void proof.catch(() => {});
+  const unconfirmed = f.task();delete unconfirmed.properties.part.state.metadata.jobId;
+  f.work.observe(unconfirmed);await f.work.settled();
+  assert.equal(f.work.childOrigin("child"), undefined);
+  f.work.observe(f.task());
+  const owner = await proof;
+  assert.equal(owner.native_reference, "child");assert.equal(owner.parent_native_reference, "root");assert.equal(owner.origin_turn_id, "app-root");
+  assert.equal(owner.prompt_id, undefined);
+  assert.ok(f.events.some(event => event.event_type === "native.work.updated" && (event.data.work as {work_id: string}).work_id === owner.work_id));
+  f.work.lose();await assert.rejects(f.work.awaitChildPolicyOwner("child", controller.signal), /unavailable|lost/);
+});
+test("child policy waits reject abort, lost ownership and foreign ancestry without manufacturing a child", async () => {
+  const aborted = fixture(), signal = new AbortController();
+  const pending = aborted.work.awaitChildPolicyOwner("child", signal.signal);void pending.catch(() => {});
+  await aborted.work.settled();signal.abort(new Error("cancelled policy observation"));await assert.rejects(pending, /cancelled policy observation/);
+  const lost = fixture();const waiting = lost.work.awaitChildPolicyOwner("child", new AbortController().signal);void waiting.catch(() => {});
+  await lost.work.settled();lost.work.lose();await assert.rejects(waiting, /unavailable|lost/);
+  const foreign = fixture({parent: "foreign"});const refused = foreign.work.awaitChildPolicyOwner("child", new AbortController().signal);void refused.catch(() => {});
+  foreign.work.observe(foreign.task());await assert.rejects(refused, /unavailable|lost/);assert.equal(foreign.work.childOrigin("child"), undefined);
 });

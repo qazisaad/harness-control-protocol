@@ -5,7 +5,7 @@ import type {NativeWorkState} from "../state/index.js";
 import {HarnessAdapterError} from "./adapters/types.js";
 
 export function nativeWorkPage(sessionId: string, state: NativeWorkState, ownerAvailable: boolean, live: ReadonlySet<string>,
-  operation: Extract<HcpConversationRequestPayload["operation"], {action: "read"}>): Extract<NonNullable<HcpConversationResultPayload["work"]>, {action: "read"}> {
+  operation: Extract<HcpConversationRequestPayload["operation"], {kind: "work"; action: "read"}>): Extract<NonNullable<HcpConversationResultPayload["work"]>, {action: "read"}> {
   const rows = Object.values(state.items).sort((a, b) => a.work_id < b.work_id ? -1 : a.work_id > b.work_id ? 1 : 0)
     .map(work => ({work, owner_status: ownerAvailable && live.has(work.work_id) ? "active" as const : "unavailable" as const}));
   const observationHash = createHash("sha256").update(JSON.stringify({sessionId, ownerAvailable, rows, ...(state.closure_unconfirmed ? {closure_unconfirmed: true} : {})})).digest("hex");

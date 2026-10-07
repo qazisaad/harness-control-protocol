@@ -54,4 +54,21 @@ try {
   await until(() => events.some(event => event.turn_id === "followup" && event.event_type === "turn.completed"));
   await peer.stopSession({session_id: "session"}); assert.deepEqual(closed, ["first", "second"]);
   console.log("Packed public MCP detach: native receipt, selected client closure, duplicate command and same-owner follow-up passed.");
+  const history = (await peer.readConversation("session")).payload.history;
+  const next = [descriptors[1], {...descriptors[0], name: "third", url: "https://example.invalid/third"}];
+  const target = {session_id: "catalog-target", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example.controls",
+    model_selection: {model: "fixture"}, approval_policy: "full_access", sandbox_mode: "read_only", execution_profile: "interactive",
+    continue_session: true, continuation_group_key: "conversation", mcp_servers: next,
+    conversation_transition: {transition_id: "catalog-replacement", change: "mcp_catalog", expected_history_hash: history.history_hash}};
+  await peer.startSession(target);
+  await until(() => events.some(event => event.session_id === "catalog-target" && event.event_type === "session.configured"));
+  const configured = events.find(event => event.session_id === "catalog-target" && event.event_type === "session.configured");
+  assert.deepEqual(configured.data.native_mcp_catalog_readback, {source: "native", attachments: ["second", "third"]});
+  assert.equal((await peer.readConversation("catalog-target")).payload.history.history_hash, history.history_hash);
+  assert.equal(events.some(event => event.session_id === "catalog-target" && event.turn_id), false);
+  await peer.sendTurn({session_id: "catalog-target", turn_id: "catalog-followup", input: "Continue with selected catalog"});
+  await until(() => events.some(event => event.turn_id === "catalog-followup" && event.event_type === "turn.completed"));
+  assert.deepEqual([...adapter.mcpNames.get("catalog-target")], ["second", "third"]);
+  await peer.stopSession({session_id: "catalog-target"});
+  console.log("Packed public MCP catalog replacement: preserved history, exact native registry, no model during transition and selected follow-up passed.");
 } finally {if (runner) await runner.close(); await new Promise(resolve => server.close(resolve)); await rm(cwd, {recursive: true, force: true});}

@@ -1,0 +1,25 @@
+{
+  "id": "fixture-native-policy-control-result",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "command",
+    "session_id": "session",
+    "operation": "policy",
+    "filesystem_undo": false,
+    "policy": {
+      "source": "native",
+      "native_reference": "native",
+      "revision": 1,
+      "mode": "execute",
+      "selection": {
+        "approval_policy": "auto_edits",
+        "approval_reviewer": "user"
+      },
+      "observed_at": "2026-01-01T00:00:00.000Z",
+      "native_source": "claude.sdk.system.status",
+      "native_permission_mode": "acceptEdits"
+    }
+  }
+}

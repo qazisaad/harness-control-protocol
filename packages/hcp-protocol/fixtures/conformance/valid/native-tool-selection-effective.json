@@ -1,0 +1,25 @@
+{
+  "id": "fixture-native-tool-selection-effective",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 4,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "event_type": "settings.tools.effective",
+    "data": {
+      "scope": "root",
+      "source": "native",
+      "native_reference": "root",
+      "tool_selection": {
+        "native_builtin_tools": [
+          "Read",
+          "Glob",
+          "Grep"
+        ]
+      }
+    },
+    "turn_id": "turn-1"
+  }
+}

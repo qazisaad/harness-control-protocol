@@ -17,7 +17,7 @@ const statePath = join(cwd, "state.json");
 const config = RunnerConfigSchema.parse({runner_id: "transition-acceptance", control_plane_url: "ws://localhost:8787",
   workspaces: [{id: "workspace", path: cwd}], provider_instances: [{id: driver, driver_kind: driver}]});
 const withMcp = process.env.HCP_LIVE_MCP === "1";
-assert.ok(!withMcp || driver === "claude");
+assert.ok(!withMcp || ["claude", "opencode"].includes(driver));
 let calls = 0, closures = 0;
 const toolMarker = randomUUID(), proxies = [];
 const tool = {name: "get_marker", description: "Return the controlled local acceptance marker.", input_schema: {type: "object", properties: {}, additionalProperties: false}};

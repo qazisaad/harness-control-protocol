@@ -38,3 +38,23 @@ test("OpenCode cannot replace emitted text or rebind an admitted part to another
   assert.throws(() => stream.observe(part("goodbye")), /rewrote streamed text/);
   assert.throws(() => stream.observe({...delta("bad"), properties: {...delta("bad").properties, messageID: "foreign"}}), /another message/);
 });
+
+
+test("OpenCode native end snapshots replace stream previews once and wait for prompt ownership", () => {
+  const events: HarnessAdapterEvent[] = [], stream = new OpenCodeText("session", "prompt", "turn", event => events.push(event));
+  stream.observe(message()); stream.observe(part("preview"));
+  const final = {type: "message.part.updated", properties: {part: {...part("complete replacement").properties.part, time: {start: 1, end: 2}}}};
+  stream.observe(final); stream.observe(final);
+  assert.deepEqual(events.map(event => event.event_type), ["content.delta", "item.completed"]);
+  assert.equal(events[1]?.data.content, "complete replacement");
+  const pending: HarnessAdapterEvent[] = [], buffered = new OpenCodeText("session", "prompt", "turn", event => pending.push(event));
+  buffered.observe(final); assert.equal(pending.length, 0); buffered.observe(message()); assert.equal(pending[0]?.event_type, "item.completed");
+});
+test("OpenCode completed parts cannot change their final body or emit more deltas", () => {
+  const stream = new OpenCodeText("session", "prompt", "turn", () => {}); stream.observe(message());
+  const final = {type: "message.part.updated", properties: {part: {...part("complete").properties.part, time: {start: 1, end: 2}}}};
+  stream.observe(final); assert.throws(() => stream.observe(delta("late")), /closure/);
+  assert.throws(() => stream.observe({...final, properties: {part: {...final.properties.part, text: "changed"}}}), /completed native text/);
+  const incomplete = new OpenCodeText("session", "prompt", "turn", () => {});
+  assert.throws(() => incomplete.observe({type: "message.part.updated", properties: {part: {id: "part", messageID: "message", sessionID: "session", type: "text", time: {start: 1, end: 2}}}}), /completed snapshot/);
+});

@@ -37,3 +37,14 @@ test(`owned OpenCode child snapshots validate every native message and part (${m
   await assert.rejects(readOpenCodeOwnedHistory(messages, "child", AbortSignal.abort(new Error("read abandoned")), {}), /abandoned/);
   assert.equal(reads, before);
 });
+
+
+test("owned OpenCode native media uses portable source fields and actual native part identity", async () => {
+  const messages = async () => [{info: {id: "message", sessionID: "child", role: "user"}, parts: [
+    {id: "actual-part", sessionID: "child", messageID: "message", type: "file", mime: "image/png", filename: "Observed.png", url: "data:image/png;base64,AQID"}]}];
+  const history = await readOpenCodeOwnedHistory(messages, "child", new AbortController().signal, {});
+  const item = history.turns[0]!.portable_items![0]!;
+  assert.equal(item.type, "attachment");assert.equal(item.native_item_reference, "actual-part");
+  assert.deepEqual(item.type === "attachment" && item.body.storage === "inline" && item.body.value,
+    {kind: "embedded", mime_type: "image/png", filename: "Observed.png", data_base64: "AQID"});
+});

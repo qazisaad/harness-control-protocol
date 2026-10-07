@@ -1,0 +1,26 @@
+{
+  "id": "fixture-native-goal-updated",
+  "type": "harness.event",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "session_id": "session-1",
+    "sequence": 4,
+    "created_at": "2026-01-01T00:00:00.000Z",
+    "event_type": "native.goal.updated",
+    "data": {
+      "source": "native",
+      "scope": "root",
+      "admission_id": "goal-1",
+      "origin_turn_id": "turn-1",
+      "native_reference": "root",
+      "native_created_at": 100,
+      "native_updated_at": 101,
+      "objective": "Finish the explicit goal",
+      "status": "active",
+      "tokens_used": 10,
+      "time_used_seconds": 1
+    },
+    "turn_id": "turn-1"
+  }
+}

@@ -295,11 +295,12 @@ test("an adapter may persist mutation evidence but cannot change conversation sc
   } finally {await f.cleanup();}
 });
 
-test("generic forks persist independent bindings and duplicate commands cannot create another native fork", async () => {
+for (const projected of [false, true]) test(`generic forks retain private bindings and replay public identity (projected=${projected})`, async () => {
   const f = await fixture();
   try {
     await f.first.stopSession("session", "idle");
     Object.assign(f.adapter, {conversationOperations: ["read", "fork"]});
+    if (projected) f.adapter.publicNativeReference = reference => reference === "forked-native" ? "public-fork" : reference;
     let mutations = 0;
     f.setOperation(async input => {
       if (input.request.operation.kind !== "fork") throw new Error("expected fork");
@@ -309,6 +310,7 @@ test("generic forks persist independent bindings and duplicate commands cannot c
     });
     const request = {session_id: "session", operation: {kind: "fork" as const, target_session_id: "fork-session", continuation_group_key: "fork-key", expected_history_hash: "a".repeat(64)}};
     const result = await f.first.conversationOperation("fork-command", request);
+    assert.equal(result.fork!.native_reference, projected ? "public-fork" : "forked-native");
     assert.deepEqual(await f.manager().conversationOperation("fork-command", request), result);
     assert.equal(mutations, 1);
     assert.equal(f.state.getNativeConversation("conversation")?.native_thread_id, "native-conversation");
@@ -354,4 +356,38 @@ test("content references are authorized by their session, workspace and original
     await assert.rejects(f.first.conversationOperation("changed", {session_id: "session",
       operation: {kind: "content", content_id: reference!.content_id, offset: 0, limit: 1}}), /original provider/);
   } finally {await f.cleanup();}
+});
+
+test("cold continuation expected identity refuses missing or substituted records before native acquisition", async () => {
+  const f = await fixture(true);await f.first.stopSession("session", "closed");let starts = 0, turns = 0;
+  const startNative = f.adapter.startSession;f.adapter.startSession = async input => {starts++;return startNative(input);};f.adapter.sendTurn = async () => {turns++;throw new Error("No model dispatch authorized.");};
+  const runner = f.manager();
+  try {
+    for (const patch of [{expected_native_reference: "foreign"}, {expected_native_reference: "native-conversation", continuation_group_key: "absent"}])
+      await assert.rejects(runner.startSession({...f.start, session_id: "cold-refused", continue_session: true, ...patch}), error => error instanceof HarnessAdapterError && error.code === "native_continuation_reference_mismatch");
+    assert.equal(starts, 0);assert.equal(turns, 0);assert.equal(runner.activeSessionCount(), 0);
+    assert.equal(f.state.getNativeConversation("conversation")!.last_session_id, "session");
+  } finally {await runner.close();await f.cleanup();}
+});
+test("cold manager verifies retained identity while preserving native configuration and restart fences", async () => {
+  const f = await fixture(true);await f.first.stopSession("session", "closed");const runner = f.manager();
+  try {
+    const events = await runner.startSession({...f.start, session_id: "cold", continue_session: true, expected_native_reference: "native-conversation"});
+    const configured = events.find(event => event.event_type === "session.configured")!;assert.equal((configured.data as {native_reference?: string}).native_reference, "native-conversation");
+    assert.equal(f.state.getNativeConversation("conversation")!.last_session_id, "cold");await runner.stopSession("cold", "closed");
+    await assert.rejects(runner.startSession({...f.start, session_id: "changed-policy", continue_session: true, expected_native_reference: "native-conversation", approval_policy: "ask"}), error => error instanceof HarnessAdapterError && error.code === "native_continuation_binding");
+    assert.equal(runner.activeSessionCount(), 0);
+  } finally {await runner.close();await f.cleanup();}
+});
+
+test("cold identity compares the adapter public reference while retaining private custody binding", async () => {
+  const f = await fixture(true);await f.first.stopSession("session", "closed");
+  f.adapter.publicNativeReference = reference => reference === "native-conversation" ? "public-native" : reference;
+  const runner = f.manager();
+  try {
+    await runner.startSession({...f.start, session_id: "cold-public-reference", continue_session: true, expected_native_reference: "public-native"});
+    assert.equal(f.state.getNativeConversation("conversation")!.native_thread_id, "native-conversation");
+    await runner.stopSession("cold-public-reference", "closed");
+    await assert.rejects(runner.startSession({...f.start, session_id: "cold-private-reference", continue_session: true, expected_native_reference: "native-conversation"}), error => error instanceof HarnessAdapterError && error.code === "native_continuation_reference_mismatch");
+  } finally {await runner.close();await f.cleanup();}
 });

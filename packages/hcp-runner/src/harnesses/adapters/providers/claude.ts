@@ -55,6 +55,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     await Promise.all([...this.#persistent.keys()].map(sessionId => this.stopSession({sessionId})));
   }
   readonly fileContextInputs = true;
+  readonly ownedImageInputs = true;
   readonly promptContextInputs = true;
   readonly executionProfiles = nativeExecutionCapabilities("claude").execution_profiles!;
   readonly sessionEvents = true;
@@ -220,8 +221,9 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       if (this.#persistent.has(input.payload.session_id)) throw new HarnessAdapterError("session_exists", "The interactive Claude session already has a native owner.");
       const runtime = new PersistentClaudeSession(input, this.#queryFactory);
       this.#persistent.set(input.payload.session_id, runtime);
-      const native_policy_readback = input.payload.conversation_transition ? await runtime.confirmIdlePolicy() : undefined;
+      const native_policy_readback = input.payload.conversation_transition || input.payload.approval_reviewer === "native_auto" || input.payload.approval_options ? await runtime.confirmIdlePolicy() : undefined;
       return {adapter_session_id: input.payload.session_id, native_thread_id: runtime.nativeId,
+        ...(runtime.nativeCatalogReadback ? {native_mcp_catalog_readback: runtime.nativeCatalogReadback} : {}),
         ...(native_policy_readback ? {native_policy_readback} : {})};
     }
     return { adapter_session_id: input.payload.session_id };
@@ -246,6 +248,12 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     input: HarnessAdapterCancelInput,
   ): Promise<HarnessAdapterEvent[]> {
     return this.#turns.cancel(input.sessionId, input.turnId);
+  }
+  async updateNativePolicy(input: Parameters<NonNullable<HarnessAdapter["updateNativePolicy"]>>[0]) {
+    const runtime = this.#persistent.get(input.sessionId);
+    if (!runtime || this.#closed) throw new HarnessAdapterError("native_owner_unavailable", "Policy control requires the live interactive Claude owner.");
+    await this.validateStart({payload: input.nextPayload, provider: runtime.start.provider});
+    return runtime.updateIdlePolicy(input);
   }
   async stopSession(
     input: HarnessAdapterStopInput,
@@ -273,6 +281,13 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
     const history = await readClaudeOwnedHistory(input.provider, input.startPayload.cwd, owner, input.signal, input.page, input.publishContent, this.#sessionHelper);
     runtime.historyOwner(input.work);
     return history;
+  }
+  readRetainedNativeWorkHistory(input: Parameters<NonNullable<HarnessAdapter["readRetainedNativeWorkHistory"]>>[0]) {
+    if (input.custody.source !== "claude" || input.work.kind !== "agent" || input.work.native_reference !== input.custody.native_reference
+      || input.custody.parent_native_reference !== input.custody.root_native_reference || input.work.parent_work_id)
+      throw new HarnessAdapterError("native_work_history_binding", "Retained Claude history requires an admitted top-level local agent.");
+    return readClaudeOwnedHistory(input.provider, input.scope.cwd,
+      {sessionId: input.custody.root_native_reference, agentId: input.work.native_reference}, input.signal, input.page, input.publishContent, this.#sessionHelper);
   }
   #runProcess(
     executable: string,

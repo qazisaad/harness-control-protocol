@@ -1,0 +1,12 @@
+{
+  "id": "fixture-native-goal-result-missing-evidence",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "goal-control",
+    "session_id": "session-1",
+    "operation": "goal",
+    "filesystem_undo": false
+  }
+}

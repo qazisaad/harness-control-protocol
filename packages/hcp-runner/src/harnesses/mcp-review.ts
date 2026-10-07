@@ -1,5 +1,7 @@
 import { MCP_REVIEW_META_KEY, mcpDelegatedReviewRequestSchema, mcpReviewActionBytes } from "@harness-control/protocol";
 import { createHash, randomUUID } from "node:crypto";
+import {isDeepStrictEqual} from "node:util";
+import {harnessNativeRequestIdentitySchema} from "@harness-control/protocol";
 import type { HcpHarnessEventPayload, HcpSessionStartPayload, HcpTurnSendPayload, HcpApprovalResponsePayload, HcpInputResponsePayload } from "@harness-control/protocol";
 import type { RunnerStateStore } from "../state/index.js";
 import type { PersistedMcpReview } from "../state/mcp-review.js";
@@ -50,7 +52,8 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     const event = this.#event("approval.requested", {request_id: review.request_id, session_id: this.start.session_id,
       turn_id: this.turn.turn_id, workspace_id: this.start.workspace_id, provider_instance_id: this.start.provider_instance_id,
       driver_kind: this.start.driver_kind, request_type: "mcp_tool", risk_class: "medium", action: review.action_json, action_hash: review.action_hash,
-      allowed_decisions: ["accept", "decline"], expires_at: review.expires_at, display: {title: `Run ${request.tool_name}`}});
+      allowed_decisions: ["accept", "decline"], expires_at: review.expires_at, display: {title: `Run ${request.tool_name}`},
+      ...(review.native_request ? {native_request: review.native_request} : {})});
     this.store.saveMcpReview(review, event);
     return new Promise<McpReviewGrant | null>((resolve, reject) => {
       const finish = (grant: McpReviewGrant | null): void => {cleanup(); resolve(grant);};
@@ -86,6 +89,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
     const actionBytes = mcpReviewActionBytes(action);
     return {start: this.start, turn: this.turn, ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {}),
       native_thread_id: request.native_thread_id, native_turn_id: request.native_turn_id, native_call_id: request.native_call_id,
+      ...(request.native_request ? {native_request: harnessNativeRequestIdentitySchema.parse(request.native_request)} : {}),
       request_id: randomUUID(), action_json: action, action_hash: createHash("sha256").update(actionBytes).digest("hex"),
       expires_at: new Date(Math.min(expiry, Date.now() + 300000)).toISOString(), outcome};
   }
@@ -93,6 +97,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
   validateDecision(response: HcpApprovalResponsePayload): void {this.#decision(response);}
 
   #decision(response: HcpApprovalResponsePayload): PersistedMcpReview {
+    if (response.feedback !== undefined) throw new HarnessAdapterError("mcp_feedback_unsupported", "This MCP callback does not support rejection feedback.");
     const review = this.store.getMcpReview(this.start.session_id);
     if (review && review.native_work_id !== this.nativeWorkId)
       throw new HarnessAdapterError("mcp_review_binding_invalid", "Approval belongs to another native work owner.");
@@ -182,6 +187,7 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       }
       if (reply || grant) {
         if (!retained || retained.native_work_id !== this.nativeWorkId || retained.native_call_id !== request.native_call_id || retained.native_thread_id !== request.native_thread_id ||
+            !isDeepStrictEqual(retained.native_request, request.native_request) ||
             retained.native_turn_id !== request.native_turn_id || Date.parse(
               retained.outcome.phase === "review_resuming" && retained.outcome.decision === "decline"
                 ? declineExpiresAt(retained) : operationExpiresAt(retained)) <= Date.now() ||
@@ -261,10 +267,12 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
       workspace_id: this.start.workspace_id, provider_instance_id: this.start.provider_instance_id, driver_kind: this.start.driver_kind,
       request_type: "mcp_tool", risk_class: "medium", action: outcome.action_json, action_hash: outcome.action_hash,
       allowed_decisions: ["accept", "decline"], expires_at: expiresAt, display: {title: `Run ${delegated!.subject.tool_name}`},
+      ...(record.native_request ? {native_request: record.native_request} : {}),
     }) : this.#event("input.requested", {request_id: outcome.input_request_id, session_id: this.start.session_id,
       turn_id: this.turn.turn_id, prompt: `Provide input for ${request.tool_name}`, input_kind: "form", required: true,
       redaction: "none", expires_at: expiresAt,
-      form_schema: {type: "object", properties, required: Object.keys(properties), additionalProperties: false}});
+      form_schema: {type: "object", properties, required: Object.keys(properties), additionalProperties: false},
+      ...(record.native_request ? {native_request: record.native_request} : {})});
     this.store.saveMcpReview(record, event);
     return new Promise<McpInputReply>((resolve, reject) => {
       const cleanup = (): void => {clearTimeout(timer); signal.removeEventListener("abort", abort); this.#inputWaiting = undefined;};
@@ -340,8 +348,9 @@ export class HarnessMcpReview implements HarnessMcpReviewer {
   interrupt(): void {this.#interruption.abort();}
 
   #event(type: "approval.requested" | "approval.resolved" | "input.requested" | "input.resolved", data: Record<string, unknown>): HcpHarnessEventPayload {
+    const native = data.native_request ?? this.store.getMcpReview(this.start.session_id)?.native_request;
     return {session_id: this.start.session_id, turn_id: this.turn.turn_id,
       sequence: this.store.nextEventSequence(this.start.session_id), event_type: type, created_at: new Date().toISOString(),
-      data: {...data, ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {})}};
+      data: {...data, ...(native ? {native_request: structuredClone(native)} : {}), ...(this.nativeWorkId ? {native_work_id: this.nativeWorkId} : {})}};
   }
 }

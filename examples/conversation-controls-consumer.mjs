@@ -5,8 +5,9 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
 import {WebSocketServer} from "ws";
-import {HcpHostConnection} from "@harness-control/sdk";
+import {HcpHostConnection, resolveHcpHistoryPage} from "@harness-control/sdk";
 import {harnessRateLimitObservationSchema, harnessNativeOutputObservationSchema, harnessNativeRetryObservationSchema} from "@harness-control/protocol";
+import {harnessNativeRequestIdentitySchema, harnessInputRequestedEventDataSchema, harnessInputResolvedEventDataSchema} from "@harness-control/protocol";
 import {RunnerConnection} from "@harness-control/runner/connection";
 import {RunnerConfigSchema} from "@harness-control/runner/config";
 import {HarnessSessionManager, HarnessAdapterRegistry} from "@harness-control/runner/harnesses";
@@ -44,12 +45,13 @@ try {
   runner = new RunnerConnection({config, runnerVersion: "fixture", harnessSessions: sessions});
   await runner.connect(); await until(() => ready);
   const start = {session_id: "session", workspace_id: "workspace", cwd, provider_instance_id: "provider", driver_kind: "example.controls",
-    model_selection: {model: "fixture"}, approval_policy: "full_access", sandbox_mode: "read_only", continue_session: false,
+    model_selection: {model: "fixture"}, approval_policy: "full_access", sandbox_mode: "read_only", sandbox_options: {network_access: false}, continue_session: false,
     execution_profile: "interactive",
     continuation_group_key: "conversation", mcp_servers: [],
     instructions: {system: "Application instructions"},
     configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}};
   await peer.startSession(start);
+  assert.deepEqual(events.find(event => event.event_type === "session.configured").data.native_policy_readback.sandbox_options, start.sandbox_options);
   await peer.sendTurn({session_id: "session", turn_id: "turn", input: "wait-for-steering"});
   await until(() => events.some(event => event.event_type === "content.delta"));
   assert.deepEqual(adapter.instructionsSeen, start.instructions);
@@ -61,10 +63,15 @@ try {
   assert.equal(events.filter(event => event.turn_id === "turn" && event.event_type === "turn.completed").length, 1);
   const lateRequest = adapter.requestLateInput("session", "turn");
   await until(() => events.some(event => event.event_type === "user_input.requested" && event.data.request_id === lateRequest));
+  const requestData = harnessInputRequestedEventDataSchema.parse(events.find(event => event.data.request_id === lateRequest).data);
+  const nativeRequest = harnessNativeRequestIdentitySchema.parse(requestData.native_request);
+  assert.notEqual(nativeRequest.request_reference, lateRequest);
+  assert.equal(nativeRequest.native_reference, adapter.nativeReferences.get("session"));
   await assert.rejects(peer.respondToInput({session_id: "session", turn_id: "wrong-turn", request_id: lateRequest, actor_id: "app-user", value: {answer: "continue"}}));
   assert.equal(adapter.inputsReceived, 0);
   await peer.respondToInput({session_id: "session", turn_id: "turn", request_id: lateRequest, actor_id: "app-user", value: {answer: "continue"}});
   await until(() => events.some(event => event.event_type === "user_input.resolved" && event.data.request_id === lateRequest));
+  assert.deepEqual(harnessInputResolvedEventDataSchema.parse(events.find(event => event.event_type === "user_input.resolved" && event.data.request_id === lateRequest).data).native_request, nativeRequest);
   assert.equal(adapter.inputsReceived, 1);
   const sessionRequest = adapter.requestLateInput("session");
   await until(() => events.some(event => event.event_type === "user_input.requested" && event.data.request_id === sessionRequest));
@@ -97,17 +104,23 @@ try {
   assert.equal(settledChild.status, "cancelled");
   await peer.retireNativeWork("session", child.work_id, settledChild.revision);
   const reference = events.find(event => event.event_type === "turn.completed").data.final_output.content_ref;
-  const chunks = []; let offset = 0;
-  while (true) {
-    const result = await peer.readContent("session", reference.content_id, offset);
-    const chunk = result.payload.content; chunks.push(Buffer.from(chunk.data_base64, "base64"));
-    if (chunk.next_offset === undefined) break; offset = chunk.next_offset;
-  }
-  assert.equal(Buffer.concat(chunks).toString("utf8"), "steered".repeat(30_000));
+  const complete = await peer.readContentComplete("session", reference);
+  assert.equal(complete.format, "text");assert.equal(complete.text, "steered".repeat(30_000));
+  assert.deepEqual(complete.reference, reference);
+  const resolvedReferencePage = await resolveHcpHistoryPage({history_hash: "a".repeat(64), turn_count: 1, truncated: false,
+    turns: [{id: "referenced-body", status: "completed", items: [], portable_fidelity: "partial", portable_items: [
+      {id: "message", type: "message", status: "completed", role: "assistant", body: {storage: "reference", content_ref: reference, preview: "steered"}}]}]},
+    (content, options) => peer.readContentComplete("session", content, options));
+  assert.equal(resolvedReferencePage.turns[0].portable_items[0].values.body.value, complete.text);
+  assert.equal(resolvedReferencePage.source.turns[0].portable_fidelity, "partial");
+
   await peer.compactConversation("session", "compact");
   await until(() => events.some(event => event.turn_id === "compact" && event.event_type === "turn.completed"));
   const loadedRead = await peer.readConversation("session");
   assert.equal(loadedRead.payload.history.turn_count, 2);
+  const completePage = await peer.readConversationPageComplete("session");
+  assert.equal(completePage.source.history_hash, loadedRead.payload.history.history_hash);
+  assert.equal(completePage.turns[0].portable_items[0].values.body.value, "steered");
   assert.equal(sessions.activeSessionCount(), 1);
   const feedback = await peer.submitNativeFeedback("session", {classification: "bug", reason: "Fixture report", include_diagnostics: false}, {id: "fixture-feedback"});
   assert.deepEqual(feedback.payload.feedback, {source: "native", feedback_id: "fixture-feedback-receipt", classification: "bug", diagnostics_requested: false});
@@ -138,6 +151,10 @@ try {
   assert.deepEqual(harnessNativeOutputObservationSchema.parse(observedOutput.data.output), output);
   await peer.stopSession({session_id: "session"});
   const read = await peer.readConversation("session");
+  const inventory = await peer.readConversationInventory("session", {pageSize: 1});
+  assert.equal(inventory.history_hash, read.payload.history.history_hash);
+  assert.equal(inventory.turn_count, read.payload.history.turn_count);
+  assert.deepEqual(inventory.turn_ids, read.payload.history.turns.map(turn => turn.id));
   assert.equal(read.payload.history.turns[0].portable_items[0].type, "message");
   assert.equal(read.payload.history.turns[0].portable_items[0].body.value, "steered");
   const injection = {expected_history_hash: read.payload.history.history_hash, messages: [{role: "user", content: "Independent context"}, {role: "assistant", content: "Previous answer"}]};
@@ -172,11 +189,9 @@ try {
   await peer.stopSession({session_id: "child"}); await peer.retireConversation("child");
   await peer.startSession({...start, session_id: "files", continuation_group_key: "files"});
   const bytes = Buffer.from("Independent consumer attachment"), sha256 = createHash("sha256").update(bytes).digest("hex");
-  const created = await peer.inputFile("files", {action: "create", filename: "note.txt", mime_type: "text/plain", byte_length: bytes.length, sha256}, {id: "file-create"});
-  const file = created.payload.input_file.reference;
-  await peer.inputFile("files", {action: "append", file_id: file.file_id, offset: 0, data_base64: bytes.toString("base64")});
-  const sealed = await peer.inputFile("files", {action: "seal", file_id: file.file_id});
-  assert.equal(sealed.payload.input_file.state, "sealed");
+  const uploaded = await peer.uploadInputFile("files", {filename: "note.txt", mime_type: "text/plain", bytes}, {chunkSize: 8});
+  const file = uploaded.reference;
+  assert.equal(file.sha256, sha256);assert.equal(uploaded.result.state, "sealed");
   await peer.sendTurn({session_id: "files", turn_id: "file-read", input: "Read selected attachment", files: [{reference: file, delivery: "file_context"}]});
   await until(() => events.some(event => event.turn_id === "file-read" && event.event_type === "turn.completed"));
   const text = events.find(event => event.turn_id === "file-read" && event.event_type === "turn.completed").data.final_output.final_text;
@@ -214,7 +229,7 @@ try {
     conversation_transition: {transition_id: "public-policy-transition", expected_history_hash: beforePolicy.history_hash}});
   await until(() => events.some(event => event.session_id === "policy-target" && event.event_type === "session.configured"));
   assert.deepEqual(events.find(event => event.session_id === "policy-target" && event.event_type === "session.configured").data.native_policy_readback,
-    {source: "native", execution_profile: "interactive", approval_policy: "ask", sandbox_mode: "read_only"});
+    {source: "native", execution_profile: "interactive", approval_policy: "ask", sandbox_mode: "read_only", sandbox_options: start.sandbox_options});
   assert.equal((await peer.readConversation("policy-target")).payload.history.history_hash, beforePolicy.history_hash);
   assert.equal(events.some(event => event.session_id === "policy-target" && event.turn_id), false);
   await peer.stopSession({session_id: "policy-target"}); await peer.retireConversation("policy-target");

@@ -1,3 +1,4 @@
+import {resolveHcpPortableItem} from "@harness-control/sdk";
 import assert from "node:assert/strict";
 import {mkdtemp} from "node:fs/promises";
 import {tmpdir} from "node:os";
@@ -35,6 +36,11 @@ for (const driver of (process.env.HCP_LIVE_PROVIDERS ?? "codex,claude,opencode")
     proof_of_possession: {scheme: "runner_signed_request", key_id: "local-fixture", required_headers: ["x-hcp-session-id", "x-hcp-host-id", "x-hcp-proof-signature", "x-hcp-proof-nonce"]}};
   let active = "first", nativeReference, stage = "model-selection";
   try {
+    const status = (await manager.providerDriverStatuses()).find(provider => provider.driver_kind === driver);
+    assert.equal(status?.execution_capabilities?.execution_profiles?.find(profile => profile.id === "interactive")?.mcp_attachments, true);
+    passed.push("declared-interactive-mcp-attachment");
+    assert.equal(status?.execution_capabilities?.execution_profiles?.find(profile => profile.id === "interactive")?.native_owner_closure, "owned_session");
+    passed.push("declared-owned-session-closure");
     const model = driver === "codex" ? process.env.HCP_LIVE_CODEX_MODEL ?? (await manager.providerDriverStatuses()).find(provider => provider.driver_kind === "codex")?.models.find(model => model.is_default)?.id
       : driver === "claude" ? process.env.HCP_LIVE_CLAUDE_MODEL ?? "sonnet" : process.env.HCP_LIVE_OPENCODE_MODEL ?? "opencode-go/glm-5.3-flash";
     assert.ok(model);
@@ -56,6 +62,15 @@ for (const driver of (process.env.HCP_LIVE_PROVIDERS ?? "codex,claude,opencode")
       assert.equal(calls, before + 1);
       stage = `${phase}-result`;
       assert.ok(events.some(event => event.session_id === active && event.event_type === "turn.completed" && JSON.stringify(event.data).includes(marker)));
+      const observed = events.filter(event => event.session_id === active && event.turn_id === phase && event.event_type === "item.completed" && event.data.portable);
+      const toolItems = [];
+      for (const event of observed) {
+        const resolved = await resolveHcpPortableItem(event.data.portable, async () => {throw new Error("Toy native body unexpectedly required retained I/O.");});
+        if (resolved.items.some(row => row.item.type === "tool_call")) toolItems.push(resolved);
+      }
+      assert.ok(toolItems.length, "Native tool completion omitted its portable call/result.");
+      assert.ok(toolItems.some(observation => observation.items.some(row => row.item.type === "tool_result" && JSON.stringify(row.values.result).includes(marker))));
+      passed.push(`${phase}-portable-native-call-result`);
       passed.push(`${phase}-native-tool-invocation`, `${phase}-tool-result`);
       const native = state.getNativeConversation("mcp-conversation").native_thread_id;
       if (phase === "first") nativeReference = native;
@@ -72,7 +87,9 @@ for (const driver of (process.env.HCP_LIVE_PROVIDERS ?? "codex,claude,opencode")
         assert.equal(events.findLast(event => event.session_id === active && event.turn_id === "detached-followup" && ["turn.completed", "turn.failed"].includes(event.event_type))?.event_type, "turn.completed");
         assert.equal(calls, before + 1); passed.push("followup-with-detached-tools");
       }
-      await manager.stopSession(active, "mcp-acceptance-unload");
+      const closed = await manager.stopSession(active, "mcp-acceptance-unload");
+      assert.equal(closed.find(event => event.event_type === "session.exited")?.data.native_owner_closed, true);
+      if (!passed.includes("explicit-native-owner-closure")) passed.push("explicit-native-owner-closure");
       assert.equal(closures, phase === "first" ? 1 : 2); passed.push(`${phase}-owned-proxy-detach`);
     }
     console.log(JSON.stringify({driver, cwd, passed}));

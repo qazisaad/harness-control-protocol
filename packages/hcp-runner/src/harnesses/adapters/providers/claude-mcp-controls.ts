@@ -17,7 +17,7 @@ function ownsInventory(servers: z.infer<typeof inventory>, configurations: Reado
 
 /** Startup-owned HTTP servers must enter the dynamic registry to support later removal. */
 export async function initializeClaudeMcp(stream: Pick<Query, "mcpServerStatus" | "setMcpServers">,
-  configurations: Readonly<Record<string, McpServerConfig>>): Promise<void> {
+  configurations: Readonly<Record<string, McpServerConfig>>): Promise<string[]> {
   const before = inventory.safeParse(await stream.mcpServerStatus());
   if (!before.success || before.data.length) throw mismatch("inventory_before", true);
   const result = receipt.safeParse(await stream.setMcpServers({...configurations}));
@@ -25,6 +25,7 @@ export async function initializeClaudeMcp(stream: Pick<Query, "mcpServerStatus" 
     || !equal(result.data.added, Object.keys(configurations))) throw mismatch("registration_receipt", true);
   const after = inventory.safeParse(await stream.mcpServerStatus());
   if (!after.success || !ownsInventory(after.data, configurations)) throw mismatch("inventory_after", true);
+  return after.data.map(server => server.name).sort();
 }
 
 /** Removal only; native inventories and the result must all agree before success. */

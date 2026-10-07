@@ -1,0 +1,15 @@
+{
+  "id": "fixture-native-work-reconcile",
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "session_id": "session-1",
+    "operation": {
+      "kind": "work",
+      "action": "reconcile",
+      "work_id": "child",
+      "expected_revision": 2
+    }
+  }
+}

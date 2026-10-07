@@ -10,6 +10,19 @@ const user = z.object({info: z.object({id: identity, sessionID: identity, role: 
 const assistant = z.object({id: identity, sessionID: identity, parentID: identity, role: z.literal("assistant"),
   providerID: identity, modelID: identity});
 
+/** Anonymous owners may use only the native public provider's current zero-cost models. */
+export function assertAnonymousOpenCodeModel(catalog: unknown, selection: HarnessModelSelection): void {
+  const value = z.object({connected: z.array(identity), all: z.array(z.object({id: identity,
+    models: z.record(z.string(), z.unknown())}))}).parse(catalog);
+  const prefix = "opencode/";
+  const selected = selection.model.startsWith(prefix)
+    ? value.all.find(provider => provider.id === "opencode")?.models[selection.model.slice(prefix.length)] : undefined;
+  const free = z.object({id: identity, providerID: z.literal("opencode"),
+    cost: z.object({input: z.literal(0), output: z.literal(0), cache: z.object({read: z.literal(0), write: z.literal(0)})})}).safeParse(selected);
+  if (!value.connected.includes("opencode") || !free.success || `${prefix}${free.data.id}` !== selection.model)
+    throw new HarnessAdapterError("anonymous_model_unavailable", "The selected model is not confirmed in OpenCode's current anonymous zero-cost catalog.");
+}
+
 /** A recorded variant string alone cannot prove the native catalog supports it. */
 export function assertOpenCodeModelOptions(catalog: unknown, selection: HarnessModelSelection, imageInput = false): HarnessModel {
   if ((selection.options?.length ?? 0) > 1) throw new HarnessAdapterError("unsupported_model_option", "OpenCode accepts one native variant option.");

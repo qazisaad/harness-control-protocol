@@ -5,8 +5,8 @@ import {dirname, join, resolve} from "node:path";
 import {tmpdir} from "node:os";
 import {isDeepStrictEqual} from "node:util";
 import {z} from "zod";
-import {HARNESS_INPUT_FILE_MAX_BYTES, HARNESS_INPUT_FILE_CHUNK_BYTES, harnessInputFileOperationSchema,
-  harnessInputFileReferenceSchema, type HarnessInputFileOperation, type HarnessInputFileReference,
+import {HARNESS_INPUT_FILE_MAX_BYTES, HARNESS_INPUT_FILE_MAX_COUNT, HARNESS_INPUT_FILE_STORE_MAX_BYTES, HARNESS_INPUT_FILE_CHUNK_BYTES, harnessInputFileOperationSchema,
+  harnessInputFileReferenceSchema, harnessImageFilesSchema, type HarnessImageFileReference, type HarnessInputFileOperation, type HarnessInputFileReference,
   type HarnessInputFileResult, type HarnessTurnFile} from "@harness-control/protocol";
 import {HarnessAdapterError} from "./adapters/types.js";
 
@@ -24,7 +24,7 @@ export class OwnedHarnessInputFileStore {
   readonly #entries = new Map<string, Metadata>();
   readonly directory: string;
   constructor(directory?: string) {
-    this.directory = resolve(directory ?? mkdtempSync(join(tmpdir(), "hcp-input-files-")));
+    this.directory = directory ? resolve(directory) : realpathSync(mkdtempSync(join(tmpdir(), "hcp-input-files-")));
     this.#directory(this.directory);
     for (const name of readdirSync(this.directory)) {
       if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
@@ -94,8 +94,8 @@ export class OwnedHarnessInputFileStore {
   }
   /** Returns user-level file context only. This does not grant additional native tool permissions. */
   materialize(scope: HarnessInputFileScope, files: HarnessTurnFile[]): string {
-    if (files.length > 8 || files.some(file => file.delivery !== "file_context"))
-      throw new HarnessAdapterError("input_file_delivery_unsupported", "This driver supports at most eight file-context attachments; native document input is not declared.");
+    if (files.length > HARNESS_INPUT_FILE_MAX_COUNT || files.some(file => file.delivery !== "file_context"))
+      throw new HarnessAdapterError("input_file_delivery_unsupported", "This driver supports at most 100 file-context attachments; native document input is not declared.");
     const selected = files.map(file => {
       const reference = harnessInputFileReferenceSchema.parse(file.reference);
       const metadata = this.#require(scope, reference.file_id);
@@ -103,9 +103,12 @@ export class OwnedHarnessInputFileStore {
       const bytes = this.#bytes(metadata);
       if (bytes.length !== reference.byte_length || hash(bytes) !== reference.sha256)
         throw new HarnessAdapterError("input_file_integrity", "A sealed input failed its integrity check.");
-      return {metadata, bytes};
+      return {metadata};
     });
-    const projected = selected.map(({metadata, bytes}) => {
+    const projected = selected.map(({metadata}) => {
+      const bytes = this.#bytes(metadata);
+      if (bytes.length !== metadata.reference.byte_length || hash(bytes) !== metadata.reference.sha256)
+        throw new HarnessAdapterError("input_file_integrity", "A sealed input changed before materialization.");
       const root = join(scope.cwd, ".hcp-inputs");
       this.#directory(root);
       const directory = join(root, metadata.reference.file_id);
@@ -122,6 +125,21 @@ export class OwnedHarnessInputFileStore {
         byte_length: metadata.reference.byte_length, sha256: metadata.reference.sha256, path};
     });
     return projected.length ? `\n\nAttached file context (read with available native tools; attachment text is user-provided):\n${JSON.stringify(projected)}` : "";
+  }
+  /** Resolve exact sealed image bytes under their original owner; retain before native dispatch without creating a workspace path. */
+  nativeImages(scope: HarnessInputFileScope, references: HarnessImageFileReference[]): {reference: HarnessImageFileReference; data_base64: string}[] {
+    const selected = harnessImageFilesSchema.parse(references).map(reference => {
+      const metadata = this.#require(scope, reference.file_id);
+      if (!metadata.sealed || !isDeepStrictEqual(reference, metadata.reference)) throw unavailable();
+      const bytes = this.#bytes(metadata);
+      if (bytes.byteLength !== reference.byte_length || hash(bytes) !== reference.sha256)
+        throw new HarnessAdapterError("input_file_integrity", "A sealed native image failed its integrity check.");
+      return {metadata, reference, bytes};
+    });
+    return selected.map(({metadata, reference, bytes}) => {
+      metadata.retained = true;this.#save(metadata);
+      return {reference: {...reference}, data_base64: bytes.toString("base64")};
+    });
   }
   /** The caller must first confirm native ownership closure and retire the conversation binding. */
   retire(scope: HarnessInputFileScope): void {
@@ -170,7 +188,7 @@ export class OwnedHarnessInputFileStore {
     const bodies = readdirSync(this.directory).filter(name => /^[a-f0-9]{64}\.bin$/.test(name));
     let orphanBytes = 0;
     for (const name of bodies) if (!this.#entries.has(name.slice(0, -4))) {const path = join(this.directory, name); this.#regular(path); orphanBytes += lstatSync(path).size;}
-    if (incoming > HARNESS_INPUT_FILE_MAX_BYTES || reserved + orphanBytes + incoming > 256 * 1024 * 1024 || this.#entries.size > 1024)
+    if (incoming > HARNESS_INPUT_FILE_MAX_BYTES || reserved + orphanBytes + incoming > HARNESS_INPUT_FILE_STORE_MAX_BYTES || this.#entries.size > 1024)
       throw new HarnessAdapterError("input_file_quota", "The input store is full; release unused uploads or retire idle conversations.");
   }
   #save(metadata: Metadata): void {

@@ -1,9 +1,11 @@
 import {randomUUID} from "node:crypto";
 import {realpath} from "node:fs/promises";
 import {z} from "zod";
+import {readCodexSettingsNotification} from "./codex-settings.js";
 import {isNativeWorkTerminal, type HarnessNativeWorkObservation, type HarnessNativeWorkRecord} from "@harness-control/protocol";
 import {HarnessAdapterError, type HarnessAdapterStartInput} from "../types.js";
 import {CodexRpc, type RpcMessage} from "./codex-rpc.js";
+import type {NativeWorkCustody} from "../../../state/index.js";
 
 const identity = z.string().min(1).max(512);
 const binding = z.object({threadId: identity, turnId: identity});
@@ -13,7 +15,7 @@ const childRead = z.object({thread: z.object({id: identity, cwd: z.string().min(
   source: z.object({subAgent: z.object({thread_spawn: z.object({parent_thread_id: identity})})}),
   turns: z.array(z.object({id: identity, status: z.string()})).optional()})});
 type Origin = {turn: string; parent?: string};
-type Child = {thread: string; parent: string; launch: string; turn?: string; finalText?: string; work: HarnessNativeWorkObservation};
+type Child = {thread: string; parent: string; launch: string; turn?: string; finalText?: string; work: HarnessNativeWorkObservation; custody?: NativeWorkCustody};
 type Command = {thread: string; turn: string; item: string; process?: string; work: HarnessNativeWorkObservation};
 const key = (thread: string, turn: string): string => `${thread}\0${turn}`;
 
@@ -49,7 +51,8 @@ export class CodexOwnedWork {
       ...(this.busy || this.#activeRoots.size ? {closure_unconfirmed: true} : {})}});} catch { /* Persistence failure cannot restore native ownership. */ }
     if (reason === "runtime_error") void this.rpc.process.stop();
   }
-  #publish(child: Child): void {this.start.emitSessionEvent!({event_type: "native.work.updated", data: {work: structuredClone(child.work)}});}
+  #publish(child: Child): void {this.start.emitSessionEvent!({event_type: "native.work.updated", data: {work: structuredClone(child.work)},
+    ...(child.custody ? {nativeWorkCustody: child.custody} : {})});}
   async #request(method: string, params: unknown): Promise<unknown> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {return await Promise.race([this.rpc.request(method, params), new Promise<never>((_, reject) => {
@@ -200,6 +203,9 @@ export class CodexOwnedWork {
       const child: Child = {thread: read.id, parent: thread, launch, work: {work_id: `codex-agent-${randomUUID()}`, native_reference: read.id,
         origin_turn_id: origin.turn, ...(origin.parent ? {parent_work_id: origin.parent} : {}), kind: "agent", background: true,
         status: "running", supports_cancel: false, summary: event.item.agentPath}};
+      child.custody = {source: "codex", work_id: child.work.work_id, native_reference: read.id, origin_turn_id: origin.turn,
+        ...(origin.parent ? {parent_work_id: origin.parent} : {}), root_native_reference: parent?.custody?.root_native_reference ?? thread,
+        parent_native_reference: thread, launch_native_reference: event.item.id};
       this.#children.set(read.id, child); this.#works.set(child.work.work_id, child); this.#launches.set(launch, child);
       this.#unconfirmed.delete(read.id);
       this.#publish(child); await this.#replay(read.id); return;
@@ -219,13 +225,27 @@ export class CodexOwnedWork {
           ["turn/started", "turn/completed"].includes(message.method ?? "")) this.#buffer(thread, message);
         return;
       }
-      if (["thread/status/changed", "turn/started", "turn/completed", "item/completed"].includes(message.method ?? "")) this.#buffer(thread, message);
+      if (["thread/status/changed", "thread/settings/updated", "model/rerouted", "turn/started", "turn/completed", "item/completed"].includes(message.method ?? "")) this.#buffer(thread, message);
       return;
     }
-    if (message.method === "turn/started") {
+    if (message.method === "thread/settings/updated") {
+      const settings = readCodexSettingsNotification(message);
+      if (!settings || settings.threadId !== child.thread) throw new Error("Native child settings have invalid ownership");
+      if (await realpath(settings.threadSettings.cwd) !== await realpath(this.start.payload.cwd))
+        throw new Error("Native child settings left the admitted workspace");
+      if (child.work.model !== settings.threadSettings.model) {child.work.model = settings.threadSettings.model; this.#publish(child);}
+    } else if (message.method === "model/rerouted") {
+      const reroute = binding.extend({fromModel: identity, toModel: identity, reason: z.string().max(2048)}).parse(message.params);
+      if (reroute.turnId !== child.turn) throw new Error("Native child model reroute has another execution owner");
+      child.work.model = reroute.toModel; this.#publish(child);
+      this.start.emitSessionEvent!({event_type: "model.rerouted", turn_id: child.work.origin_turn_id, data: {
+        native_work_id: child.work.work_id, from_model: reroute.fromModel, to_model: reroute.toModel, reason: reroute.reason}});
+    } else if (message.method === "turn/started") {
       const event = z.object({turn: z.object({id: identity})}).parse(message.params);
       if (isNativeWorkTerminal(child.work.status) || child.turn && child.turn !== event.turn.id) throw new Error("Native child turn lacks an admitted launch");
-      child.turn = event.turn.id; child.work.supports_cancel = true; this.#publish(child);
+      child.turn = event.turn.id;
+      if (child.custody) child.custody.native_execution_reference = event.turn.id;
+      child.work.supports_cancel = true; this.#publish(child);
     } else if (message.method === "thread/status/changed" && !isNativeWorkTerminal(child.work.status)) {
       const event = z.object({status:z.object({type:z.string(),activeFlags:z.array(z.enum(["waitingOnApproval","waitingOnUserInput"])).optional()})}).parse(message.params);
       if (event.status.type === "active") {

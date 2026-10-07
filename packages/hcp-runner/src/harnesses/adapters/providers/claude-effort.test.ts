@@ -1,41 +1,49 @@
-import {test} from "node:test";
 import assert from "node:assert/strict";
+import {test} from "node:test";
 import type {Query} from "@anthropic-ai/claude-agent-sdk";
 import {claudeEffortControl} from "./claude-effort.js";
+import {selectedEffort} from "./native-turn.js";
 
-test("Claude effort updates require effective native readback after a session flag update", async () => {
-  const calls: string[] = [];
-  const runtime = {async applyFlagSettings(settings: {effortLevel: string}) {calls.push(settings.effortLevel);},
-    async getSettings() {calls.push("read"); return {applied: {model: "claude-sonnet", effort: "low"}, ignored: {secret: "never expose"}};}} as unknown as Query;
-  assert.deepEqual(await claudeEffortControl(runtime, "low")(), {model: "claude-sonnet", effort: "low"});
-  assert.deepEqual(calls, ["low", "read"]);
-  await assert.rejects(claudeEffortControl(runtime, "max")(), /did not confirm/);
+function fixture() {
+  const flags: Record<string, unknown> = {};
+  let clamp = false;
+  const stream = {async applyFlagSettings(settings: Record<string, unknown>) {
+    for (const [key, value] of Object.entries(settings)) if (value === null) delete flags[key]; else flags[key] = value;
+  }, async reinitialize() {return {fast_mode_state: clamp ? "off" : flags.fastMode ? "on" : "off"};},
+  async getSettings() {return {effective: {...flags}, applied: {model: "native-model", effort: flags.effortLevel ?? "high",
+    ultracode: clamp ? false : flags.ultracode ?? false}, sources: [{source: "flagSettings", settings: {...flags}}]};}};
+  return {stream: stream as unknown as Query, flags, clamp: () => {clamp = true;}};
+}
+
+test("session boolean options require exact native effective settings and preserve actual model", async () => {
+  const f = fixture();
+  const effective = await claudeEffortControl(f.stream, "xhigh", {thinking: false, ultracode: true})();
+  assert.deepEqual(effective, {model: "native-model", effort: "xhigh", booleans: {thinking: false, ultracode: true}});
+  assert.deepEqual(f.flags, {effortLevel: "xhigh", alwaysThinkingEnabled: false, ultracode: true});
 });
-
-test("unsupported readback refuses effort changes and resets before any native mutation", () => {
-  let mutations = 0;
-  const runtime = {async applyFlagSettings() {mutations++;}} as unknown as Query;
-  assert.throws(() => claudeEffortControl(runtime, "low"), /readback/);
-  assert.throws(() => claudeEffortControl(runtime, undefined), /readback/);
-  assert.equal(mutations, 0);
+test("removal clears the flag layer and reports observed native defaults", async () => {
+  const f = fixture(); await claudeEffortControl(f.stream, "xhigh", {thinking: false, ultracode: true})();
+  const effective = await claudeEffortControl(f.stream, undefined, {}, {thinking: false, ultracode: true})();
+  assert.deepEqual(f.flags, {});
+  assert.deepEqual(effective, {model: "native-model", effort: "high", booleans: {ultracode: false}});
 });
-
-for (const restored of ["high", null] as const) test(`Claude effort reset confirms removed flag and reports native default ${restored}`, async () => {
-  const calls: unknown[] = [];
-  const runtime = {async applyFlagSettings(settings: unknown) {calls.push(settings);},
-    async getSettings() {return {applied: {model: "claude-sonnet", effort: restored},
-      sources: [{source: "flagSettings", settings: {disableAllHooks: true}},
-        {source: "policySettings", settings: {effortLevel: "high"}}]};}} as unknown as Query;
-  assert.deepEqual(await claudeEffortControl(runtime, undefined)(), {model: "claude-sonnet", effort: restored});
-  assert.deepEqual(calls, [{effortLevel: null}]);
+test("native ultracode downgrade and missing effective thinking cannot be called confirmed", async () => {
+  const f = fixture(); f.clamp();
+  await assert.rejects(claudeEffortControl(f.stream, "xhigh", {ultracode: true})(), /effective ultracode/);
+  const missing = {async applyFlagSettings() {}, async getSettings() {return {applied: {model: "model", effort: "high"},
+    sources: [{source: "flagSettings", settings: {alwaysThinkingEnabled: false}}]};}} as unknown as Query;
+  await assert.rejects(claudeEffortControl(missing, "high", {thinking: false})(), /native thinking/);
 });
-
-for (const sources of [undefined, [], [{source: "flagSettings", settings: {effortLevel: "low"}}],
-  [{source: "flagSettings", settings: {effortLevel: null}}],
-  [{source: "flagSettings", settings: {}}, {source: "flagSettings", settings: {}}]])
-  test("Claude effort reset rejects absent, ambiguous or retained session override readback", async () => {
-    const runtime = {async applyFlagSettings() {}, async getSettings() {
-      return {applied: {model: "claude-sonnet", effort: "high"}, ...(sources ? {sources} : {})};
-    }} as unknown as Query;
-    await assert.rejects(claudeEffortControl(runtime, undefined)(), /removal/);
-  });
+test("duplicate boolean options, non-boolean values and unknown options are refused", () => {
+  assert.equal(selectedEffort({model: "model", options: [{id: "thinking", value: false}, {id: "ultracode", value: true}, {id: "effort", value: "xhigh"}]}, "claude"), "xhigh");
+  for (const options of [[{id: "thinking", value: "false"}], [{id: "thinking", value: true}, {id: "thinking", value: false}], [{id: "other", value: true}]])
+    assert.throws(() => selectedEffort({model: "model", options}, "claude"), /boolean|Duplicate|Unsupported/);
+});
+test("fast mode requires fresh native status and refuses account downgrades or cooldown", async () => {
+  const f = fixture();
+  assert.equal((await claudeEffortControl(f.stream, undefined, {fastMode: true})()).booleans?.fastMode, true);
+  assert.equal((await claudeEffortControl(f.stream, undefined, {}, {fastMode: true})()).booleans?.fastMode, false);
+  f.clamp(); await assert.rejects(claudeEffortControl(f.stream, undefined, {fastMode: true})(), /effective fast mode/);
+  f.stream.reinitialize = async () => ({fast_mode_state: "cooldown"}) as never;
+  await assert.rejects(claudeEffortControl(f.stream, undefined, {fastMode: true})(), /effective fast mode/);
+});

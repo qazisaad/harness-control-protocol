@@ -1,0 +1,16 @@
+{
+  "id": "fixture-native-work-cancel",
+  "type": "harness.conversation.request",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "session_id": "session-1",
+    "operation": {
+      "kind": "work",
+      "action": "history",
+      "work_id": "child-1",
+      "expected_revision": 1,
+      "owner": "retained"
+    }
+  }
+}

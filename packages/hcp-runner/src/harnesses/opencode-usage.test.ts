@@ -15,7 +15,7 @@ test("OpenCode usage correlates admission, tolerates reordered events, excludes 
   usage.message(message("old-answer", "old-prompt")); usage.part(step("old", "old-answer"));
   usage.message(message("foreign-answer", "prompt", "other-session")); usage.part(step("foreign", "foreign-answer", "other-session"));
   const measured = usage.snapshot();
-  assert.deepEqual(measured, {scope: "turn", status: "complete", source: "opencode.message.step-finish",
+  assert.deepEqual(measured, {actor: "root", native_reference: "session", native_execution_reference: "prompt", scope: "turn", status: "complete", source: "opencode.message.step-finish",
     input_tokens: 34, output_tokens: 5, total_tokens: 39, cached_input_tokens: 20, cache_creation_input_tokens: 4, reasoning_output_tokens: 2, cost_usd: 0.5});
   harnessUsageSnapshotSchema.parse(measured);
   usage.part(step("unknown", "unknown-answer"));

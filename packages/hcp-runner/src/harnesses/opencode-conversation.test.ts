@@ -1,3 +1,4 @@
+import {readOpenCodeOwnedHistory} from "./adapters/providers/opencode-conversation.js";
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
@@ -44,6 +45,10 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
         request_id: data.request_id as string, actor_id: "actor", value: {answers: {"question-0": {answers: ["A", "B"]}}}}, () => {});
     });
     assert.equal(events.filter(event => event.event_type === "turn.completed").length, 1);
+    const phase = events.find(event => event.event_type === "native.execution.completed")!;
+    const admitted = events.find(event => event.event_type === "native.execution.admitted")!;
+    assert.equal((phase.data as {status: string}).status, "completed");
+    assert.equal((phase.data as {admission_id: string}).admission_id, (admitted.data as {admission_id: string}).admission_id);
     assert.equal(events.filter(event => event.event_type === "item.completed").length, 1);
     assert.equal(events.filter(event => event.event_type === "item.updated").length, 0);
     if (kind === "approval") assert.equal((events.find(event => event.event_type === "approval.requested")!.data as {allowed_decisions: string[]}).allowed_decisions.includes("accept_for_session"), interactive);
@@ -77,8 +82,10 @@ for (const scenario of ["approval", "question", "session-approval"] as const) te
     assert.equal(followup.at(-1)?.event_type, "turn.completed");
     if (interactive) assert.deepEqual(followup.find(event => event.event_type === "settings.options.effective")?.data,
       {scope: "root", source: "native", model_selection: {model: "anthropic/claude", options: [{id: "variant", value: "high"}]}});
-    const usage = followup.find(event => event.event_type === "usage.updated")?.data;
-    assert.deepEqual(usage, {scope: "turn", status: "complete", source: "opencode.message.step-finish", input_tokens: 34,
+    const usage = followup.find(event => event.event_type === "usage.updated")?.data as Record<string, unknown> | undefined;
+    assert.equal(typeof usage?.native_reference, "string");
+    assert.equal(typeof usage?.native_execution_reference, "string");
+    assert.deepEqual(usage, {actor: "root", native_reference: usage?.native_reference, native_execution_reference: usage?.native_execution_reference, scope: "turn", status: "complete", source: "opencode.message.step-finish", input_tokens: 34,
       output_tokens: 5, total_tokens: 39, cached_input_tokens: 20, cache_creation_input_tokens: 4, reasoning_output_tokens: 2, cost_usd: 0.5});
     assert.deepEqual((followup.at(-1)?.data as {final_output: {usage: unknown}}).final_output.usage, usage);
     assert.equal((followup.find(event => event.event_type === "context.updated")?.data as {status: string}).status, "unavailable");
@@ -216,11 +223,17 @@ for (const controlled of [false, true]) test(`OpenCode ${controlled ? "controlle
     assert.equal((await runner.conversationOperation("rollback", rollbackRequest)).native_reference, rollback.native_reference);
     const retained = JSON.parse(await readFile(historyFile, "utf8"));
     assert.equal(retained[sourceId].messages.length, 4);
-    const childRef = controlled ? readControlledOpenCodeReference(fork.fork!.native_reference)!.session_id : fork.fork!.native_reference;
+    const childRef = fork.fork!.native_reference;
     assert.equal(retained[childRef].messages.length, 2);
     assert.deepEqual(retained[childRef].permission, retained[sourceId].permission);
     if (controlled) {
-      assert.ok(readControlledOpenCodeReference(rollback.native_reference!)?.account_binding);
+      const retainedOwner = new JsonRunnerStateStore(stateFile).getNativeConversation(start.continuation_group_key!)!;
+      const privateReference = readControlledOpenCodeReference(retainedOwner.native_thread_id)!;
+      assert.ok(privateReference.account_binding);
+      assert.equal(privateReference.session_id, rollback.native_reference);
+      const privateFork = new JsonRunnerStateStore(stateFile).getNativeConversation("child-key")!;
+      assert.equal(readControlledOpenCodeReference(privateFork.native_thread_id)!.session_id, fork.fork!.native_reference);
+      assert.equal(readControlledOpenCodeReference(privateFork.native_thread_id)!.account_binding, privateReference.account_binding);
       assert.equal((await readFile(stateFile, "utf8")).includes("fixture-only-key"), false);
       await assert.rejects(runner.startSession({...start, session_id: "different-owner", continue_session: true, configuration_inheritance: {hooks: true}}),
         {code: "native_configuration_transition_binding"});
@@ -235,9 +248,90 @@ for (const controlled of [false, true]) test(`OpenCode ${controlled ? "controlle
       env.HCP_TEST_OPENCODE_VERSION = "opencode 1.18.34";
     }
     runner = manager(new JsonRunnerStateStore(stateFile));
-    await runner.startSession({...start, session_id: "reopened", continue_session: true});
+    await runner.startSession({...start, session_id: "reopened", continue_session: true, expected_native_reference: rollback.native_reference!});
     const events = await runner.sendTurn({session_id: "reopened", turn_id: "followup", input: "continue"});
     assert.equal(events.at(-1)?.event_type, "turn.completed");
     await runner.stopSession("reopened", "done");
   } finally {await rm(cwd, {recursive: true, force: true});}
+});
+
+const orderedRootRules = [
+  {permission: "*", pattern: "*", action: "deny" as const},
+  {permission: "bash", pattern: "*", action: "ask" as const},
+  {permission: "read", pattern: "*", action: "allow" as const},
+  {permission: "read", pattern: "*.env", action: "deny" as const},
+  {permission: "task", pattern: "*", action: "deny" as const},
+];
+async function orderedRootFixture() {
+  const cwd = await mkdtemp(join(tmpdir(), "hcp-opencode-ordered-root-"));
+  const historyFile = join(cwd, "native-history.json"), record = join(cwd, "native-requests.jsonl");
+  await writeFile(historyFile, JSON.stringify({"fake-opencode-session": {messages: []}}));
+  const config = RunnerConfigSchema.parse({runner_id: "runner", control_plane_url: "ws://localhost:1", workspaces: [{id: "workspace", path: cwd}],
+    provider_instances: [{id: "opencode", driver_kind: "opencode", executable_path: process.execPath,
+      launch_args: [fileURLToPath(new URL("../../test-fixtures/fake-opencode-server.mjs", import.meta.url))], env: {
+        HCP_TEST_OPENCODE_VERSION: "opencode 1.18.34", HCP_TEST_OPENCODE_RECORD: record,
+        HCP_TEST_OPENCODE_HISTORY: historyFile, HCP_TEST_OPENCODE_ORDERED_POLICY: JSON.stringify(orderedRootRules),
+        OPENCODE_AUTH_CONTENT: JSON.stringify({anthropic: {type: "api", key: "fixture-only-key"}})}}]});
+  const state = new JsonRunnerStateStore(join(cwd, "state.json"));
+  const manager = new HarnessSessionManager(config, {stateStore: state, adapterRegistry: new HarnessAdapterRegistry([
+    new OpenCodeHarnessAdapter({controlledStorageRoot: join(cwd, "native-storage")})])});
+  const payload: HcpSessionStartPayload = {session_id: "ordered", workspace_id: "workspace", cwd, provider_instance_id: "opencode", driver_kind: "opencode",
+    execution_profile: "interactive", continuation_group_key: "ordered-policy", configuration_inheritance: controlledOpenCodeInheritance,
+    approval_options: {permission_rules: orderedRootRules}, approval_policy: "ask", sandbox_mode: "danger_full_access",
+    model_selection: {model: "anthropic/claude"}, continue_session: false, mcp_servers: []};
+  await manager.startSession(payload);
+  return {cwd, historyFile, record, state, manager, async close() {try {await manager.stopSession("ordered", "done");} finally {await rm(cwd, {recursive: true, force: true});}}};
+}
+test("ordered root policy refuses native drift before any model dispatch or physical admission", async () => {
+  const f = await orderedRootFixture();
+  try {
+    assert.deepEqual(f.state.getNativeConversation("ordered-policy")?.approval_options, {permission_rules: orderedRootRules});
+    const history = JSON.parse(await readFile(f.historyFile, "utf8"));history["fake-opencode-session"].permission.reverse();
+    await writeFile(f.historyFile, JSON.stringify(history));
+    const events = await f.manager.sendTurn({session_id: "ordered", turn_id: "refused", input: "approval"});
+    assert.equal(events.at(-1)?.event_type, "turn.failed");
+    assert.equal(events.some(event => event.event_type === "native.execution.admitted"), false);
+    const requests = (await readFile(f.record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(requests.some(request => request.method === "POST" && request.path.endsWith("/message")), false);
+  } finally {await f.close();}
+});
+test("ordered root callbacks forbid remembered grants that could override later path denials", async () => {
+  const f = await orderedRootFixture();
+  try {
+    let requests = 0;const replies: Promise<unknown>[] = [];
+    for (const turn_id of ["first", "second"]) {
+      const events: HcpHarnessEventPayload[] = [];
+      await f.manager.sendTurn({session_id: "ordered", turn_id, input: "approval"}, event => {
+        events.push(event);
+        if (event.event_type !== "approval.requested") return;
+        requests++;const data = event.data as {request_id: string; action_hash: string; allowed_decisions: string[]};
+        assert.equal(data.allowed_decisions.includes("accept_for_session"), false);
+        const reply = (async () => {
+          const response = {session_id: "ordered", turn_id, request_id: data.request_id, action_hash: data.action_hash, actor_id: "fixture"};
+          await assert.rejects(f.manager.respondToMcpReview({...response, decision: "accept_for_session"}, () => {}));
+          await f.manager.respondToMcpReview({...response, decision: "accept"}, () => {});
+        })();replies.push(reply);void reply.catch(() => {});
+      });
+      await Promise.all(replies);assert.equal(events.at(-1)?.event_type, "turn.completed");
+    }
+    assert.equal(requests, 2);
+    const native = (await readFile(f.record, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const sent = native.filter(request => request.method === "POST" && request.path === "/permission/approval/reply");
+    assert.equal(sent.length, 2);assert.ok(sent.every(request => request.payload.reply === "once"));
+  } finally {await f.close();}
+});
+
+
+test("OpenCode retained history preserves live call identity without replacing its native part ID", async () => {
+  const messages = [{info: {id: "user", sessionID: "session", role: "user"}, parts: [{id: "user-part", messageID: "user", sessionID: "session", type: "text", text: "fixture"}]},
+    {info: {id: "assistant", sessionID: "session", role: "assistant"}, parts: [{id: "native-part", callID: "native-call", messageID: "assistant", sessionID: "session", type: "tool", tool: "custom", state: {status: "completed", input: {query: "fixture"}, output: "complete"}}]}];
+  const source = structuredClone(messages);
+  const history = await readOpenCodeOwnedHistory(async () => structuredClone(messages), "session", new AbortController().signal, {});
+  const rows = history.turns[0]!.portable_items!;
+  const call = rows.find(row => row.type === "tool_call")!;
+  assert.equal(call.id, "native-call"); assert.equal(call.native_item_reference, "native-part"); assert.equal(call.native_call_reference, "native-call");
+  const result = rows.find(row => row.type === "tool_result")!;
+  assert.ok(result.type === "tool_result"); assert.equal(result.call_id, "native-call"); assert.equal(result.native_item_reference, "native-part");
+  assert.equal(history.turns[0]!.items.find(item => item.type === "tool_call")?.id, "native-part");
+  assert.deepEqual(messages, source);
 });

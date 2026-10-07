@@ -1,3 +1,8 @@
+import {nativeTurnImages} from "./native-images.js";
+import {portableItemObservation} from "../../portable-history.js";
+import {nativePlanObservation} from "./native-plan.js";
+import {claudeRootUsage} from "./claude-root-usage.js";
+import {ClaudeTextParts, claudeCompletedTextParts} from "./claude-text-parts.js";
 import {
   query,
   type Options,
@@ -51,12 +56,20 @@ export function createClaudeTurn(
   return async (input, signal, emit) => {
     const resume = input.session.native_fresh ? undefined : input.session.native_thread_id;
     const nativeId = resume ?? (input.session.native_fresh ? input.session.native_thread_id! : randomUUID());
+    // Reserve the requested identity privately; only native initialization proves readiness.
+    input.session.native_thread_id = nativeId;
     const channel = new ClaudeInput();
-    const userMessage = (text: string): SDKUserMessage => ({type: "user", session_id: nativeId, parent_tool_use_id: null,
-      message: {role: "user", content: text}});
+    const admissions = new Map<string, string>();
+    const userMessage = (text: string): SDKUserMessage => {
+      const uuid = randomUUID();
+      const admission = input.beginNativeExecution?.(nativeId);
+      if (admission) admissions.set(uuid, admission);
+      return {type: "user", uuid, session_id: nativeId, parent_tool_use_id: null, message: {role: "user", content: text}};
+    };
     const message = userMessage(input.payload.action === "compact" ? "/compact" : input.payload.input);
-    if (input.payload.images?.length) message.message.content = [{type: "text", text: input.payload.input},
-      ...input.payload.images.map(image => ({type: "image" as const, source: {type: "base64" as const,
+    const images = nativeTurnImages(input);
+    if (images.length) message.message.content = [{type: "text", text: input.payload.input},
+      ...images.map(image => ({type: "image" as const, source: {type: "base64" as const,
         media_type: image.mime_type, data: image.data_base64}}))];
     channel.offer(message);
     const interactions = new NativeInteractions(input.startPayload, input.payload, {threadId: nativeId, turnId: () => input.payload.turn_id}, emit);
@@ -67,6 +80,8 @@ export function createClaudeTurn(
     let nativeModel: string | undefined;
     emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
     const effort = selectedEffort(selection, "claude") as Options["effort"];
+    if (selection.options?.some(option => ["thinking", "ultracode", "fastMode"].includes(option.id)))
+      throw new HarnessAdapterError("native_option_transition_unsupported", "Claude session options require the interactive native settings owner.");
     const mcpServers: NonNullable<Options["mcpServers"]> = {};
     for (const attachment of adapterMcpServers(
       input.mcpServers,
@@ -81,6 +96,7 @@ export function createClaudeTurn(
     };
     signal.addEventListener("abort", abort, { once: true });
     let stream: Query | undefined;
+    const textParts = new ClaudeTextParts();
     const permissionMode = input.payload.mode === "plan" ? "plan" : ({ask: "default", auto_edits: "acceptEdits", full_access: "bypassPermissions"} as const)[input.startPayload.approval_policy];
     try {
       signal.throwIfAborted();
@@ -137,6 +153,19 @@ export function createClaudeTurn(
       for await (const message of stream) {
         if ("session_id" in message && message.session_id !== nativeId)
           throw new HarnessAdapterError("native_continuation_binding", "Claude returned another native conversation identity.");
+        const lifecycle = z.object({type: z.literal("command_lifecycle"), command_uuid: z.string(), state: z.enum(["queued", "started"])}).safeParse(message);
+        if (lifecycle.success) {
+          const admission = admissions.get(lifecycle.data.command_uuid);
+          if (!admission && input.beginNativeExecution)
+            throw new HarnessAdapterError("native_execution_binding", "Claude admitted an unowned native command.");
+          if (admission && lifecycle.data.state === "started") input.confirmNativeExecution?.(admission, lifecycle.data.command_uuid);
+          continue;
+        }
+        const echoed = z.object({user_message_uuid: z.string().optional(), user_message_uuids: z.array(z.string()).max(64).optional()}).parse(message);
+        for (const id of [...(echoed.user_message_uuids ?? []), ...(echoed.user_message_uuid ? [echoed.user_message_uuid] : [])]) {
+          const admission = admissions.get(id);
+          if (admission) input.confirmNativeExecution?.(admission, id);
+        }
         if (message.type === "system" && message.subtype === "init") {
           const confirmed = z.object({cwd: z.string(), permissionMode: z.string(),
             mcp_servers: z.array(z.object({name: z.string(), status: z.string()})), plugins: z.array(z.unknown())}).parse(message);
@@ -153,7 +182,7 @@ export function createClaudeTurn(
           input.persistNativeThread?.(nativeId);
           input.registerNativeInteractions?.(interactions);
           input.registerActiveTurnControls?.({async steer(text) {signal.throwIfAborted(); channel.offer(userMessage(text));}});
-          if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true}});
+          if (input.persistNativeThread) emit({event_type: "session.configured", data: {native_conversation_ready: true, native_reference: nativeId}});
         }
         if (message.type === "system" && message.subtype === "compact_boundary") {
           compacted = true;
@@ -162,27 +191,24 @@ export function createClaudeTurn(
             : unavailableContext(selection, "native_compaction_has_no_measurement");
           emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
         }
-        if (
-          message.type === "stream_event" &&
-          message.event.type === "content_block_delta"
-        ) {
-          const delta = message.event.delta;
-          if (delta.type === "text_delta" || delta.type === "thinking_delta") {
-            if (delta.type === "text_delta") streamed = true;
-            for (const chunk of textChunks(delta.type === "text_delta" ? delta.text : delta.thinking)) emit({
-              event_type:
-                delta.type === "text_delta"
-                  ? "content.delta"
-                  : "reasoning.delta",
-              turn_id: input.payload.turn_id,
-              data: {
-                delta: chunk,
-              },
-            });
+        if (message.type === "stream_event" && message.parent_tool_use_id == null) {
+          const part = textParts.observe(message.event);
+          if (part) {
+            if (part.state && part.native_part) emit({event_type: part.state === "started" ? "item.started" : "item.completed",
+              turn_id: input.payload.turn_id, data: {item_type: part.kind === "thinking" ? "reasoning" : "text",
+                native_part: part.native_part, status: part.state === "started" ? "running" : "completed"}});
+            if (part.delta) {
+              if (part.kind === "text") streamed = true;
+              const {kind, delta, state: _state, ...location} = part;
+              for (const chunk of textChunks(delta)) emit({event_type: kind === "text" ? "content.delta" : "reasoning.delta",
+                turn_id: input.payload.turn_id, data: {delta: chunk, stream_kind: kind, ...location}});
+            }
           }
         } else if (message.type === "assistant") {
+          if (!message.parent_tool_use_id) for (const data of claudeCompletedTextParts(message.message, input.publishContent))
+            emit({event_type: "item.completed", turn_id: input.payload.turn_id, data});
           // Nested agents have their own context; do not project them onto the root conversation.
-          if (!message.parent_tool_use_id) {
+          if (!message.parent_tool_use_id && message.message.model !== "<synthetic>") {
             nativeModel = message.message.model;
             const counters = z.object({input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
               cache_read_input_tokens: z.number().int().nonnegative().nullish(), cache_creation_input_tokens: z.number().int().nonnegative().nullish()}).safeParse(message.message.usage);
@@ -192,6 +218,12 @@ export function createClaudeTurn(
             emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...context}});
           }
           for (const block of message.message.content) {
+            if (block.type === "tool_use" && !message.parent_tool_use_id && block.name === "TodoWrite") {
+              const native_plan = nativePlanObservation("todo_list", (block.input as {todos?: unknown})?.todos,
+                {observation: "tool_input", native_reference: nativeId, native_item_reference: block.id}, input.publishContent);
+              if (native_plan) emit({event_type: "turn.plan.updated", turn_id: input.payload.turn_id,
+                data: {item_id: block.id, plan: retainedContent((block.input as {todos?: unknown}).todos, input.publishContent), native_plan}});
+            }
             if (block.type === "tool_use")
               emit({
                 event_type: "item.started",
@@ -200,6 +232,8 @@ export function createClaudeTurn(
                   item_id: block.id,
                   item_type: "tool_call",
                   summary: block.name,
+                  portable: portableItemObservation({id: block.id, type: "tool_call", tool_name: block.name, arguments: block.input, status: "running"}, "claude",
+                    {native_reference: nativeId!, native_item_reference: block.id, native_call_reference: block.id}, input.publishContent),
                   content: retainedContent({arguments: block.input}, input.publishContent),
                 },
               });
@@ -217,6 +251,8 @@ export function createClaudeTurn(
                   item_id: block.tool_use_id,
                   item_type: "tool_call",
                   status: block.is_error ? "failed" : "completed",
+                  portable: portableItemObservation({id: block.tool_use_id, type: "tool_result", content: block.content ?? [], status: block.is_error ? "failed" : "completed"}, "claude",
+                    {native_reference: nativeId!, native_item_reference: block.tool_use_id, native_call_reference: block.tool_use_id}, input.publishContent),
                   content: retainedContent(block.content ?? [], input.publishContent),
                 },
               });
@@ -243,6 +279,7 @@ export function createClaudeTurn(
               "Claude ended with a provider error or execution limit.",
             );
           }
+          emit({event_type: "usage.updated", turn_id: input.payload.turn_id, data: {...claudeRootUsage(nativeId, message, true)}});
           channel.close();
           input.registerActiveTurnControls?.(undefined);
           break;

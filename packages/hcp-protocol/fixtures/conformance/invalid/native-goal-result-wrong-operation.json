@@ -1,0 +1,19 @@
+{
+  "id": "fixture-native-goal-result-wrong-operation",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "goal-control",
+    "session_id": "session-1",
+    "operation": "retire",
+    "filesystem_undo": false,
+    "goal": {
+      "action": "clear",
+      "source": "native",
+      "native_reference": "native-root",
+      "target_native_created_at": 100,
+      "goal": null
+    }
+  }
+}

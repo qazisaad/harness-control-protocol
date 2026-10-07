@@ -1,12 +1,14 @@
 import {z} from "zod";
 
+export const HARNESS_CONTENT_MAX_BYTES = 128 * 1024 * 1024;
+export const HARNESS_CONTENT_STORE_MAX_BYTES = 512 * 1024 * 1024;
 export const harnessContentReferenceSchema = z.object({content_id: z.string().regex(/^[a-f0-9]{64}$/),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/), byte_length: z.number().int().nonnegative().max(8 * 1024 * 1024),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), byte_length: z.number().int().nonnegative().max(HARNESS_CONTENT_MAX_BYTES),
   format: z.enum(["text", "json"]), expires_at: z.string().datetime({offset: true})}).strict();
 export const harnessContentChunkSchema = z.object({reference: harnessContentReferenceSchema,
-  offset: z.number().int().nonnegative().max(8 * 1024 * 1024),
+  offset: z.number().int().nonnegative().max(HARNESS_CONTENT_MAX_BYTES),
   data_base64: z.string().max(87384).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$/),
-  next_offset: z.number().int().nonnegative().max(8 * 1024 * 1024).optional()}).strict().superRefine((chunk, context) => {
+  next_offset: z.number().int().nonnegative().max(HARNESS_CONTENT_MAX_BYTES).optional()}).strict().superRefine((chunk, context) => {
     const padding = chunk.data_base64.endsWith("==") ? 2 : chunk.data_base64.endsWith("=") ? 1 : 0;
     const size = chunk.data_base64.length / 4 * 3 - padding;
     const end = chunk.offset + size;

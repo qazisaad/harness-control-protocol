@@ -21,6 +21,9 @@ createInterface({input: process.stdin}).on("line", line => {
   } else if (value.method === "resolve-request") {
     send({method:"serverRequest/resolved",params:{requestId:"tool-request"}});
     send({id:value.id,result:{resolved:true}});
+  } else if (value.method === "unsafe-id") {
+    send({id:value.id,result:{started:true}});
+    send({id:value.params.id,method:"item/tool/call",params:{}});
   } else if (value.method === "ping") {
     send({id:value.id,result:{alive:true}});
   } else if (value.method === "delayed-read") {
@@ -43,7 +46,9 @@ test("native tools receive one response for the original request", {timeout: 500
   const {rpc, close} = await fixture();
   try {
     let calls = 0;
-    rpc.setRequestHandler("item/tool/call", async (params, signal) => {
+    rpc.setRequestHandler("item/tool/call", async (params, signal, context) => {
+      assert.deepEqual(context, {requestId: "tool-request"});
+      assert.equal(Object.isFrozen(context), true);
       assert.deepEqual(params, {value:42});
       assert.equal(signal.aborted, false);
       calls++;
@@ -137,4 +142,17 @@ test("abandoned native reads discard late replies without stopping the shared ow
     await assert.rejects(rpc.request("probe", {}, {signal: aborted}), error => error === reason);
     assert.deepEqual(await rpc.request("ping", {}), {alive: true});
   } finally {await close();}
+});
+
+
+test("unsafe native request IDs fail before callback dispatch", {timeout: 5000}, async () => {
+  for (const id of [Number.MAX_SAFE_INTEGER + 1, 1.5, "", "x".repeat(513)]) {
+    const {rpc, close} = await fixture();
+    try {
+      const failure = new Promise<Error>(resolve => {rpc.onFailure = resolve;});
+      rpc.setRequestHandler("item/tool/call", async () => assert.fail("Unsafe native request ID dispatched"));
+      await rpc.request("unsafe-id", {id});
+      assert.equal((await failure as Error & {code: string}).code, "codex_protocol_error");
+    } finally {await close();}
+  }
 });

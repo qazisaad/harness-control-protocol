@@ -1,7 +1,8 @@
 import {z} from "zod";
 import {NativeInteractions} from "../../native-interactions.js";
 import {HarnessAdapterError, type HarnessAdapterStartInput, type HarnessAdapterTurnInput} from "../types.js";
-import {CodexRpc} from "./codex-rpc.js";
+import {codexRequestIdentity} from "./codex-request-identity.js";
+import {CodexRpc, type RpcRequestContext} from "./codex-rpc.js";
 import {CodexOwnedWork} from "./codex-work.js";
 import {NativeMcpBridge} from "./native-mcp.js";
 import {codexApproval} from "./codex-approvals.js";
@@ -25,7 +26,7 @@ export class CodexWorkCallbacks {
       respondApproval: response => this.#find(response.request_id).respondApproval(response),
       respondInput: response => this.#find(response.request_id).respondInput(response),
     });
-    for (const method of methods) rpc.setSessionRequestHandler(method, (params, signal) => this.#route(method, params, signal));
+    for (const method of methods) rpc.setSessionRequestHandler(method, (params, signal, context) => this.#route(method, params, signal, context));
     void rpc.process.closed.then(() => this.close());
   }
   #find(id: string): NativeInteractions {
@@ -40,13 +41,13 @@ export class CodexWorkCallbacks {
     this.#roots.set(input.payload.turn_id, input);
     this.work.admitRoot(thread, turn, input.payload.turn_id);
   }
-  async #route(method: typeof methods[number], params: unknown, signal: AbortSignal): Promise<unknown> {
+  async #route(method: typeof methods[number], params: unknown, signal: AbortSignal, context?: RpcRequestContext): Promise<unknown> {
     await this.#admission; signal.throwIfAborted();
     await this.work.settled(); signal.throwIfAborted();
     if (this.#closed) throw new HarnessAdapterError("native_request_owner_missing", "The persistent callback owner is closed.");
     const native = binding.parse(params);
     const origin = this.work.childOrigin(native.threadId, native.turnId);
-    if (!origin) return this.rpc.handleTurnRequest(method, params, signal);
+    if (!origin) return this.rpc.handleTurnRequest(method, params, signal, context);
     let owner = this.#owners.get(origin.work_id);
     if (!owner) {
       const root = this.#roots.get(origin.origin_turn_id);
@@ -61,14 +62,14 @@ export class CodexWorkCallbacks {
     if (owner.thread !== native.threadId || owner.turn !== native.turnId)
       throw new HarnessAdapterError("native_work_request_binding", "The native child callback changed execution identity.");
     if (method === "item/tool/call") return owner.bridge.call(params, native, signal);
-    if (method === "item/tool/requestUserInput") return owner.interactions.questions(params, signal);
+    if (method === "item/tool/requestUserInput") return owner.interactions.questions(params, signal, codexRequestIdentity(params, context));
     if (method === "item/permissions/requestApproval") {
       const request = binding.extend({itemId: z.string(), permissions: z.record(z.string(), z.json())}).passthrough().parse(params);
       const answer = await owner.interactions.approval({...request, additionalPermissions: request.permissions,
-        availableDecisions: ["accept", "decline", "cancel"]}, "permissions", signal);
+        availableDecisions: ["accept", "decline", "cancel"]}, "permissions", signal, codexRequestIdentity(params, context));
       return {permissions: answer.decision === "accept" ? request.permissions : {}, scope: "turn"};
     }
-    return codexApproval(owner.interactions, params, method === "item/fileChange/requestApproval" ? "file_change" : "command", signal, true);
+    return codexApproval(owner.interactions, params, method === "item/fileChange/requestApproval" ? "file_change" : "command", signal, true, context);
   }
   close(): void {
     if (this.#closed) return;

@@ -1,0 +1,12 @@
+{
+  "id": "fixture-native-policy-confirmation-missing",
+  "type": "harness.conversation.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "command_id": "command",
+    "session_id": "session",
+    "operation": "policy",
+    "filesystem_undo": false
+  }
+}

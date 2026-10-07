@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MCP_REVIEW_META_KEY, type HcpHarnessEventPayload } from "@harness-control/protocol";
 import { JsonRunnerStateStore, MemoryRunnerStateStore } from "./index.js";
-import type { PersistedMcpReview } from "./mcp-review.js";
+import {persistedMcpReviewSchema, type PersistedMcpReview} from "./mcp-review.js";
 import { parseMcpPendingInput } from "../mcp/input-required.js";
 
 function pending() {
@@ -35,6 +35,21 @@ function decisionEvent(review: PersistedMcpReview, decision: "accept" | "decline
     created_at: "2026-09-19T00:01:00Z", data: {session_id: "session", turn_id: "turn", request_id: review.request_id,
       action_hash: review.action_hash, actor_id: "actor", decision, resolved_at: "2026-09-19T00:01:00Z"}};
 }
+
+test("native MCP observation is physical, immutable and atomically included in its review events", () => {
+  const {review: base, event: initial} = pending();
+  const native = {source: "native" as const, native_reference: base.native_thread_id, call_reference: base.native_call_id, execution_reference: base.native_turn_id};
+  const review = {...base, native_request: native}, event = {...initial, data: {...initial.data, native_request: native}};
+  for (const change of [{native_reference: "foreign"}, {call_reference: "foreign"}, {execution_reference: "foreign"}])
+    assert.throws(() => persistedMcpReviewSchema.parse({...review, native_request: {...native, ...change}}), /physical invocation/);
+  const store = new MemoryRunnerStateStore();
+  assert.throws(() => store.saveMcpReview(review, initial), /verified native observation/);assert.equal(store.getMcpReview("session"), undefined);
+  store.saveMcpReview(review, event);
+  const decided: PersistedMcpReview = {...review, outcome: {phase: "dispatching", actor_id: "actor"}};
+  const resolved = {...decisionEvent(review, "accept"), data: {...decisionEvent(review, "accept").data, native_request: native}};
+  assert.throws(() => store.saveMcpReview({...decided, native_request: {...native, message_reference: "new-message"}}, {...resolved, data: {...resolved.data, native_request: {...native, message_reference: "new-message"}}}), /changed its binding/);
+  store.saveMcpReview(decided, resolved);assert.deepEqual(store.getMcpReview("session")!.native_request, native);
+});
 
 test("MCP continuation and approval event survive restart together in private storage", async () => {
   const root = await mkdtemp(join(tmpdir(), "hcp-review-"));

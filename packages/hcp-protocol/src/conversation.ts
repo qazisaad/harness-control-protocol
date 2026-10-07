@@ -5,6 +5,8 @@ import {nativeConversationHistorySchema} from "./conversation-history.js";
 export {nativeConversationHistorySchema} from "./conversation-history.js";
 import {harnessInputFileOperationSchema, harnessInputFileResultSchema} from "./input-file.js";
 import {harnessNativeFeedbackOperationSchema, harnessNativeFeedbackResultSchema} from "./feedback.js";
+import {harnessNativeGoalOperationSchema, harnessNativeGoalResultSchema} from "./native-goal.js";
+import {harnessNativePolicyControlOperationSchema, harnessNativePolicyControlResultSchema} from "./policy-control.js";
 
 export const hcpConversationRequestPayloadSchema = z.object({session_id: z.string().min(1).max(512),
   operation: z.discriminatedUnion("kind", [z.object({kind: z.literal("read"), cursor: z.string().min(1).max(1024).optional(), limit: z.number().int().min(1).max(100).optional()}).strict(),
@@ -12,15 +14,17 @@ export const hcpConversationRequestPayloadSchema = z.object({session_id: z.strin
       messages: z.array(z.object({role: z.enum(["user", "assistant"]), content: z.string().min(1).max(128 * 1024)}).strict()).min(1).max(100),
     }).strict().refine(value => value.messages.reduce((size, message) => size + message.content.length, 0) <= 128 * 1024,
       "Injected context exceeds the bounded text limit."),
-    z.object({kind: z.literal("rollback"), num_turns: z.number().int().min(1).max(100), expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/)}).strict(),
+    z.object({kind: z.literal("rollback"), num_turns: z.number().int().min(1).max(10_000), expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/)}).strict(),
     z.object({kind: z.literal("steer"), turn_id: z.string().min(1).max(512), input: z.string().min(1).max(128 * 1024)}).strict(),
     z.object({kind: z.literal("fork"), target_session_id: z.string().min(1).max(512), continuation_group_key: z.string().min(1).max(512),
       expected_history_hash: z.string().regex(/^[a-f0-9]{64}$/), last_turn_id: z.string().min(1).max(512).optional()}).strict(),
     z.object({kind: z.literal("content"), content_id: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().nonnegative().default(0),
       limit: z.number().int().min(1).max(64 * 1024).default(64 * 1024)}).strict(),
-    z.object({kind: z.literal("retire")}).strict(), harnessNativeWorkOperationSchema, harnessInputFileOperationSchema, harnessNativeFeedbackOperationSchema])}).strict();
+    z.object({kind: z.literal("retire")}).strict(), harnessNativeWorkOperationSchema, harnessInputFileOperationSchema, harnessNativeFeedbackOperationSchema, harnessNativeGoalOperationSchema, harnessNativePolicyControlOperationSchema])}).strict();
 export const hcpConversationResultPayloadSchema = z.object({command_id: z.string().min(1), session_id: z.string().min(1),
-  operation: z.enum(["read", "rollback", "retire", "steer", "fork", "content", "work", "inject", "input_file", "feedback"]), filesystem_undo: z.literal(false),
+  operation: z.enum(["read", "rollback", "retire", "steer", "fork", "content", "work", "inject", "input_file", "feedback", "goal", "policy"]), filesystem_undo: z.literal(false),
+  policy: harnessNativePolicyControlResultSchema.optional(),
+  goal: harnessNativeGoalResultSchema.optional(),
   feedback: harnessNativeFeedbackResultSchema.optional(),
   input_file: harnessInputFileResultSchema.optional(),
   injection: z.discriminatedUnion("outcome", [
@@ -35,6 +39,11 @@ export const hcpConversationResultPayloadSchema = z.object({command_id: z.string
   fork: z.object({session_id: z.string().min(1), continuation_group_key: z.string().min(1), native_reference: z.string().min(1)}).strict().optional(),
   history: nativeConversationHistorySchema.optional()}).strict().superRefine((result, context) => {
     const missing = (field: string) => context.addIssue({code: "custom", path: [field], message: `The ${result.operation} result requires ${field}.`});
+    if (result.operation === "policy" && !result.policy) missing("policy");
+    if (result.operation !== "policy" && result.policy)
+      context.addIssue({code: "custom", path: ["policy"], message: "Only policy controls may carry in-place policy confirmation."});
+    if (result.operation === "policy") for (const field of ["history", "native_reference", "turn_id", "fork", "content", "work", "input_file", "feedback", "goal", "injection"] as const)
+      if (result[field] !== undefined) context.addIssue({code: "custom", path: [field], message: "An in-place policy receipt carries only its policy confirmation."});
     if (["read", "rollback"].includes(result.operation) && !result.history) missing("history");
     if (result.operation === "fork" && !result.fork) missing("fork");
     if (result.operation === "steer" && !result.turn_id) missing("turn_id");
@@ -42,6 +51,9 @@ export const hcpConversationResultPayloadSchema = z.object({command_id: z.string
     if (result.operation === "work" && !result.work) missing("work");
     if (result.operation === "input_file" && !result.input_file) missing("input_file");
     if (result.operation === "feedback" && !result.feedback) missing("feedback");
+    if (result.operation === "goal" && !result.goal) missing("goal");
+    if (result.operation !== "goal" && result.goal)
+      context.addIssue({code: "custom", path: ["goal"], message: "Only goal results may carry native job control evidence."});
     if (result.operation !== "feedback" && result.feedback)
       context.addIssue({code: "custom", path: ["feedback"], message: "Only feedback results may carry a native submission receipt."});
     if (result.operation !== "input_file" && result.input_file)

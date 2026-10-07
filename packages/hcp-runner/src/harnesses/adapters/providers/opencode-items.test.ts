@@ -40,3 +40,17 @@ test("OpenCode cannot rebind an existing native tool to another assistant messag
   const altered = tool("completed"); altered.properties.part.messageID = "other";
   assert.throws(() => f.observe(altered), /changed an admitted tool/);
 });
+
+
+test("OpenCode portable tools distinguish actual call identity from part identity and fence rebinding", () => {
+  const f = fixture(); f.observe(message());
+  const running = tool("running") as ReturnType<typeof tool> & {properties: {part: {callID: string}}};
+  running.properties.part.callID = "native-call"; f.observe(running);
+  const done = tool("completed", "complete body") as typeof running; done.properties.part.callID = "native-call"; f.observe(done);
+  const portable = f.events.at(-1)!.data.portable as {native_item_reference: string; native_call_reference: string; items: {id: string; call_id?: string}[]};
+  assert.equal(portable.native_item_reference, "tool"); assert.equal(portable.native_call_reference, "native-call");
+  assert.equal(portable.items[0]?.id, "native-call"); assert.equal(portable.items[1]?.call_id, "native-call");
+  const other = fixture(); other.observe(message()); other.observe(running);
+  const changed = structuredClone(running); changed.properties.part.callID = "foreign-call";
+  assert.throws(() => other.observe(changed), /changed an admitted tool/);
+});

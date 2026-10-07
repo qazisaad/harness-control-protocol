@@ -1,0 +1,14 @@
+{
+  "id": "bounded-history-rollback",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "type": "harness.conversation.request",
+  "payload": {
+    "session_id": "session",
+    "operation": {
+      "kind": "rollback",
+      "num_turns": 10000,
+      "expected_history_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}

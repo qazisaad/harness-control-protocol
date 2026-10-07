@@ -58,7 +58,7 @@ export class OpenCodeWorkCallbacks {
       }
       const captured=owner;
       try{await respondOpenCodeInteraction(event,{sessionId:session,promptId:origin.prompt_id,turnId:origin.origin_turn_id,owner:captured.interactions,
-        signal:captured.lifetime.signal,sessionPermissions:true,readMessage:id=>this.work.transport.message(session,id),reply:this.reply});}
+        signal:captured.lifetime.signal,sessionPermissions:!this.start.payload.approval_options,readMessage:id=>this.work.transport.message(session,id),reply:this.reply});}
       catch(error){if(!captured.lifetime.signal.aborted)throw error;}
     }).catch(error=>{if(!this.#closed)this.onFailure(error);});
   }

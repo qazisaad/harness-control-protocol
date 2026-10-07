@@ -7,6 +7,8 @@ import {HarnessAdapterError} from "../types.js";
 const modelSchema = z.object({
   value: z.string().min(1).max(256), displayName: z.string().min(1).max(512),
   supportsEffort: z.boolean().optional(),
+  supportsAdaptiveThinking: z.boolean().optional(),
+  supportsFastMode: z.boolean().optional(),
   supportedEffortLevels: z.array(z.enum(["low", "medium", "high", "xhigh", "max"])).max(5).optional(),
 });
 
@@ -16,10 +18,12 @@ export function projectClaudeModels(value: unknown): HarnessModel[] {
     throw new HarnessAdapterError("native_catalog_invalid", "Claude returned duplicate model identifiers.");
   return models.map(model => ({id: model.value, label: model.displayName, capabilities: {
     image_input: true,
-    option_descriptors: model.supportsEffort && model.supportedEffortLevels?.length ? [{
+    option_descriptors: [...(model.supportsEffort && model.supportedEffortLevels?.length ? [{
       id: "effort", label: "Effort", type: "select" as const,
       values: model.supportedEffortLevels.map(value => ({value, label: value})),
-    }] : [],
+    }] : []),
+      ...(model.supportsAdaptiveThinking ? [{id: "thinking", label: "Thinking", type: "boolean" as const}] : []),
+      ...(model.supportsFastMode ? [{id: "fastMode", label: "Fast mode", type: "boolean" as const}] : [])],
   }}));
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {mkdir, mkdtemp, rm, writeFile, appendFile} from "node:fs/promises";
+import {mkdir, mkdtemp, realpath, rm, writeFile, appendFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {randomUUID} from "node:crypto";
@@ -10,7 +10,7 @@ import {claudeConversation} from "./adapters/providers/claude-conversation.js";
 import type {HarnessAdapterConversationInput} from "./adapters/types.js";
 
 test("Claude SDK history, bounded forks and logical rollback preserve context without changing source files", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "hcp-claude-history-"));
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "hcp-claude-history-")));
   const home = join(cwd, "account");
   const sessionId = randomUUID();
   const ids = Array.from({length: 4}, () => randomUUID());
@@ -20,7 +20,7 @@ test("Claude SDK history, bounded forks and logical rollback preserve context wi
   await mkdir(directory, {recursive: true});
   const source = ids.map((uuid, index) => ({uuid, parentUuid: ids[index - 1] ?? null,
     sessionId, cwd, timestamp: new Date().toISOString(), type: index % 2 ? "assistant" : "user",
-    message: {role: index % 2 ? "assistant" : "user", content: [{type: "text", text: `message-${index}`}],
+    message: {role: index % 2 ? "assistant" : "user", content: [{type: "text", text: `message-${index}`}, ...(index === 0 ? [{type: "image", source: {type: "base64", media_type: "image/png", data: "AQID"}}] : [])],
       ...(index % 2 ? {id: `msg-${index}`, model: "sonnet", stop_reason: "end_turn", stop_sequence: null,
         usage: {input_tokens: 1, output_tokens: 1}} : {})}}));
   await writeFile(join(directory, `${sessionId}.jsonl`), source.map(value => JSON.stringify(value)).join("\n") + "\n");
@@ -35,7 +35,9 @@ test("Claude SDK history, bounded forks and logical rollback preserve context wi
     let read = await claudeConversation(input({kind: "read"}));
     assert.equal(read.history?.turns.length, 2);
     const portable = read.history!.turns[0]!.portable_items!;
-    assert.deepEqual(portable.map(item => item.type === "message" ? item.role : item.type), ["user", "assistant"]);
+    assert.deepEqual(portable.map(item => item.type === "message" ? item.role : item.type), ["user", "attachment", "assistant"]);
+    const media = portable[1]!;assert.equal(media.type, "attachment");assert.equal(media.native_item_reference, undefined);
+    assert.deepEqual(media.type === "attachment" && media.body.storage === "inline" && media.body.value, {kind: "embedded", mime_type: "image/png", data_base64: "AQID"});
     const fork = await claudeConversation(input({kind: "fork", target_session_id: "child", continuation_group_key: "child-key",
       expected_history_hash: read.history!.history_hash, last_turn_id: read.history!.turns[0]!.id}));
     const child = await claudeSessionHelper(provider, cwd, {kind: "read", sessionId: fork.fork!.native_reference}) as {messages: unknown[]};

@@ -30,19 +30,28 @@ export class NativeProcess {
   }
 
   stop(): Promise<void> {
-    this.#stopping ??= this.#stop();
+    if (!this.#stopping) {
+      this.#stopping = this.#stop();
+      // Notification/error paths may initiate cleanup without awaiting it. Keep
+      // the original rejecting promise available to the owner without an unhandled rejection.
+      void this.#stopping.catch(() => {});
+    }
     return this.#stopping;
   }
 
   async #stop(): Promise<void> {
     if (this.#closed) return;
     killChildProcess(this.child, "SIGTERM");
-    const forceKill = setTimeout(
-      () => killChildProcess(this.child, "SIGKILL"),
-      1_000,
-    );
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const signalFailure = new Promise<never>((_, reject) => {
+      forceKill = setTimeout(() => {
+        // A failed signal is uncertain closure, not an uncaught timer exception.
+        // Propagate it to the owning stop operation so its durable fence survives.
+        try {killChildProcess(this.child, "SIGKILL");} catch (failure) {reject(failure);}
+      }, 1_000);
+    });
     try {
-      await this.closed;
+      await Promise.race([this.closed, signalFailure]);
     } finally {
       clearTimeout(forceKill);
     }

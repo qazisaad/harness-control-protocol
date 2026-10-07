@@ -8,7 +8,7 @@ import type { NativeConversation } from "../../state/index.js";
 import type { HcpConversationRequestPayload, HcpConversationResultPayload } from "@harness-control/protocol";
 import type {HarnessContentReference} from "@harness-control/protocol";
 
-export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content" | "work" | "input_file" | "feedback">;
+export type HarnessConversationOperation = Exclude<HcpConversationRequestPayload["operation"]["kind"], "retire" | "steer" | "content" | "work" | "input_file" | "feedback" | "goal" | "policy">;
 
 /** A live control belongs to exactly one running HCP turn, and expires with its runtime. */
 export type HarnessActiveTurnControls = {
@@ -31,12 +31,18 @@ export type HarnessAdapterEvent = {
   event_type: HcpEventType;
   turn_id?: string;
   data: Record<string, unknown>;
+  /** Runner-private, immutable child admission; persisted atomically with its first work observation. */
+  nativeWorkCustody?: import("../../state/index.js").NativeWorkCustody;
 };
 
 export type HarnessAdapterSession = {
+  /** Exact connected attachment names from native registry readback; never requested-only evidence. */
+  native_mcp_catalog_readback?: import("@harness-control/protocol").HarnessNativeMcpCatalogReadback;
   native_policy_readback?: import("@harness-control/protocol").HarnessNativePolicyReadback;
   adapter_session_id: string;
   native_thread_id?: string;
+  /** Physical native ID when the public continuation reference is an opaque account binding. */
+  native_work_root_reference?: string;
   native_fresh?: true;
 };
 
@@ -76,6 +82,8 @@ export type HarnessMcpToolset = {
 };
 
 export type HarnessMcpReviewRequest = {
+  /** Present only after the adapter proves the physical native invocation; never an HCP reply token. */
+  native_request?: import("@harness-control/protocol").HarnessNativeRequestIdentity;
   attachment_name: string;
   tool_name: string;
   arguments: McpToolCallArguments;
@@ -104,6 +112,14 @@ export type HarnessMcpContinuation = {
 };
 
 export type HarnessAdapterTurnInput = {
+  /** Exact owned-image bytes resolved by the manager after scope, metadata and integrity checks. */
+  inputFileImages?: {reference: import("@harness-control/protocol").HarnessImageFileReference; data_base64: string}[];
+  /** Persist before native dispatch; confirmation requires the corresponding native acknowledgement. */
+  beginNativeExecution?: (nativeReference: string, goalAdmissionId?: string, observedGoalPhase?: true) => string;
+  confirmNativeExecution?: (admissionId: string, nativeExecutionReference: string) => void;
+  completeNativeExecution?: (admissionId: string, status: "completed" | "interrupted" | "failed", output?: import("@harness-control/protocol").HarnessTurnFinalOutput) => void;
+  beginNativeGoal?: (nativeReference: string, goal: import("@harness-control/protocol").HarnessNativeGoalRequest, resume?: import("@harness-control/protocol").HarnessNativeGoalObservation) => string;
+  confirmNativeGoal?: (record: import("@harness-control/protocol").HarnessNativeGoalRecord) => void;
   payload: HcpTurnSendPayload;
   session: HarnessAdapterSession;
   startPayload: HcpSessionStartPayload;
@@ -133,8 +149,11 @@ export type HarnessAdapterStopInput = {
 };
 
 export type HarnessAdapter = {
+  /** Pure projection of retained private custody into the identity emitted by native session readiness. */
+  publicNativeReference?(retainedReference: string): string;
   /** The manager may project verified owned workspace files into user-level input. */
   readonly fileContextInputs?: true;
+  readonly ownedImageInputs?: true;
   /** The manager may project explicitly supplied user/assistant history into user-level prompt context. */
   readonly promptContextInputs?: true;
   /** Start establishes a confirmed native conversation before any model turn. */
@@ -144,16 +163,43 @@ export type HarnessAdapter = {
   /** Read-only, revision-checked native history can coexist with this adapter's live session owner. */
   readonly liveHistoryRead?: true;
   readonly nativeWork?: true;
+  /** Runner-private transaction primitive. Public capability requires manager authorization and durable receipts. */
+  updateNativePolicy?(input: {sessionId: string; nextPayload: HcpSessionStartPayload; signal: AbortSignal;
+    beginMutation: () => void;
+    commit: (readback: import("@harness-control/protocol").HarnessNativePolicyReadback,
+      confirmation: {native_source: string; native_permission_mode: string; observed_at: string}) => void}): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback>;
   /** native_mcp_detach_busy is a pre-dispatch refusal; other failures retain unknown outcome. */
   detachNativeMcpServers?(input: {sessionId: string; names: readonly string[]; signal: AbortSignal}): Promise<{
     source: "native"; detached: string[]; remaining: string[]}>;
   submitNativeFeedback?(input: {sessionId: string; nativeThreadId: string; provider: ProviderInstanceConfig;
     startPayload: HcpSessionStartPayload; request: import("@harness-control/protocol").HarnessNativeFeedbackOperation;
     signal: AbortSignal}): Promise<{feedback_id: string}>;
+  controlNativeGoal?(input: {sessionId: string; nativeThreadId: string; cwd: string; provider: ProviderInstanceConfig;
+    operation: import("@harness-control/protocol").HarnessNativeGoalOperation; signal: AbortSignal;
+    inspectionOnly: boolean; beginMutation?: () => void}): Promise<import("@harness-control/protocol").HarnessNativeGoalResult>;
   readNativeWorkHistory?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
     provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload;
     page: {cursor?: string; limit?: number}; publishContent: import("./providers/content-projection.js").ContentPublisher;
     signal: AbortSignal}): Promise<import("@harness-control/protocol").NativeConversationHistory>;
+  /** Never resumes an execution or restores callbacks; custody must be reverified against native metadata. */
+  readRetainedNativeWorkHistory?(input: {commandId: string; sessionId: string;
+    work: import("@harness-control/protocol").HarnessNativeWorkRecord;
+    custody: import("../../state/index.js").NativeWorkCustody;
+    provider: ProviderInstanceConfig; scope: import("../../state/index.js").NativeWorkState["scope"];
+    conversation?: NativeConversation;
+    page: {cursor?: string; limit?: number}; publishContent: import("./providers/content-projection.js").ContentPublisher;
+    signal: AbortSignal}): Promise<import("@harness-control/protocol").NativeConversationHistory>;
+  forkNativeWork?(input: {commandId: string; sessionId: string;
+    work: import("@harness-control/protocol").HarnessNativeWorkRecord;
+    custody: import("../../state/index.js").NativeWorkCustody;
+    conversation: NativeConversation; provider: ProviderInstanceConfig;
+    operation: Extract<import("@harness-control/protocol").HcpConversationRequestPayload["operation"], {action: "fork"}>;
+    beginMutation: () => void; signal: AbortSignal}): Promise<{native_reference: string}>;
+  reconcileNativeWork?(input: {commandId: string; sessionId: string;
+    work: import("@harness-control/protocol").HarnessNativeWorkRecord;
+    custody: import("../../state/index.js").NativeWorkCustody;
+    provider: ProviderInstanceConfig; scope: import("../../state/index.js").NativeWorkState["scope"];
+    conversation?: NativeConversation; signal: AbortSignal}): Promise<{status: "completed" | "failed" | "cancelled"}>;
   cancelNativeWork?(input: {commandId: string; sessionId: string; work: import("@harness-control/protocol").HarnessNativeWorkRecord;
     provider: ProviderInstanceConfig; startPayload: HcpSessionStartPayload; signal: AbortSignal}): Promise<void>;
   readonly sessionEvents?: true;

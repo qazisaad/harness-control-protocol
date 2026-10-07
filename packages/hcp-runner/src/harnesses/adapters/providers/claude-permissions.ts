@@ -1,20 +1,23 @@
+import {harnessNativeRequestIdentitySchema, type HarnessNativeRequestIdentity} from "@harness-control/protocol";
 import {z} from "zod";
 import type {CanUseTool} from "@anthropic-ai/claude-agent-sdk";
 import type {NativeInteractions} from "../../native-interactions.js";
 
-type Owner = {threadId: string; turnId: string; interactions: NativeInteractions; signal: AbortSignal; allowSessionPermissions?: boolean};
+type Owner = {threadId: string; turnId: string; interactions: NativeInteractions; signal: AbortSignal; allowSessionPermissions?: boolean; observeProposal?: (plan: string, identity: HarnessNativeRequestIdentity) => void};
 /** Native request identity is resolved by the runtime; application MCP decisions remain separate. */
 export function claudePermissions(resolve: (options: Parameters<CanUseTool>[2]) => Owner | undefined): CanUseTool {
   return async (tool, arguments_, options) => {
     const owner = resolve(options);
     if (!owner) return {behavior: "deny", message: "The native request has no confirmed execution owner.", interrupt: false};
     const binding = {threadId: owner.threadId, turnId: owner.turnId, itemId: options.toolUseID};
+    const identity = harnessNativeRequestIdentitySchema.parse({source: "native", native_reference: owner.threadId, request_reference: options.requestId, call_reference: options.toolUseID});
+    if (tool === "ExitPlanMode" && typeof arguments_.plan === "string") owner.observeProposal?.(arguments_.plan, identity);
     const signal = AbortSignal.any([owner.signal, options.signal]);
     if (tool === "AskUserQuestion") {
       const parsed = z.object({questions: z.array(z.object({question: z.string(), header: z.string(),
         options: z.array(z.object({label: z.string(), description: z.string()})), multiSelect: z.boolean().optional()})).min(1).max(16)}).parse(arguments_);
       const reply = z.object({answers: z.record(z.string(), z.object({answers: z.array(z.string())}))}).parse(await owner.interactions.questions({...binding,
-        questions: parsed.questions.map((question, index) => ({...question, id: `question-${index}`, isOther: true}))}, signal));
+        questions: parsed.questions.map((question, index) => ({...question, id: `question-${index}`, isOther: true}))}, signal, identity));
       if (!Object.keys(reply.answers).length) return {behavior: "deny", message: "The user cancelled the native question.", interrupt: true};
       return {behavior: "allow", updatedInput: {...arguments_, answers: Object.fromEntries(parsed.questions.map((question, index) =>
         [question.question, reply.answers[`question-${index}`]?.answers.join(", ") ?? ""]))}};
@@ -25,9 +28,9 @@ export function claudePermissions(resolve: (options: Parameters<CanUseTool>[2]) 
       update.type === "addRules" && update.destination === "session" && update.behavior === "allow" && update.rules.length > 0 && update.rules.every(rule => rule.toolName === tool))) : [];
     const answer = await owner.interactions.approval({...binding, tool, arguments: z.record(z.string(), z.json()).parse(arguments_),
       ...(sessionPermissions.length ? {session_permission_updates: z.array(z.json()).max(32).parse(sessionPermissions)} : {}),
-      availableDecisions: ["accept", "decline", "cancel", ...(sessionPermissions.length ? ["accept_for_session"] : [])]}, requestType, signal);
+      availableDecisions: ["accept", "decline", "cancel", ...(sessionPermissions.length ? ["accept_for_session"] : [])]}, requestType, signal, identity, {rejectionFeedback: true});
     return answer.decision === "accept_for_session" ? {behavior: "allow", updatedInput: arguments_, updatedPermissions: sessionPermissions}
       : answer.decision === "accept" ? {behavior: "allow", updatedInput: arguments_}
-      : {behavior: "deny", message: "The user declined the native action.", interrupt: answer.decision === "cancel"};
+      : {behavior: "deny", message: answer.feedback ?? "The user declined the native action.", interrupt: answer.decision === "cancel"};
   };
 }

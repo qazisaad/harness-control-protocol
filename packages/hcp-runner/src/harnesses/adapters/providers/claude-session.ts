@@ -1,17 +1,25 @@
+import {nativeTurnImages} from "./native-images.js";
+import {portableItemObservation} from "../../portable-history.js";
+import {nativePlanObservation, nativePlanProposalInput} from "./native-plan.js";
+import {claudeToolSelectionOptions, confirmClaudeToolSelection} from "./claude-tool-selection.js";
+import {claudeRootUsage} from "./claude-root-usage.js";
+import {ClaudeTextParts, claudeCompletedTextParts} from "./claude-text-parts.js";
 import {randomUUID, createHash} from "node:crypto";
+import {ClaudeGoalObservations} from "./claude-goal-observations.js";
 import {isDeepStrictEqual} from "node:util";
 import {realpath} from "node:fs/promises";
 import {query, type Query, type Options, type SDKMessage, type SDKUserMessage} from "@anthropic-ai/claude-agent-sdk";
 import {z} from "zod";
-import {harnessNativeRetryObservationSchema, isNativeWorkTerminal, type HarnessContextUsage, type HarnessNativeWorkObservation, type HarnessTurnFinalOutput} from "@harness-control/protocol";
+import {hcpSessionStartPayloadSchema, harnessNativeRetryObservationSchema, isNativeWorkTerminal, type HarnessContextUsage, type HarnessNativeWorkObservation, type HarnessTurnFinalOutput} from "@harness-control/protocol";
 import {HarnessAdapterError, type HarnessAdapterStartInput, type HarnessAdapterTurnInput, type HarnessAdapterEvent, type HarnessNativeInteractions} from "../types.js";
 import {NativeInteractions} from "../../native-interactions.js";
 import {ClaudeInput} from "./claude-input.js";
 import {claudePermissions} from "./claude-permissions.js";
+import {claudePermissionMode, claudeRejectsUnapprovedPermissions} from "./claude-permission-prompting.js";
 import {claudeElicitation} from "./claude-elicitation.js";
 import {hasInheritedClaudePlugins} from "./claude-inventory.js";
 import {claudeContextCapacity} from "./claude-context.js";
-import {claudeEffortControl} from "./claude-effort.js";
+import {claudeEffortControl, claudeBooleanOptions} from "./claude-effort.js";
 import {claudeResultSchema, type ClaudeQueryFactory} from "./claude-runtime.js";
 import {NativeProcess} from "./native-process.js";
 import {adapterMcpServers, assertCliMcpAttachmentProxied, nativeInstructions} from "./shared.js";
@@ -21,9 +29,9 @@ import {retainedContent, retainedFinalText, textChunks} from "./content-projecti
 import {claudeRateLimitObservation} from "./claude-rate-limits.js";
 import {detachClaudeMcp, initializeClaudeMcp} from "./claude-mcp-controls.js";
 
-type Root = {input: HarnessAdapterTurnInput; emit: (event: HarnessAdapterEvent) => void; ids: Set<string>;
+type Root = {input: HarnessAdapterTurnInput; emit: (event: HarnessAdapterEvent) => void; ids: Set<string>; admissions: Map<string, string>;
   interactions: NativeInteractions; lifetime: AbortController; context: HarnessContextUsage; nativeModel?: string; streamed: boolean; compacted: boolean;
-  commandStarted?: boolean; pendingCompactContext?: HarnessContextUsage;
+  textParts?: ClaudeTextParts; commandStarted?: boolean; pendingCompactContext?: HarnessContextUsage;
   completion: Promise<HarnessTurnFinalOutput>; resolve: (result: HarnessTurnFinalOutput) => void; reject: (error: unknown) => void};
 type Task = {work: HarnessNativeWorkObservation; root: Root; lifetime: AbortController; launch?: string};
 const error = (code: string, message: string) => new HarnessAdapterError(code, message);
@@ -55,13 +63,22 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #lost = false;
   #stopping: Promise<void> | undefined;
   #selection: HarnessAdapterTurnInput["startPayload"]["model_selection"] | undefined;
+  #booleanOptionsVerified = false;
   #mode: "execute" | "plan" | undefined;
-  #policyProof: {mode: NonNullable<Options["permissionMode"]>; resolve: () => void; reject: (failure: unknown) => void} | undefined;
+  #policyProof: {mode: NonNullable<Options["permissionMode"]>; resolve: () => void; reject: (failure: unknown) => void; observed_at?: string} | undefined;
   #mcpConfigurations: NonNullable<Options["mcpServers"]> = {};
   #mcpReady = false;
+  #policyControl = false;
+  #runPreparing = false;
+  readonly #allowsBypass: boolean;
+  nativeCatalogReadback: {source: "native"; attachments: string[]} | undefined;
 
   constructor(readonly start: HarnessAdapterStartInput, readonly factory: ClaudeQueryFactory = query) {
+    if (start.payload.policy_control_authority) hcpSessionStartPayloadSchema.parse(start.payload);
+    this.#allowsBypass = start.payload.approval_policy === "full_access"
+      || start.payload.policy_control_authority?.allowed_selections.some(selection => selection.approval_policy === "full_access") === true;
     this.nativeId = start.nativeConversation?.native_thread_id ?? randomUUID();
+    this.#goalObservations = new ClaudeGoalObservations(this.nativeId);
     this.#sessionInputs = new NativeInteractions(start.payload, {session_id: start.payload.session_id, request_scope: "session"},
       {threadId: this.nativeId, turnId: () => undefined}, event => this.#session(event));
     if (!start.emitSessionEvent || !start.registerSessionInteractions) throw error("native_session_owner_required", "Interactive Claude requires session observation and interaction ownership.");
@@ -69,7 +86,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   owns(id: string): boolean {return this.#sessionInputs.owns(id) || [...this.#roots].some(root => root.interactions.owns(id));}
   async detachMcp(names: readonly string[], signal: AbortSignal): Promise<{source: "native"; detached: string[]; remaining: string[]}> {
-    if (!this.#initialized || !this.#stream || this.#lost || this.#stopping || this.#active || this.#pending().length
+    if (this.#policyControl || this.#runPreparing || !this.#initialized || !this.#stream || this.#lost || this.#stopping || this.#active || this.#pending().length
       || this.#background.size || this.#unconfirmedWork || this.#sessionInputs.outstanding || [...this.#roots].some(root => root.interactions.outstanding))
       throw error("native_mcp_detach_busy", "MCP removal requires an initialized idle native owner without outstanding work or callbacks.");
     signal.throwIfAborted();
@@ -81,29 +98,77 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       return {source: "native", detached: [...names], remaining: Object.keys(remaining)};
     } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
   }
+  /** The existing physical query proves the new execute policy; no unchanged-history assertion is made. */
+  async updateIdlePolicy(input: Parameters<NonNullable<import("../types.js").HarnessAdapter["updateNativePolicy"]>>[0]): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback> {
+    const next = structuredClone(input.nextPayload);
+    const immutable = (payload: typeof next) => {
+      const {approval_policy: _policy, approval_reviewer: _reviewer, ...binding} = payload;
+      return binding;
+    };
+    if (input.sessionId !== this.start.payload.session_id || !isDeepStrictEqual(immutable(next), immutable(this.start.payload)))
+      throw error("native_policy_binding", "In-place policy control cannot replace the native owner or its other execution settings.");
+    if (next.approval_reviewer === "native_auto" && next.approval_policy !== "auto_edits")
+      throw error("native_approval_review_unsupported", "Claude native automatic review requires auto_edits policy.");
+    if (this.start.payload.policy_control_authority && !this.start.payload.policy_control_authority.allowed_selections.some(selection =>
+      selection.approval_policy === next.approval_policy && selection.approval_reviewer === (next.approval_reviewer ?? "user")))
+      throw error("native_policy_authority", "The selected policy is outside the native query's immutable launch authority.");
+    hcpSessionStartPayloadSchema.parse(next);
+    const desired = claudePermissionMode(next, "execute");
+    if (desired === "bypassPermissions" && !this.#allowsBypass)
+      throw error("native_policy_launch_authority", "This native query was not launched with bypass permission authority.");
+    if (this.#mode === "execute" && desired === this.#permissionMode("execute"))
+      throw error("native_policy_unchanged", "An unchanged native policy has no fresh mode transition to prove.");
+    if (this.#policyControl || !this.#policyIdle())
+      throw error("native_policy_busy", "Policy control requires an initialized idle native owner without outstanding work or callbacks.");
+    input.signal.throwIfAborted();
+    this.#policyControl = true;
+    let dispatched = false;
+    try {
+      input.beginMutation();
+      input.signal.throwIfAborted();
+      dispatched = true;
+      const confirmation = await this.#confirmPermissionMode(desired);
+      input.signal.throwIfAborted();
+      if (!this.#policyIdle()) throw error("native_policy_unknown", "The native owner ceased to be idle during policy confirmation.");
+      const readback: import("@harness-control/protocol").HarnessNativePolicyReadback = {source: "native", execution_profile: "interactive",
+        approval_policy: next.approval_policy, ...(next.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto"} : {}),
+        ...(next.approval_options ? {approval_options: structuredClone(next.approval_options)} : {}), sandbox_mode: "danger_full_access"};
+      input.commit(structuredClone(readback), confirmation);
+      this.start.payload = next;
+      this.#mode = "execute";
+      return readback;
+    } catch (failure) {
+      if (dispatched) this.#lose("runtime_error", failure);
+      throw failure;
+    } finally {this.#policyControl = false;}
+  }
+  #policyIdle(): boolean {
+    return !this.#runPreparing && !!this.#initialized && !!this.#stream && !this.#lost && !this.#stopping && !this.#active && !this.#pending().length
+      && !this.#background.size && !this.#unconfirmedWork && !this.#goalObservations.hasActiveObservation && !this.#sessionInputs.outstanding
+      && ![...this.#roots].some(root => root.interactions.outstanding);
+  }
   async confirmIdlePolicy(): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback> {
-    if (!this.start.nativeConversation || this.start.nativeConversation.fresh || this.#stream || this.#lost)
+    if ((!this.start.nativeConversation || this.start.nativeConversation.fresh) && this.start.payload.approval_reviewer !== "native_auto"
+      && !claudeRejectsUnapprovedPermissions(this.start.payload) || this.#stream || this.#lost)
       throw error("native_configuration_transition_unsupported", "Idle policy confirmation requires the retained native conversation and a fresh execution owner.");
     this.#selection = this.start.payload.model_selection; this.#mode = "execute";
     try {
       this.#open();
       await bounded(this.#stream!.initializationResult());
-      const confirm = async (mode: NonNullable<Options["permissionMode"]>) => {
-        const observed = new Promise<void>((resolve, reject) => {this.#policyProof = {mode, resolve, reject};});
-        try {await bounded(Promise.all([this.#stream!.setPermissionMode(mode), observed]));}
-        finally {this.#policyProof = undefined;}
-      };
       const desired = this.#permissionMode("execute");
       // A no-op control may have no status frame. Establish an observed opposite
       // state, then restore the requested state before any user input is offered.
-      await confirm(desired === "acceptEdits" ? "default" : "acceptEdits");
-      await confirm(desired);
-      if (!this.#mcpReady) {
-        await bounded(initializeClaudeMcp(this.#stream!, this.#mcpConfigurations));
+      await this.#confirmPermissionMode(desired === "acceptEdits" ? "default" : "acceptEdits");
+      await this.#confirmPermissionMode(desired);
+      if (!this.#mcpReady || this.start.payload.conversation_transition?.change === "mcp_catalog") {
+        const attachments = await bounded(initializeClaudeMcp(this.#stream!, this.#mcpConfigurations));
+        this.nativeCatalogReadback = {source: "native", attachments};
         this.#mcpReady = true;
       }
       if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The native owner was lost during policy confirmation.");
       return {source: "native", execution_profile: "interactive", approval_policy: this.start.payload.approval_policy,
+        ...(this.start.payload.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto" as const} : {}),
+        ...(this.start.payload.approval_options ? {approval_options: structuredClone(this.start.payload.approval_options)} : {}),
         sandbox_mode: "danger_full_access"};
     } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
   }
@@ -122,7 +187,11 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     root.interactions.respondInput(response);
   }
   #session(event: HarnessAdapterEvent): void {this.start.emitSessionEvent!(event);}
-  #observe(task: Task): void {this.#session({event_type: "native.work.updated", data: {work: task.work}});}
+  #observe(task: Task): void {this.#session({event_type: "native.work.updated", data: {work: task.work},
+    ...(task.work.kind === "agent" && task.launch && !task.work.parent_work_id ? {nativeWorkCustody: {
+      source: "claude", work_id: task.work.work_id, native_reference: task.work.native_reference, origin_turn_id: task.work.origin_turn_id,
+      root_native_reference: this.nativeId, parent_native_reference: this.nativeId, launch_native_reference: task.launch,
+      native_execution_reference: task.work.native_reference}} : {})});}
   readonly #sessionOutputIds = new Map<string, string>();
   readonly #retryIds = new Map<string, string>();
   #retry(message: Extract<SDKMessage, {subtype: "api_retry"}>): void {
@@ -145,6 +214,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     this.#session({event_type: "native.retry.updated", data: {retry: retry.data}});
     this.#retryIds.set(retry.data.item_id, digest);
   }
+  readonly #goalObservations: ClaudeGoalObservations;
   #unattributedAssistant(message: Extract<SDKMessage, {type: "assistant"}>): void {
     const id = z.string().min(1).max(512).parse(message.uuid);
     const blocks = z.array(z.record(z.string(), z.json())).max(1024).parse(message.message.content);
@@ -185,13 +255,21 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   #message(root: Root, text: string): SDKUserMessage {
     const uuid = randomUUID(); root.ids.add(uuid);
+    const admission = root.input.beginNativeExecution?.(this.nativeId);
+    if (admission) root.admissions.set(uuid, admission);
     return {type: "user", uuid, session_id: this.nativeId, parent_tool_use_id: null, message: {role: "user", content: text}};
   }
   async run(input: HarnessAdapterTurnInput, signal: AbortSignal, emit: (event: HarnessAdapterEvent) => void): Promise<HarnessTurnFinalOutput> {
     if (!isDeepStrictEqual(input.provider, this.start.provider) || !isDeepStrictEqual(input.startPayload, this.start.payload))
       throw error("native_continuation_binding", "The persistent Claude owner requires its original provider and execution configuration.");
     if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The persistent Claude owner cannot execute another turn.");
-    if (this.#active) throw error("native_turn_busy", "A native root turn is already running.");
+    if (this.#policyControl) throw error("native_policy_busy", "A native policy transaction owns the execution slot.");
+    if (this.#active || this.#runPreparing) throw error("native_turn_busy", "A native root turn is already running or being prepared.");
+    this.#runPreparing = true;
+    try {return await this.#runOwned(input, signal, emit);}
+    finally {this.#runPreparing = false;}
+  }
+  async #runOwned(input: HarnessAdapterTurnInput, signal: AbortSignal, emit: (event: HarnessAdapterEvent) => void): Promise<HarnessTurnFinalOutput> {
     if (input.payload.action === "compact" && (this.#pending().length || this.#background.size || this.#unconfirmedWork || this.#sessionInputs.outstanding))
       throw error("native_work_compaction_busy", "Manual compaction cannot establish exclusive command ownership while native work or session input is outstanding.");
     if (this.#roots.size >= 128) for (const root of this.#roots) {
@@ -204,23 +282,26 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     if (this.#roots.size >= 128) throw error("native_session_turn_limit", "The persistent session reached its bounded live interaction ownership registry.");
     const selection = input.payload.model_selection ?? input.startPayload.model_selection;
     const mode = input.payload.mode ?? "execute";
+    this.#permissionMode(mode);
     selectedEffort(selection, "claude");
+    const booleans = claudeBooleanOptions(selection);
     let effectiveOptions: Awaited<ReturnType<ReturnType<typeof claudeEffortControl>>> | undefined;
     if (this.#selection && (JSON.stringify(selection) !== JSON.stringify(this.#selection) || mode !== this.#mode)) {
-      if (this.#pending().length || this.#background.size || this.#sessionInputs.outstanding) throw error("native_work_settings_busy", "Settings cannot change while native work or session input is outstanding or its owner is unresolved.");
-      const changeEffort = JSON.stringify(selection.options ?? []) !== JSON.stringify(this.#selection.options ?? [])
-        ? claudeEffortControl(this.#stream!, selectedEffort(selection, "claude")) : undefined;
+      if (this.#pending().length || this.#background.size || this.#sessionInputs.outstanding || [...this.#roots].some(root => root.interactions.outstanding))
+        throw error("native_work_settings_busy", "Settings cannot change while native work or native input is outstanding or its owner is unresolved.");
+      const changeEffort = JSON.stringify(selection.options ?? []) !== JSON.stringify(this.#selection.options ?? []) || Object.keys(booleans).length
+        ? claudeEffortControl(this.#stream!, selectedEffort(selection, "claude"), booleans, claudeBooleanOptions(this.#selection)) : undefined;
       try {
         if (selection.model !== this.#selection.model) await bounded(this.#stream!.setModel(selection.model));
         if (changeEffort) effectiveOptions = await bounded(changeEffort());
-        if (mode !== this.#mode) await bounded(this.#stream!.setPermissionMode(this.#permissionMode(mode)));
+        if (mode !== this.#mode) await this.#confirmPermissionMode(this.#permissionMode(mode));
       } catch (failure) {this.#lose("transport_lost", failure); throw failure;}
     }
     this.#selection = structuredClone(selection); this.#mode = mode;
     let resolve!: Root["resolve"], reject!: Root["reject"];
     const completion = new Promise<HarnessTurnFinalOutput>((yes, no) => {resolve = yes; reject = no;});
     void completion.catch(() => undefined); // Factory failure can reject before run reaches its await.
-    const root: Root = {input, emit, ids: new Set(), lifetime: new AbortController(), context: unavailableContext(selection, "new_native_request"),
+    const root: Root = {input, emit, ids: new Set(), admissions: new Map(), lifetime: new AbortController(), context: unavailableContext(selection, "new_native_request"),
       streamed: false, compacted: false, completion, resolve, reject,
       interactions: new NativeInteractions(input.startPayload, input.payload, {threadId: this.nativeId, turnId: () => input.payload.turn_id}, event => this.#session(event))};
     this.#active = root; this.#boundRoot = undefined; this.#replyRoot = undefined; this.#roots.add(root);
@@ -228,12 +309,10 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     signal.addEventListener("abort", abort, {once: true});
     try {
       signal.throwIfAborted();
-      if (effectiveOptions) emit({event_type: "settings.options.effective", turn_id: input.payload.turn_id, data: {
-        scope: "root", source: "native", model_selection: {model: effectiveOptions.model,
-          options: effectiveOptions.effort === null ? [] : [{id: "effort", value: effectiveOptions.effort}]}}});
       emit({event_type: "context.updated", turn_id: input.payload.turn_id, data: {...root.context}});
       const message = this.#message(root, input.payload.action === "compact" ? "/compact" : input.payload.input);
-      if (input.payload.images?.length) message.message.content = [{type: "text", text: input.payload.input}, ...input.payload.images.map(image => ({type: "image" as const,
+      const images = nativeTurnImages(input);
+      if (images.length) message.message.content = [{type: "text", text: input.payload.input}, ...images.map(image => ({type: "image" as const,
         source: {type: "base64" as const, media_type: image.mime_type, data: image.data_base64}}))];
       if (!this.#stream) try {
         this.#open();
@@ -245,6 +324,17 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
           this.#mcpReady = true;
         }
       } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
+      if (!effectiveOptions && !this.#booleanOptionsVerified && Object.keys(booleans).length) try {
+        if (this.#pending().length || this.#background.size || this.#sessionInputs.outstanding
+          || [...this.#roots].some(owner => owner.interactions.outstanding))
+          throw error("native_work_settings_busy", "Initial session options require exclusive native callback ownership.");
+        effectiveOptions = await bounded(claudeEffortControl(this.#stream!, selectedEffort(selection, "claude"), booleans)());
+      } catch (failure) {this.#lose("transport_lost", failure); throw failure;}
+      if (effectiveOptions) this.#booleanOptionsVerified = true;
+      if (effectiveOptions) emit({event_type: "settings.options.effective", turn_id: input.payload.turn_id, data: {
+        scope: "root", source: "native", model_selection: {model: effectiveOptions.model,
+          options: [...(effectiveOptions.effort === null ? [] : [{id: "effort", value: effectiveOptions.effort}]),
+            ...Object.entries(effectiveOptions.booleans ?? {}).map(([id, value]) => ({id, value}))]}}});
       this.#channel.offer(message);
       if (this.#initialized) {
         input.session.native_thread_id = this.nativeId; input.persistNativeThread?.(this.nativeId);
@@ -265,11 +355,21 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     }
   }
   #permissionMode(mode: "execute" | "plan"): NonNullable<Options["permissionMode"]> {
-    return mode === "plan" ? "plan" : ({ask: "default", auto_edits: "acceptEdits", full_access: "bypassPermissions"} as const)[this.start.payload.approval_policy];
+    return claudePermissionMode(this.start.payload, mode);
+  }
+  async #confirmPermissionMode(mode: NonNullable<Options["permissionMode"]>): Promise<{native_source: string; native_permission_mode: string; observed_at: string}> {
+    const observed = new Promise<void>((resolve, reject) => {this.#policyProof = {mode, resolve, reject};});
+    const proof = this.#policyProof!;
+    try {
+      await bounded(Promise.all([this.#stream!.setPermissionMode(mode), observed]));
+      if (!proof.observed_at) throw error("native_policy_unknown", "Native policy confirmation has no fresh observation time.");
+      return {native_source: "claude.sdk.system.status", native_permission_mode: mode, observed_at: proof.observed_at};
+    }
+    finally {this.#policyProof = undefined;}
   }
   #controls(root: Root, signal: AbortSignal): void {
     root.input.registerActiveTurnControls?.({steer: async text => {signal.throwIfAborted(); if (this.#active !== root || this.#lost) throw error("active_turn_unavailable", "The native root owner changed."); this.#channel.offer(this.#message(root, text));}});
-    root.emit({event_type: "session.configured", data: {execution_profile: "interactive", model_selection: this.#selection!, mode: this.#mode!, native_conversation_ready: true}});
+    root.emit({event_type: "session.configured", data: {execution_profile: "interactive", model_selection: this.#selection!, mode: this.#mode!, native_conversation_ready: true, native_reference: this.nativeId}});
   }
   #open(): void {
     const mcpServers: NonNullable<Options["mcpServers"]> = {};
@@ -291,21 +391,16 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       perTaskStopAffordance: true,
       // CLI-flag MCP servers are not removed by setMcpServers. Register selected
       // servers through the dynamic control, with readback, before offering input.
+      ...claudeToolSelectionOptions(this.start.payload.tool_selection),
       includePartialMessages: true, strictMcpConfig: true, mcpServers: {}, permissionMode: this.#permissionMode(this.#mode!),
-      allowDangerouslySkipPermissions: this.start.payload.approval_policy === "full_access",
+      allowDangerouslySkipPermissions: this.#allowsBypass,
       onElicitation: claudeElicitation(() => {
         if (!this.#initialized || this.#lost) return undefined;
         return {threadId: this.nativeId, interactions: this.#sessionInputs, signal: this.#sessionLifetime.signal, serverNames: Object.keys(this.#mcpConfigurations)};
       }),
-      canUseTool: claudePermissions(options => {
-        if (!this.#initialized || this.#lost) return undefined;
-        const task = options.agentID ? this.#tasks.get(options.agentID) : undefined;
-        const origin = this.#launches.get(options.toolUseID)?.root;
-        const root = options.agentID ? task?.root : origin ?? this.#boundRoot;
-        if (!root || options.agentID && (!task || isNativeWorkTerminal(task.work.status))) return undefined;
-        return {threadId: this.nativeId, turnId: root.input.payload.turn_id, interactions: root.interactions,
-          signal: task ? AbortSignal.any([root.lifetime.signal, task.lifetime.signal]) : root.lifetime.signal, allowSessionPermissions: true};
-      }),
+      canUseTool: async (tool, arguments_, options) => claudeRejectsUnapprovedPermissions(this.start.payload)
+        ? {behavior: "deny", message: "The selected native policy rejects unapproved permission requests.", interrupt: false}
+        : this.#permissions()(tool, arguments_, options),
       spawnClaudeCodeProcess: options => {
         this.#process = new NativeProcess(options.command, options.args, this.start.payload.cwd, options.env); this.#process.child.stderr.resume();
         void this.#process.closed.then(() => {if (!this.#stopping) this.#lose("native_exit", error("native_process_exited", "The persistent native process exited."));});
@@ -313,6 +408,22 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       },
     }});
     this.#pump = this.#consume();
+  }
+  #permissions(): ReturnType<typeof claudePermissions> {
+    return claudePermissions(options => {
+        if (!this.#initialized || this.#lost) return undefined;
+        const task = options.agentID ? this.#tasks.get(options.agentID) : undefined;
+        const origin = this.#launches.get(options.toolUseID)?.root;
+        const root = options.agentID ? task?.root : origin ?? this.#boundRoot;
+        if (!root || options.agentID && (!task || isNativeWorkTerminal(task.work.status))) return undefined;
+        return {threadId: this.nativeId, turnId: root.input.payload.turn_id, interactions: root.interactions,
+          signal: task ? AbortSignal.any([root.lifetime.signal, task.lifetime.signal]) : root.lifetime.signal, allowSessionPermissions: true,
+          ...(!options.agentID && !this.#launches.get(options.toolUseID)?.parent && root === this.#active ? {observeProposal: (plan: string, identity: import("@harness-control/protocol").HarnessNativeRequestIdentity) => {
+            const observed = nativePlanProposalInput(plan, {native_reference: identity.native_reference, native_item_reference: options.toolUseID,
+              ...(identity.request_reference === undefined ? {} : {request_reference: identity.request_reference})}, root.input.publishContent);
+            if (observed) root.emit({event_type: "turn.proposed.observed", turn_id: root.input.payload.turn_id, data: observed});
+          }} : {})};
+      });
   }
   async #consume(): Promise<void> {
     try {
@@ -325,13 +436,17 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     if (message.type === "system" && message.subtype === "status" && this.#policyProof) {
       if (!z.object({session_id: z.literal(this.nativeId), permissionMode: z.literal(this.#policyProof.mode)}).safeParse(message).success)
         throw error("policy_mismatch", "Claude reported another effective permission mode during idle replacement.");
-      this.#policyProof.resolve(); return;
+      this.#policyProof.observed_at = new Date().toISOString(); this.#policyProof.resolve(); return;
     }
     const lifecycle = z.object({type: z.literal("command_lifecycle"), command_uuid: z.string(), state: z.enum(["queued", "started"])}).safeParse(message);
     if (lifecycle.success) {
       // CLI admission frames precede system/init. They prove neither policy nor execution results.
       if (!this.#active?.ids.has(lifecycle.data.command_uuid)) throw error("native_continuation_binding", "Claude admitted an unowned native command.");
-      if (lifecycle.data.state === "started") this.#active.commandStarted = true;
+      if (lifecycle.data.state === "started") {
+        this.#active.commandStarted = true;
+        const admission = this.#active.admissions.get(lifecycle.data.command_uuid);
+        if (admission) this.#active.input.confirmNativeExecution?.(admission, lifecycle.data.command_uuid);
+      }
       return;
     }
     // Fork restoration can announce display metadata before proving the runtime policy.
@@ -341,6 +456,12 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       const expected = (this.#mcpReady ? Object.keys(this.#mcpConfigurations) : []).sort();
       if (await realpath(init.cwd) !== await realpath(this.start.payload.cwd) || init.permissionMode !== this.#permissionMode(this.#mode!)) throw error("policy_mismatch", "Claude did not confirm the requested workspace and permissions.");
       if (hasInheritedClaudePlugins(init.plugins) || init.mcp_servers.some(server => server.status !== "connected") || JSON.stringify(init.mcp_servers.map(server => server.name).sort()) !== JSON.stringify(expected)) throw error("mcp_scope_mismatch", "Claude did not confirm the exact native MCP and plugin inventory.");
+      const toolSelection = confirmClaudeToolSelection(this.start.payload.tool_selection, message);
+      if (toolSelection) {
+        if (!this.#active) throw error("native_tool_selection_unconfirmed", "Native builtin readback requires its admitted root owner.");
+        this.#active.emit({event_type: "settings.tools.effective", turn_id: this.#active.input.payload.turn_id,
+          data: {scope: "root", source: "native", native_reference: this.nativeId, tool_selection: toolSelection}});
+      }
       this.#initialized = true;
       if (this.#active && this.#mcpReady) {this.#active.input.session.native_thread_id = this.nativeId; this.#active.input.persistNativeThread?.(this.nativeId);
         this.#controls(this.#active, this.#active.lifetime.signal);}
@@ -363,11 +484,17 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     }
     const echoed = z.object({user_message_uuid: z.string().optional(), user_message_uuids: z.array(z.string()).max(64).optional()}).parse(message);
     const ids = [...(echoed.user_message_uuids ?? []), ...(echoed.user_message_uuid ? [echoed.user_message_uuid] : [])];
+    if (this.#active) for (const id of ids) {
+      const admission = this.#active.admissions.get(id);
+      if (admission) this.#active.input.confirmNativeExecution?.(admission, id);
+    }
     if (ids.length) this.#boundRoot = this.#active && ids.some(id => this.#active!.ids.has(id)) ? this.#active : undefined;
     if (message.type === "system" && ["task_started", "task_updated", "task_progress", "task_notification"].includes(message.subtype)) {
       try {this.#task(message);} catch (failure) {this.#unconfirmedWork = true; throw failure;}
       return;
     }
+    const goal = this.#goalObservations.observe(message);
+    if (goal) this.#session({event_type: "native.goal.observed", data: goal});
     const parent = "parent_tool_use_id" in message ? message.parent_tool_use_id : null;
     // A typed SDK turn stamps its first reply only, including across API tool rounds.
     // Its single query reply lane ends at the native result, not at message_stop.
@@ -393,14 +520,28 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     const root = parent ? this.#launches.get(parent)?.root : this.#boundRoot;
     if (message.type === "assistant" && !parent && !root && !ids.length) this.#unattributedAssistant(message);
     if (message.type === "assistant") {
+      if (!parent && root && root === this.#active) for (const data of claudeCompletedTextParts(message.message, root.input.publishContent))
+        root.emit({event_type: "item.completed", turn_id: root.input.payload.turn_id, data});
       if (root) for (const block of message.message.content) if (block.type === "tool_use") {
         if (this.#launches.size >= 10_000 && !this.#launches.has(block.id)) throw error("native_item_limit", "Claude exceeded the bounded tool ownership registry.");
         const parentTask = parent ? [...this.#tasks.values()].find(task => task.launch === parent)?.work.work_id : undefined;
         this.#launches.set(block.id, {root, ...(parentTask ? {parent: parentTask} : {})});
+        if (!parent && root === this.#active && block.name === "ExitPlanMode") {
+          const observed = nativePlanProposalInput((block.input as {plan?: unknown})?.plan,
+            {native_reference: this.nativeId, native_item_reference: block.id}, root.input.publishContent);
+          if (observed) root.emit({event_type: "turn.proposed.observed", turn_id: root.input.payload.turn_id, data: observed});
+        }
+        if (!parent && root === this.#active && block.name === "TodoWrite") {
+          const native_plan = nativePlanObservation("todo_list", (block.input as {todos?: unknown})?.todos,
+            {observation: "tool_input", native_reference: this.nativeId, native_item_reference: block.id}, root.input.publishContent);
+          if (native_plan) root.emit({event_type: "turn.plan.updated", turn_id: root.input.payload.turn_id,
+            data: {item_id: block.id, plan: retainedContent((block.input as {todos?: unknown}).todos, root.input.publishContent), native_plan}});
+        }
         if (!parent && root === this.#active) root.emit({event_type: "item.started", turn_id: root.input.payload.turn_id,
-          data: {item_id: block.id, item_type: "tool_call", summary: block.name, content: retainedContent({arguments: block.input}, root.input.publishContent)}});
+          data: {item_id: block.id, item_type: "tool_call", summary: block.name, portable: portableItemObservation({id: block.id, type: "tool_call", tool_name: block.name, arguments: block.input, status: "running"}, "claude",
+            {native_reference: this.nativeId, native_item_reference: block.id, native_call_reference: block.id}, root.input.publishContent), content: retainedContent({arguments: block.input}, root.input.publishContent)}});
       }
-      if (!parent && root && root === this.#active) {
+      if (!parent && root && root === this.#active && message.message.model !== "<synthetic>") {
         root.nativeModel = message.message.model;
         const counters = z.object({input_tokens: z.number().int().nonnegative(), output_tokens: z.number().int().nonnegative(),
           cache_read_input_tokens: z.number().int().nonnegative().nullish(), cache_creation_input_tokens: z.number().int().nonnegative().nullish()}).safeParse(message.message.usage);
@@ -408,15 +549,23 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
         root.emit({event_type: "context.updated", turn_id: root.input.payload.turn_id, data: {...root.context}});
       }
     }
-    if (!parent && root && root === this.#active && message.type === "stream_event" && message.event.type === "content_block_delta") {
-      const delta = message.event.delta;
-      if (delta.type === "text_delta" || delta.type === "thinking_delta") {
-        if (delta.type === "text_delta") root.streamed = true;
-        for (const chunk of textChunks(delta.type === "text_delta" ? delta.text : delta.thinking)) root.emit({event_type: delta.type === "text_delta" ? "content.delta" : "reasoning.delta", turn_id: root.input.payload.turn_id, data: {delta: chunk}});
+    if (!parent && root && root === this.#active && message.type === "stream_event") {
+      const part = (root.textParts ??= new ClaudeTextParts()).observe(message.event);
+      if (part) {
+        if (part.state && part.native_part) root.emit({event_type: part.state === "started" ? "item.started" : "item.completed",
+          turn_id: root.input.payload.turn_id, data: {item_type: part.kind === "thinking" ? "reasoning" : "text",
+            native_part: part.native_part, status: part.state === "started" ? "running" : "completed"}});
+        if (part.delta) {
+          if (part.kind === "text") root.streamed = true;
+          const {kind, delta, state: _state, ...location} = part;
+          for (const chunk of textChunks(delta)) root.emit({event_type: kind === "text" ? "content.delta" : "reasoning.delta",
+            turn_id: root.input.payload.turn_id, data: {delta: chunk, stream_kind: kind, ...location}});
+        }
       }
     }
     if (!parent && root === this.#active && root && message.type === "user" && Array.isArray(message.message.content)) for (const block of message.message.content)
-      if (block.type === "tool_result") root.emit({event_type: "item.completed", turn_id: root.input.payload.turn_id, data: {item_id: block.tool_use_id, item_type: "tool_call", status: block.is_error ? "failed" : "completed", content: retainedContent(block.content ?? [], root.input.publishContent)}});
+      if (block.type === "tool_result") root.emit({event_type: "item.completed", turn_id: root.input.payload.turn_id, data: {item_id: block.tool_use_id, item_type: "tool_call", status: block.is_error ? "failed" : "completed", portable: portableItemObservation({id: block.tool_use_id, type: "tool_result", content: block.content ?? [], status: block.is_error ? "failed" : "completed"}, "claude",
+        {native_reference: this.nativeId, native_item_reference: block.tool_use_id, native_call_reference: block.tool_use_id}, root.input.publishContent), content: retainedContent(block.content ?? [], root.input.publishContent)}});
     if (message.type === "system" && message.subtype === "compact_boundary") {
       const context = message.compact_metadata.post_tokens !== undefined ? measuredContext(this.#selection!, "claude.sdk.compact_boundary.post_tokens", message.compact_metadata.post_tokens, undefined, "retained_conversation") : unavailableContext(this.#selection!, "native_compaction_has_no_measurement");
       if (root && root === this.#active) {
@@ -439,7 +588,22 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       const parsed = claudeResultSchema.safeParse(message);
       if (!parsed.success || parsed.data.api_error_status != null && parsed.data.api_error_status >= 400
           || parsed.success && (parsed.data.terminal_reason !== undefined && parsed.data.terminal_reason !== "completed" || parsed.data.stop_reason != null && !["end_turn", "stop_sequence"].includes(parsed.data.stop_reason)))
-        {root.reject(error("claude_result_error", "Claude returned an unsuccessful or malformed native root result.")); this.#active = undefined; this.#boundRoot = undefined; this.#replyRoot = undefined; return;}
+        {
+          root.emit({event_type: "usage.updated", turn_id: root.input.payload.turn_id, data: {...claudeRootUsage(this.nativeId, message, false)}});
+          const failed = z.object({type: z.literal("result"), is_error: z.literal(true), subtype: z.enum([
+            "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries",
+          ])}).safeParse(message);
+          if (failed.success) for (const id of ids) {
+            const admission = root.admissions.get(id);
+            if (admission) root.input.completeNativeExecution?.(admission, "failed");
+          }
+          root.reject(error("claude_result_error", "Claude returned an unsuccessful or malformed native root result.")); this.#active = undefined; this.#boundRoot = undefined; this.#replyRoot = undefined; return;}
+      root.emit({event_type: "usage.updated", turn_id: root.input.payload.turn_id, data: {...claudeRootUsage(this.nativeId, message, true)}});
+      // A UUID-bound native result closes only the commands actually included in that result.
+      for (const id of ids) {
+        const admission = root.admissions.get(id);
+        if (admission) root.input.completeNativeExecution?.(admission, "completed");
+      }
       if (root.input.payload.action === "compact" && root.pendingCompactContext
           && z.object({local_command: z.literal("compact")}).safeParse(message).success) {
         root.compacted = true; root.context = root.pendingCompactContext;
@@ -461,6 +625,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   }
   #task(message: SDKMessage): void {
     const candidate = z.object({subtype: z.string(), task_id: z.string().min(1).max(512), tool_use_id: z.string().optional(), description: z.string().optional(), summary: z.string().optional(),
+      usage: z.object({total_tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), tool_uses: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        duration_ms: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).optional(), last_tool_name: z.string().min(1).max(512).optional(),
       task_type: z.string().optional(), is_backgrounded: z.boolean().optional(), status: z.string().optional(), patch: z.object({status: z.string().optional(), description: z.string().optional(), is_backgrounded: z.boolean().optional()}).optional()}).parse(message);
     let task = this.#tasks.get(candidate.task_id);
     if (candidate.subtype === "task_started") {
@@ -483,6 +649,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     if (candidate.patch?.is_backgrounded !== undefined) task.work.background = candidate.patch.is_backgrounded;
     const summary = candidate.summary ?? candidate.patch?.description ?? candidate.description;
     if (summary !== undefined) task.work.summary = summary.slice(0, 2048);
+    if (candidate.usage) task.work.progress = {...candidate.usage,
+      ...(candidate.last_tool_name ? {last_tool_name: candidate.last_tool_name} : task.work.progress?.last_tool_name ? {last_tool_name: task.work.progress.last_tool_name} : {})};
     if (isNativeWorkTerminal(task.work.status)) task.lifetime.abort();
     this.#observe(task);
   }

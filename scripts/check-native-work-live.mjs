@@ -38,6 +38,13 @@ const send = async (turn_id, input, options = {}) => {
   await manager.sendTurn({session_id: "work", turn_id, input, ...options}, observe);
   const terminal = events.findLast(event => event.turn_id === turn_id && ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.event_type));
   assert.equal(terminal?.event_type, "turn.completed", JSON.stringify(terminal?.data));
+  const admitted = events.filter(event => event.turn_id === turn_id && event.event_type === "native.execution.admitted");
+  assert.ok(admitted.length >= 1, "Native root execution identity was not observed");
+  for (const event of admitted) {
+    const retained = manager.stateStore().nativeWorkState("work").root_executions.find(value => value.admission_id === event.data.admission_id);
+    assert.equal(retained.native_execution_reference, event.data.native_execution_reference);
+    assert.equal(retained.origin_turn_id, turn_id);
+  }
 };
 const spawn = async (turn, seconds) => {
   const marker = randomUUID();
@@ -163,6 +170,57 @@ try {
   await manager.stopSession("work", "live-work-complete");
   assert.equal(manager.activeSessionCount(), 0);
   passed.push("safe-unload");
+  if (process.env.HCP_LIVE_RETAINED_CHILD_HISTORY === "1" || process.env.HCP_LIVE_CHILD_FORK === "1") {
+    assert.ok(["codex", "opencode"].includes(driver), "This retained/fork acceptance requires Codex or controlled OpenCode");
+    const retained = new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(join(cwd, "state.json"))});
+    const before = await retained.conversationOperation(randomUUID(), {session_id: "work", operation: {kind: "work", action: "read"}});
+    const child = before.work.items.find(item => item.work.work_id === completionChild.work_id).work;
+    const history = await retained.conversationOperation(randomUUID(), {session_id: "work", operation: {kind: "work", action: "history",
+      owner: "retained", work_id: child.work_id, expected_revision: child.revision}});
+    assert.equal(history.work.owner_status, "retained");
+    assert.ok(history.work.history.turn_count > 0);
+    assert.equal(retained.activeSessionCount(), 0);
+    const after = await retained.conversationOperation(randomUUID(), {session_id: "work", operation: {kind: "work", action: "read"}});
+    assert.deepEqual(after.work, before.work, "Transcript inspection must not change execution ownership or status");
+    passed.push("retained-child-history-after-runner-restart", "retained-history-does-not-recover-execution");
+    if (process.env.HCP_LIVE_CHILD_FORK === "1") {
+      const targetSession = randomUUID(), targetKey = randomUUID(), forkCommand = randomUUID();
+      const forkRequest = {session_id: "work", operation: {kind: "work", action: "fork", work_id: child.work_id,
+        expected_revision: child.revision, expected_history_hash: history.work.history.history_hash,
+        target_session_id: targetSession, continuation_group_key: targetKey}};
+      const fork = await retained.conversationOperation(forkCommand, forkRequest);
+      assert.equal(fork.work.action, "fork");
+      assert.notEqual(fork.work.fork.native_reference, child.native_reference);
+      const restarted = new HarnessSessionManager(config, {stateStore: new JsonRunnerStateStore(join(cwd, "state.json"))});
+      assert.deepEqual(await restarted.conversationOperation(forkCommand, forkRequest), fork);
+      const targetHistory = await restarted.conversationOperation(randomUUID(), {session_id: targetSession, operation: {kind: "read"}});
+      if (driver === "codex") assert.equal(targetHistory.history.history_hash, history.work.history.history_hash);
+  else {
+    // OpenCode assigns fresh message/part IDs on fork; compare every retained field except those IDs.
+    const context = value => {
+      assert.equal(value.truncated, false); assert.equal(value.turns.length, value.turn_count);
+      return value.turns.map(turn => {
+        assert.equal(turn.items_ref, undefined);
+        return {status: turn.status, items: turn.items.map(({id: _id, ...item}) => item)};
+      });
+    };
+    assert.deepEqual(context(targetHistory.history), context(history.work.history));
+  }
+      await restarted.startSession({session_id: targetSession, workspace_id: "workspace", provider_instance_id: driver,
+        driver_kind: driver, cwd, execution_profile: driver === "opencode" ? "background" : "interactive", sandbox_mode: "danger_full_access", approval_policy: "full_access",
+        ...(driver === "opencode" ? {configuration_inheritance: {user_settings: false, project_settings: false, hooks: false, mcp_servers: false, plugins: false}} : {}),
+        continue_session: true, continuation_group_key: targetKey, model_selection: {model}, mcp_servers: []});
+      try {
+        const output = await restarted.sendTurn({session_id: targetSession, turn_id: "fork-followup",
+          input: "Reply FORK_READY only. Use no tools."});
+        assert.ok(output.some(event => event.event_type === "turn.completed"));
+        assert.equal(restarted.activeSessionCount(), 1);
+      } finally {await restarted.stopSession(targetSession, "fork-acceptance-complete");}
+      assert.deepEqual((await restarted.conversationOperation(randomUUID(), {session_id: "work", operation: {kind: "work", action: "read"}})).work,
+        before.work, "Fork/continuation must not revive or mutate source child execution");
+      passed.push("child-fork-retains-selected-history", "child-fork-durable-receipt", "independent-child-fork-continuation");
+    }
+  }
   console.log(JSON.stringify({driver, passed, cwd, event_count: events.length}));
 } catch (error) {
   process.exitCode = 1;

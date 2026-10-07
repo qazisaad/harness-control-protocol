@@ -9,7 +9,8 @@ const eventSchema=z.object({type:z.string(),properties:z.record(z.string(),z.unk
 const partSchema=z.object({id,messageID:id,sessionID:id,type:z.literal("tool"),tool:z.literal("task"),callID:id,
   state:z.object({status:z.enum(["pending","running","completed","error"]),title:z.string().max(2048).optional(),
     metadata:z.object({parentSessionId:id,sessionId:id,background:z.boolean().optional(),jobId:id.optional()}).optional()}).passthrough()});
-type Child={parent:string;launch:string;prompt?:string;cancelAccepted?:true;aborted?:true;work:HarnessNativeWorkObservation};
+type Child={parent:string;launch:string;prompt?:string;cancelAccepted?:true;aborted?:true;work:HarnessNativeWorkObservation;
+  custody?:import("../../../state/index.js").NativeWorkCustody};
 
 export type OpenCodeWorkTransport={
   session(id:string,signal?:AbortSignal):Promise<unknown>;
@@ -30,6 +31,7 @@ export class OpenCodeOwnedWork {
   readonly #acceptedContinuationCancels=new Set<string>();
   readonly #continuationTerminals=new Map<string,"completed"|"failed">();
   #stopping=false;
+  readonly #childPolicyWaiters = new Map<string, Set<() => void>>();
   constructor(readonly root:string,readonly start:HarnessAdapterStartInput,readonly transport:OpenCodeWorkTransport) {
     if(!start.emitSessionEvent)throw new HarnessAdapterError("native_session_owner_required","Native task ownership requires a session observer.");
   }
@@ -49,6 +51,43 @@ export class OpenCodeOwnedWork {
     await this.#queue;
     if(this.#lost)throw new HarnessAdapterError("native_owner_unavailable","The native task observation owner was lost.");
   }
+  /** Wait only for verified native launch custody; this does not admit a model prompt or restore an owner. */
+  async awaitChildPolicyOwner(sessionId: string, signal: AbortSignal): Promise<{
+    native_reference: string; parent_native_reference: string; work_id: string; origin_turn_id: string; prompt_id?: string;
+  }> {
+    await this.settled();signal.throwIfAborted();
+    if (this.#lost || this.#stopping) throw new HarnessAdapterError("native_owner_unavailable", "The native child policy owner is unavailable.");
+    if (!this.#children.has(sessionId)) await new Promise<void>((resolve, reject) => {
+      if ([...this.#childPolicyWaiters.values()].reduce((count, set) => count + set.size, 0) >= 128) {
+        reject(new HarnessAdapterError("native_work_limit", "Native child policy waits exceed their bounded registry."));return;
+      }
+      const finish = () => {
+        this.#childPolicyWaiters.get(sessionId)?.delete(check);
+        if (!this.#childPolicyWaiters.get(sessionId)?.size) this.#childPolicyWaiters.delete(sessionId);
+        signal.removeEventListener("abort", abort);
+      };
+      const abort = () => {finish();reject(signal.reason ?? new Error("Native policy wait aborted."));};
+      const check = () => {
+        if (this.#lost || this.#stopping) {finish();reject(new HarnessAdapterError("native_owner_unavailable", "The native child policy owner was lost."));}
+        else if (this.#children.has(sessionId)) {finish();resolve();}
+      };
+      const waiters = this.#childPolicyWaiters.get(sessionId) ?? new Set<() => void>();waiters.add(check);this.#childPolicyWaiters.set(sessionId, waiters);
+      signal.addEventListener("abort", abort, {once: true});if (signal.aborted) abort();else check();
+    });
+    signal.throwIfAborted();
+    const child = this.#children.get(sessionId);
+    if (this.#lost || this.#stopping || !child || isNativeWorkTerminal(child.work.status))
+      throw new HarnessAdapterError("native_owner_unavailable", "The native child policy has no live verified launch owner.");
+    const native = z.object({id, parentID: id, directory: z.string()}).parse(await this.transport.session(sessionId, signal));
+    signal.throwIfAborted();
+    if (native.id !== sessionId || native.parentID !== child.parent || await realpath(native.directory) !== await realpath(this.start.payload.cwd)
+      || this.#lost || this.#stopping || this.#children.get(sessionId) !== child || isNativeWorkTerminal(child.work.status))
+      throw new HarnessAdapterError("native_work_policy_binding", "Native child policy ancestry, workspace or launch ownership changed.");
+    return {native_reference: sessionId, parent_native_reference: child.parent, work_id: child.work.work_id, origin_turn_id: child.work.origin_turn_id,
+      ...(child.prompt ? {prompt_id: child.prompt} : {})};
+  }
+  #notifyChildPolicyWaiters(): void {for (const waiters of [...this.#childPolicyWaiters.values()]) for (const check of [...waiters]) check();}
+
   async verifyHistoryOwner(work:HarnessNativeWorkRecord,signal:AbortSignal):Promise<string> {
     await this.settled();signal.throwIfAborted();
     const child=this.#children.get(work.native_reference);
@@ -107,7 +146,7 @@ export class OpenCodeOwnedWork {
     if(this.#lost&&!this.busy&&!this.#activeRoots.size){this.#stopping=true;return;}
     await this.settled();
     if(this.#pending.size)throw new HarnessAdapterError("native_work_closure_unknown","Unconfirmed native task membership prevents unload.");
-    this.#stopping=true;
+    this.#stopping=true;this.#notifyChildPolicyWaiters();
     try {
       await this.cancelFamily(AbortSignal.timeout(10000));
       const end=Date.now()+10000;
@@ -116,14 +155,17 @@ export class OpenCodeOwnedWork {
       if(this.busy)throw new HarnessAdapterError("native_work_closure_unknown","Native tasks or parent continuations have no terminal shutdown proof.");
     } catch(error){this.#stopping=false;throw error;}
   }
-  lose():void {
-    if(this.#lost)return;this.#lost=true;
+  lose(uncertainNativeExecution = false):void {
+    if(this.#lost)return;this.#lost=true;this.#notifyChildPolicyWaiters();
     try{this.start.emitSessionEvent!({event_type:"native.work.owner_lost",data:{reason:"runtime_error",
-      ...(this.busy||this.#activeRoots.size?{closure_unconfirmed:true}:{})}});}catch{/* A lost observer cannot regain ownership. */}
+      ...(uncertainNativeExecution || this.busy||this.#activeRoots.size?{closure_unconfirmed:true}:{})}});}catch{/* A lost observer cannot regain ownership. */}
   }
-  get busy():boolean {return this.#pending.size>0||[...this.#children.values()].some(child=>!isNativeWorkTerminal(child.work.status))
+  get busy():boolean {return this.#childPolicyWaiters.size > 0 || this.#pending.size>0||[...this.#children.values()].some(child=>!isNativeWorkTerminal(child.work.status))
     ||[...this.#continuations.values()].some(work=>!isNativeWorkTerminal(work.status));}
   get rootBusy():boolean {return [...this.#continuations.values()].some(work=>!isNativeWorkTerminal(work.status));}
+  rootOrigin(promptId:string):string|undefined {
+    return !this.#lost&&!this.#stopping&&this.#activeRoots.has(promptId)?this.#roots.get(promptId):undefined;
+  }
   childOrigin(sessionId:string):{origin_turn_id:string;work_id:string;prompt_id?:string}|undefined {
     const child=this.#children.get(sessionId);
     return !this.#lost&&child&&!isNativeWorkTerminal(child.work.status)?{origin_turn_id:child.work.origin_turn_id,work_id:child.work.work_id,
@@ -133,7 +175,8 @@ export class OpenCodeOwnedWork {
     const work=this.#continuations.get(promptId);
     return !this.#lost&&work&&!isNativeWorkTerminal(work.status)?{origin_turn_id:work.origin_turn_id,work_id:work.work_id,prompt_id:promptId}:undefined;
   }
-  #publish(child:Child):void {this.start.emitSessionEvent!({event_type:"native.work.updated",data:{work:structuredClone(child.work)}});}
+  #publish(child:Child):void {this.start.emitSessionEvent!({event_type:"native.work.updated",data:{work:structuredClone(child.work)},
+    ...(child.custody?{nativeWorkCustody:child.custody}:{})});this.#notifyChildPolicyWaiters();}
   #buffer(session:string,event:unknown):void {
     const values=this.#pending.get(session)??[];
     if(this.#pending.size>=128&&!this.#pending.has(session)||values.length>=256||
@@ -186,6 +229,10 @@ export class OpenCodeOwnedWork {
           const child:Child={parent:p.sessionID,launch,work:{work_id:`opencode-task-${randomUUID()}`,native_reference:m.sessionId,
             origin_turn_id:origin,...(parent||continuation?{parent_work_id:parent?.work.work_id??continuation!.work_id}:{}),kind:"agent",background:m.background===true,
             status:"running",supports_cancel:false,...(p.state.title?{summary:p.state.title}:{})}};
+          // Parent continuation jobs share the root transcript and have no independent child custody.
+          if(!continuation)child.custody={source:"opencode",work_id:child.work.work_id,native_reference:m.sessionId,origin_turn_id:origin,
+            ...(parent?{parent_work_id:parent.work.work_id}:{}),root_native_reference:this.root,
+            parent_native_reference:p.sessionID,launch_native_reference:p.callID};
           this.#children.set(m.sessionId,child);this.#publish(child);
           const pending=this.#pending.get(m.sessionId)??[];this.#pending.delete(m.sessionId);
           for(const held of pending)await this.#observe(held);
@@ -230,7 +277,9 @@ export class OpenCodeOwnedWork {
     if(isNativeWorkTerminal(child.work.status))return;
     if(info?.role==="user") {
       if(child.prompt&&child.prompt!==info.id)throw new Error("Native child received an unadmitted prompt");
-      child.prompt=info.id;return;
+      child.prompt=info.id;
+      if(child.custody)child.custody.native_execution_reference=info.id;
+      this.#publish(child);return;
     }
     if(info?.role==="assistant") {
       const parentID=id.parse(info.parentID);
