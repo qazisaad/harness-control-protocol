@@ -1244,3 +1244,55 @@ it("browses directories without probing or publishing another capability snapsho
     assert.equal(typeof result.metadata?.duration_ms, "number");
   } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
 });
+
+it("sleeps warm transport without reconnect churn and wakes once on demand", async () => {
+  const workspace = await createWorkspace();
+  let connections = 0;
+  const closes: number[] = [];
+  const server = await startServer(async (socket, messages) => {
+    connections++;
+    socket.on("close", code => closes.push(code));
+    await waitForMessage(messages, "host.hello");
+    socket.send(JSON.stringify(createHcpEnvelope("host.accepted", {protocol_version: HCP_VERSION, heartbeat_interval_seconds: 60})));
+  });
+  let update: (state: {generation: number; pending: boolean}) => void = () => undefined;
+  let unavailable = () => {};
+  let disposed = false;
+  const config: RunnerConfig = {...createConfigBase(workspace.root), control_plane_url: server.url};
+  const sessions = new HarnessSessionManager(config);
+  let busy = false;
+  sessions.hasActiveWork = () => busy;
+  sessions.activeSessionCount = () => 1; // An idle warm session must not pin the socket.
+  const connection = new RunnerConnection({config, runnerVersion: "test", harnessSessions: sessions, idleMs: 50,
+    reconnect: {initialDelayMs: 10, maxDelayMs: 10}, demandSource: {subscribe(onUpdate, onUnavailable) {
+      update = onUpdate; unavailable = onUnavailable;
+      update({generation: 0, pending: false});
+      return () => {disposed = true;};
+    }}});
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  try {
+    busy = true;
+    await connection.connect();
+    await waitForMessage(server.messages, "host.capabilities.updated");
+    await pause(150);
+    assert.deepEqual(closes, []);
+    busy = false;
+    await pause(150);
+    assert.deepEqual(closes, [4001]);
+    assert.equal(connections, 1);
+    update({generation: 1, pending: true});
+    await waitForMessageCountAndGet(server.messages, "host.capabilities.updated", 2);
+    await pause(150);
+    assert.equal(connections, 2);
+    assert.deepEqual(closes, [4001]);
+    update({generation: 1, pending: false});
+    await pause(150);
+    assert.deepEqual(closes, [4001, 4001]);
+    unavailable(); // Fail safe: reconnect if the independent wake path is lost.
+    await waitForMessageCountAndGet(server.messages, "host.capabilities.updated", 3);
+    await pause(150);
+    assert.equal(connections, 3);
+    assert.deepEqual(closes, [4001, 4001]);
+  } finally {await connection.close(); await server.close(); await workspace.cleanup();}
+  assert.equal(disposed, true);
+});

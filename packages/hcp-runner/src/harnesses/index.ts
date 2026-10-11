@@ -1,5 +1,6 @@
 import type { HarnessMcpToolset, HarnessMcpContinuation, HarnessNativeInteractions, HarnessActiveTurnControls } from "./adapters/types.js";
-import {harnessSandboxOptionsSchema} from "@harness-control/protocol";
+import {harnessSandboxOptionsSchema, normalizeGitRemote, type WorkspacePreflightCompleted} from "@harness-control/protocol";
+import {detectWorkspaceGit} from "../workspaces/git.js";
 import { harnessPromptContextSchema, harnessNativePolicyReadbackSchema, harnessNativeMcpCatalogReadbackSchema, nativeConversationHistorySchema, hcpConversationResultPayloadSchema, hcpHarnessEventPayloadSchema, type HcpConversationRequestPayload, type HcpConversationResultPayload } from "@harness-control/protocol";
 import {harnessNativeFeedbackCapabilitiesSchema, harnessNativeFeedbackOperationSchema, harnessNativeFeedbackResultSchema} from "@harness-control/protocol";
 import {hcpSessionStartPayloadSchema, harnessNativePolicyControlOperationSchema, nativePolicySelectionKey} from "@harness-control/protocol";
@@ -734,6 +735,16 @@ export class HarnessSessionManager {
     return result({action: "cancel", work_id: work.work_id, accepted: true});
   }
 
+  /** Warm sessions alone are idle; uncertain native work and reviews retain transport. */
+  hasActiveWork(): boolean {
+    if (this.#startingSessions.size || this.#runningTurns.size || this.#mcpResumes.size || this.#publicationAdmissions || this.#publishing || this.#publicationQueue.length || this.#stateStore.pendingMcpReviews().length) return true;
+    for (const [id, session] of this.#sessions) {
+      const state = this.#stateStore.nativeWorkState(id);
+      if (session.nativeWorkClosureUnconfirmed || unresolvedNativeAdmissions(state) || Object.values(state?.items ?? {}).some(work => !isNativeWorkTerminal(work.status))) return true;
+    }
+    return false;
+  }
+
   activeSessionCount(): number {
     return this.#sessions.size;
   }
@@ -1082,9 +1093,7 @@ export class HarnessSessionManager {
   }
 
   async #startSession(payload: HcpSessionStartPayload): Promise<HcpHarnessEventPayload[]> {
-    if (payload.workspace_preflight !== undefined) {
-      throw new HarnessSessionError("preflight_unsupported", "Workspace preflight expectations are not implemented by this runner.");
-    }
+    const preflight = await this.#workspacePreflight(payload);
     if (this.#sessions.has(payload.session_id) || this.#stateStore.hasSessionEvents(payload.session_id)) {
       throw new HarnessSessionError("session_exists", `Session '${payload.session_id}' already exists.`);
     }
@@ -1116,11 +1125,7 @@ export class HarnessSessionManager {
         cwd: payload.cwd,
         sandbox_mode: payload.sandbox_mode,
       }),
-      this.#event(payload.session_id, undefined, "workspace.preflight.completed", {
-        workspace_id: payload.workspace_id,
-        cwd: payload.cwd,
-        result: "passed",
-      }),
+      this.#event(payload.session_id, undefined, "workspace.preflight.completed", preflight),
       this.#event(payload.session_id, undefined, "session.configured", {
         ...(session.adapterSession.native_policy_readback ? {native_policy_readback: session.adapterSession.native_policy_readback} : {}),
         ...(session.adapterSession.native_mcp_catalog_readback ? {native_mcp_catalog_readback: session.adapterSession.native_mcp_catalog_readback} : {}),
@@ -1224,7 +1229,10 @@ export class HarnessSessionManager {
     }
     if (payload.sandbox_options) {
       const options = harnessSandboxOptionsSchema.parse(payload.sandbox_options);
-      if (options.writable_roots?.length && payload.sandbox_mode !== "workspace_write")
+      // Roots extend write authority, so they never apply to read-only sessions. A profile that
+      // enforces roots through native permissions has no OS sandbox and declares full access.
+      const permissionScoped = profile?.writable_roots_enforcement === "native_permissions" && payload.sandbox_mode === "danger_full_access";
+      if (options.writable_roots?.length && payload.sandbox_mode !== "workspace_write" && !permissionScoped)
         throw new HarnessAdapterError("sandbox_options_invalid", "Additional writable roots require workspace-write authority.");
       if (profile?.root_settings_readback !== true || Object.keys(options).some(key => !profile.sandbox_options?.includes(key as "network_access" | "writable_roots")))
         throw new HarnessAdapterError("sandbox_options_unsupported", "The selected profile has not declared native sandbox option enforcement and readback.");
@@ -2245,6 +2253,55 @@ export class HarnessSessionManager {
     }
 
     return provider;
+  }
+
+  /**
+   * Observes the selected workspace before any native startup and enforces the
+   * caller's expectations. The result is evidence of the repository a session
+   * starts from; a failed expectation refuses the start without native effects.
+   */
+  async #workspacePreflight(payload: HcpSessionStartPayload): Promise<WorkspacePreflightCompleted> {
+    const expected = payload.workspace_preflight;
+    if (expected && expected.workspace_id !== payload.workspace_id)
+      throw new HarnessSessionError("workspace_preflight_invalid", "Workspace preflight must name the session workspace.");
+    await this.#assertWorkspaceAllowed(payload.workspace_id, payload.cwd);
+    const cwd = await realpathOrWorkspaceError(payload.cwd);
+    const git = await detectWorkspaceGit(cwd);
+    const failures: string[] = [];
+    if (expected?.expected_git_remote !== undefined
+      && (!git?.remote || normalizeGitRemote(git.remote) !== normalizeGitRemote(expected.expected_git_remote)))
+      failures.push("its git remote does not match the expected repository");
+    if (expected?.expected_root_commit !== undefined && git?.root_commit !== expected.expected_root_commit)
+      failures.push("its root commit does not match the expected repository");
+    if (expected?.expected_branch !== undefined && git?.branch !== expected.expected_branch)
+      failures.push(`it is not on branch ${expected.expected_branch}`);
+    // Unknown worktree state cannot satisfy a clean-worktree requirement.
+    if (expected?.allow_dirty_worktree === false && git?.dirty !== false)
+      failures.push("it has uncommitted changes or its state is unknown");
+    for (const required of expected?.required_paths ?? []) {
+      const target = resolve(cwd, required);
+      const inside = relative(cwd, target);
+      let exists = false;
+      if (!isAbsolute(required) && !inside.startsWith("..") && !isAbsolute(inside)) {
+        try {
+          const canonical = await realpath(target);
+          const fromRoot = relative(cwd, canonical);
+          exists = !fromRoot.startsWith("..") && !isAbsolute(fromRoot);
+        } catch {exists = false;}
+      }
+      if (!exists) failures.push(`required path ${required} is missing`);
+    }
+    if (failures.length)
+      throw new HarnessSessionError("workspace_preflight_failed", `Workspace preflight failed: ${failures.join("; ")}.`.slice(0, 1000));
+    return {
+      workspace_id: payload.workspace_id, cwd: payload.cwd,
+      ...(git?.branch ? {branch: git.branch} : {}),
+      ...(git?.head_commit ? {commit: git.head_commit} : {}),
+      ...(git?.root_commit ? {root_commit: git.root_commit} : {}),
+      ...(git?.dirty === undefined ? {} : {dirty: git.dirty}),
+      ...(git?.remote ? {remote: git.remote} : {}),
+      result: "passed",
+    };
   }
 
   async #assertWorkspaceAllowed(workspaceId: string, cwd: string): Promise<void> {

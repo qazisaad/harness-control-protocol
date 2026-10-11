@@ -43,6 +43,10 @@ The native Codex/Claude drivers replace the old completion-only CLI paths. Their
 
 ## Runner Compatibility
 
+### 0.5.1
+
+Upgrade protocol, SDK, runner and the consumer's generated schema together. Older strict parsers reject workspace `git`, preflight `expected_root_commit`/`root_commit` and the profile field `writable_roots_enforcement`. Workspace preflight is now enforced instead of refused, so a consumer that sent expectations must be ready for `workspace_preflight_failed`. Claude interactive now accepts permission-scoped `writable_roots` under `danger_full_access`; consumers must present this as native permission scope, not OS containment. See [release-0.5.1.md](release-0.5.1.md).
+
 ### 0.5.0 migration candidate
 
 Upgrade protocol, SDK, runner and the consuming control plane's generated schema together. The envelope remains `hcp.v0`; strict older parsers reject the new known `native.execution.admitted` event and new capability/result/event data fields, including optional native part and request identity. Pairing continues to compare the exported schema digest. This candidate has not been published.

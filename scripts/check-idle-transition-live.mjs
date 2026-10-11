@@ -72,7 +72,10 @@ try {
     const before = events.length;
     const startup = await manager.startSession(target); active = id;
     const configured = startup.find(event => event.event_type === "session.configured");
-    assert.deepEqual(configured.data.native_policy_readback, {source: "native", execution_profile: "interactive", sandbox_mode, approval_policy});
+    // Codex 0.161 also reads back its default reviewer; "user" is the same policy.
+    const {approval_reviewer: reviewer, ...readback} = configured.data.native_policy_readback;
+    assert.ok(reviewer === undefined || reviewer === "user");
+    assert.deepEqual(readback, {source: "native", execution_profile: "interactive", sandbox_mode, approval_policy});
     assert.equal(startup.some(event => event.turn_id), false);
     assert.equal(events.length, before);
     assert.equal((await read(active)).history_hash, history.history_hash);

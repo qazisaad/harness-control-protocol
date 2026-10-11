@@ -11,7 +11,8 @@ async function fixture(mode: "confirmed" | "missing" | "changed" = "confirmed") 
   const root = await mkdtemp(join(tmpdir(), "hcp-sandbox-options-")), cwd = join(root, "current"), extra = join(root, "extra");
   await mkdir(cwd);await mkdir(extra);
   const profiles = [{id: "interactive", runtime_lifetime: "session" as const, native_work: false, session_events: false,
-    root_settings_readback: true, approval_prompt_filter: true, sandbox_options: ["network_access", "writable_roots"] as Array<"network_access" | "writable_roots">}];
+    root_settings_readback: true, approval_prompt_filter: true, sandbox_options: ["network_access", "writable_roots"] as Array<"network_access" | "writable_roots">,
+    writable_roots_enforcement: undefined as "os_sandbox" | "native_permissions" | undefined}];
   let starts = 0, received: HcpSessionStartPayload | undefined;
   const adapter: HarnessAdapter = {driverKind: "example", emptyConversation: true, liveHistoryRead: true, executionProfiles: profiles,
     conversationOperations: ["read"], async probe() {return {driver_kind: "example", installed: true, available: true, models: []};},
@@ -182,4 +183,16 @@ for (const mode of ["missing", "changed"] as const) test(`ordered native permiss
   Object.assign(f.profiles[0]!, {native_permission_rules: {scope: "root", matching: "ordered_glob", permissions: ["*", "read"]}});
   try {await assert.rejects(f.manager.startSession({...base, approval_options: {permission_rules: permissionRules}}), /readback|authorized execution configuration/);
     assert.equal(f.starts, 1);} finally {await f.close();}
+});
+
+test("permission-scoped roots require a declared native-permission profile with full access", async () => {
+  const f = await fixture();
+  try {
+    const payload = {...f.payload, sandbox_mode: "danger_full_access" as const, sandbox_options: {writable_roots: f.payload.sandbox_options!.writable_roots!}};
+    await assert.rejects(f.manager.startSession(payload), /workspace-write authority/);assert.equal(f.starts, 0);
+    f.profiles[0]!.writable_roots_enforcement = "native_permissions";
+    await assert.rejects(f.manager.startSession({...payload, sandbox_mode: "read_only"}), /workspace-write authority/);assert.equal(f.starts, 0);
+    await f.manager.startSession(payload);
+    assert.deepEqual(f.received?.sandbox_options, {writable_roots: [{workspace_id: "extra", path: await realpath(f.extra)}]});
+  } finally {await f.close();}
 });

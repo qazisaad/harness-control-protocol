@@ -6,14 +6,26 @@ import {HarnessAdapterError} from "../types.js";
 
 const modelSchema = z.object({
   value: z.string().min(1).max(256), displayName: z.string().min(1).max(512),
+  resolvedModel: z.string().min(1).max(256).optional(),
   supportsEffort: z.boolean().optional(),
   supportsAdaptiveThinking: z.boolean().optional(),
   supportsFastMode: z.boolean().optional(),
   supportedEffortLevels: z.array(z.enum(["low", "medium", "high", "xhigh", "max"])).max(5).optional(),
 });
 
+const catalogSchema = z.union([z.array(modelSchema).max(256),
+  z.object({models: z.array(modelSchema).max(256), ultracodeAvailable: z.boolean().optional()}).strict()]);
+
+/**
+ * Claude Code offers 1M context through `[1m]` aliases for the Opus, Sonnet and
+ * Fable families only; selection is still confirmed by settings readback.
+ */
+const LONG_CONTEXT_FAMILY = /(^|[-/])(opus|sonnet|fable)([-\[]|$)/i;
+
 export function projectClaudeModels(value: unknown): HarnessModel[] {
-  const models = z.array(modelSchema).max(256).parse(value);
+  const catalog = catalogSchema.parse(value);
+  const models = Array.isArray(catalog) ? catalog : catalog.models;
+  const ultracodeAvailable = !Array.isArray(catalog) && catalog.ultracodeAvailable === true;
   if (new Set(models.map(model => model.value)).size !== models.length)
     throw new HarnessAdapterError("native_catalog_invalid", "Claude returned duplicate model identifiers.");
   return models.map(model => ({id: model.value, label: model.displayName, capabilities: {
@@ -23,7 +35,11 @@ export function projectClaudeModels(value: unknown): HarnessModel[] {
       values: model.supportedEffortLevels.map(value => ({value, label: value})),
     }] : []),
       ...(model.supportsAdaptiveThinking ? [{id: "thinking", label: "Thinking", type: "boolean" as const}] : []),
-      ...(model.supportsFastMode ? [{id: "fastMode", label: "Fast mode", type: "boolean" as const}] : [])],
+      ...(model.supportsFastMode ? [{id: "fastMode", label: "Fast mode", type: "boolean" as const}] : []),
+      // Native settings report whether the account can enable ultracode; it needs xhigh effort.
+      ...(ultracodeAvailable && model.supportedEffortLevels?.includes("xhigh") ? [{id: "ultracode", label: "Ultracode", type: "boolean" as const}] : []),
+      ...(LONG_CONTEXT_FAMILY.test(model.resolvedModel ?? model.value) ? [{id: "contextWindow", label: "Context window", type: "select" as const,
+        default_value: "default", values: [{value: "default", label: "Default"}, {value: "1m", label: "1M"}]}] : [])],
   }}));
 }
 
@@ -39,7 +55,13 @@ const runtime = query({prompt: idle(), options: {
   settingSources: [], settings: {disableAllHooks: true},
   strictMcpConfig: true, mcpServers: {}, persistSession: false,
 }});
-try {process.stdout.write(JSON.stringify(await runtime.supportedModels()));}
+try {
+  const models = await runtime.supportedModels();
+  // Optional account capability; older runtimes without settings readback omit it.
+  const settings = typeof runtime.getSettings === "function" ? await runtime.getSettings().catch(() => undefined) : undefined;
+  const ultracodeAvailable = settings?.applied?.ultracodeAvailable;
+  process.stdout.write(JSON.stringify(typeof ultracodeAvailable === "boolean" ? {models, ultracodeAvailable} : models));
+}
 finally {finish(); runtime.close();}
 `;
 

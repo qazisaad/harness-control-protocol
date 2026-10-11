@@ -4,12 +4,11 @@ import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline/promises";
 import { z } from "zod";
 
 import { loadRunnerConfig, ProviderInstanceConfigSchema, RunnerConfigSchema, type RunnerConfig } from "./config/index.js";
 import { createDefaultHarnessAdapterRegistry } from "./harnesses/adapters/registry.js";
-import { loadRunnerCredential, normalizeControlPlaneUrl, pairWithReferenceControlPlane, writeRunnerCredentials } from "./pairing/index.js";
+import { loadRunnerCredential, requestConnectionToken, RunnerAuthorizationRejected, normalizeControlPlaneUrl, pairWithReferenceControlPlane, writeRunnerCredentials } from "./pairing/index.js";
 
 import { ALREADY_RUNNING, ConnectionOwnership, connectionDirectory } from "./ownership.js";
 
@@ -18,7 +17,7 @@ export type ConnectOptions = {
   configPath: string;
   connectionDirectory: string;
   identityPath: string;
-  providers?: string[];
+  providers?: string[] | undefined;
   pair: boolean;
   openBrowser: boolean;
 };
@@ -111,35 +110,45 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
       config = await loadRunnerConfig(configPath);
       if (normalizeControlPlaneUrl(config.control_plane_url) !== options.controlPlaneUrl) throw new Error("This config belongs to another control plane. Use its URL or a different --config path.");
       if (await installationIdentity(options.identityPath, config.runner_id) !== config.runner_id) throw new Error("This configuration belongs to a different HCP installation. Use this installation’s saved configuration; do not copy machine credentials between installations.");
-      if (options.providers && options.providers.slice().sort().join(",") !== config.provider_instances.filter(provider => provider.enabled).map(provider => provider.driver_kind).sort().join(",")) {
-        throw new Error("This connection already has different agent settings. Edit its config to change them; reconnect preserves existing settings.");
-      }
     } else {
-      const providers = ["codex", "claude", "opencode"].map(driver => ProviderInstanceConfigSchema.parse({ id: `${driver}-local`, driver_kind: driver, display_name: driver === "claude" ? "Claude Code" : driver === "codex" ? "Codex" : "OpenCode" }));
-      console.log("Checking installed coding agents…");
-      const statuses = await createDefaultHarnessAdapterRegistry().probeProviders(providers);
-      for (const status of statuses) console.log(`  ${status.driver_kind}: ${!status.installed ? "not installed" : status.authStatus === "unauthenticated" ? "sign in required" : status.status ?? "unknown"}${status.message ? ` — ${status.message}` : ""}`);
-      const installed = statuses.filter(status => status.installed).map(status => status.driver_kind);
-      let selected = options.providers;
-      if (!selected && process.stdin.isTTY && process.stdout.isTTY && installed.length) {
-        const prompt = createInterface({ input: process.stdin, output: process.stdout });
-        prompt.once("SIGINT", cancelSetup);
-        try { selected = parseProviders((await prompt.question(`Agents to enable [${installed.join(",")}]: `, { signal: setupAbort.signal })).trim() || installed.join(",")); }
-        finally { prompt.close(); }
-      }
-      selected ??= installed;
-      if (!selected.length) throw new Error("No coding agents found. Install and sign in to an agent, then run this command again.");
-      if (selected.some(driver => !installed.includes(driver))) throw new Error("A selected agent is not installed. Install it before connecting.");
       const runnerId = await installationIdentity(options.identityPath);
       config = RunnerConfigSchema.parse({ runner_id: runnerId, host_id: hostname(), control_plane_url: options.controlPlaneUrl,
         credentials_path: join(dirname(configPath), "credentials.json"), state_path: join(dirname(configPath), "state.json"),
-        workspaces: [], workspace_management: { allowed_roots: [parse(homedir()).root] }, provider_instances: providers.filter(provider => selected.includes(provider.driver_kind)) });
-      await saveJson(configPath, config);
+        workspaces: [], workspace_management: { allowed_roots: [parse(homedir()).root] }, provider_instances: [] });
     }
+    const bundled = ["codex", "claude", "opencode"].filter(driver => !config.provider_instances.some(p => p.driver_kind === driver))
+      .map(driver => ProviderInstanceConfigSchema.parse({ id: `${driver}-local`, driver_kind: driver, display_name: driver === "claude" ? "Claude Code" : driver === "codex" ? "Codex" : "OpenCode" }));
+    const candidates = [...config.provider_instances, ...bundled];
+    const registry = createDefaultHarnessAdapterRegistry();
+    let statuses;
+    try { statuses = await registry.probeProviders(candidates); }
+    finally { await registry.close(); }
+    console.log("Coding agents on this computer:");
+    for (const status of statuses) console.log(`  ${status.driver_kind}: ${!status.installed ? "not installed" : status.authStatus === "unauthenticated" ? "sign in required" : status.status ?? "unknown"}`);
+    const installed = [...new Set(statuses.filter(status => status.installed).map(status => status.driver_kind))];
+    // Discovery belongs to the runner; execution choices belong to the control plane.
+    // Keep --providers as an explicit automation override, never an interactive prompt.
+    const selected = options.providers ?? installed;
+    console.log("Choose which coding agents to use in your control plane after connecting.");
+    if (options.providers && selected.some(driver => !installed.includes(driver))) throw new Error("A selected agent is not installed. Install it before connecting.");
+    const providers = candidates.filter(p => config.provider_instances.some(saved => saved.id === p.id) || installed.includes(p.driver_kind))
+      .map(p => ({...p, enabled: selected.includes(p.driver_kind)}));
+    const updated = RunnerConfigSchema.parse({...config, provider_instances: providers});
+    if (!existing || JSON.stringify(updated) !== JSON.stringify(config)) await saveJson(configPath, updated);
+    config = updated;
     await saveJson(locationPath, configPath);
     setupAbort.signal.throwIfAborted();
     const credential = await loadRunnerCredential(config);
-    if (!credential || options.pair) {
+    let needsPairing = !credential || options.pair;
+    if (credential && !needsPairing) {
+      try { await requestConnectionToken(config, credential, setupAbort.signal); }
+      catch (error) {
+        if (!(error instanceof RunnerAuthorizationRejected)) throw error;
+        needsPairing = true;
+        console.log("This machine's access was removed or expired. Approve it again in your browser to reconnect. Your folders and settings are saved.");
+      }
+    }
+    if (needsPairing) {
       console.log("Approve this computer in your browser. No folder is added automatically. Use your control plane to register existing folders.");
       const pairing = await pairWithReferenceControlPlane({ controlPlaneUrl: config.control_plane_url, runnerId: config.runner_id, hostId: config.host_id ?? config.runner_id, signal: setupAbort.signal,
         onPairingCode: async code => {

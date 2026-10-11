@@ -1,3 +1,5 @@
+import {convexRunnerDemandSource, type RunnerDemandSource} from "./runner-demand.js";
+import type {RunnerCredential} from "../pairing/index.js";
 import { AccountUsageReader } from "../accounts/index.js";
 import { WorkspaceManager } from "../workspaces/index.js";
 import { createHash } from "node:crypto";
@@ -29,6 +31,7 @@ import type { RunnerConfig } from "../config/index.js";
 import { HarnessAdapterError } from "../harnesses/adapters.js";
 import { HarnessSessionError, HarnessSessionManager, type HarnessReplayResult } from "../harnesses/index.js";
 import { ProviderInstanceRegistry } from "../host/provider-registry.js";
+import { withWorkspaceGit } from "../workspaces/git.js";
 import { LocalActionDispatcher, type LocalActionDispatchOutcome } from "../local-actions/dispatcher.js";
 import { LocalCapabilityExecutor } from "../local-actions/executors.js";
 import type {
@@ -90,11 +93,16 @@ export type RunnerReconnectOptions = {
   maxDelayMs?: number;
 };
 
+type RunnerAuthorization = {connection_token: string; demand?: {convex_url: string; query_name: "hcp:runnerDemand"; idle_seconds: number} | undefined};
+
 export type RunnerConnectionOptions = {
+  demandCredential?: RunnerCredential;
+  demandSource?: RunnerDemandSource;
+  idleMs?: number;
   config: RunnerConfig;
   configPath?: string;
   runnerVersion: string;
-  connectionTokenProvider?: () => Promise<string | undefined>;
+  connectionTokenProvider?: () => Promise<string | RunnerAuthorization | undefined>;
   onLog?: (message: string) => void;
   harnessSessions?: HarnessSessionManager;
   reconnect?: RunnerReconnectOptions;
@@ -105,7 +113,7 @@ export class RunnerConnection {
   readonly #config: RunnerConfig;
   readonly #workspaces: WorkspaceManager;
   readonly #runnerVersion: string;
-  readonly #connectionTokenProvider: (() => Promise<string | undefined>) | undefined;
+  readonly #connectionTokenProvider: (() => Promise<string | RunnerAuthorization | undefined>) | undefined;
   readonly #onLog: (message: string) => void;
   readonly #harnessSessions: HarnessSessionManager;
   readonly #stateStore: RunnerStateStore;
@@ -113,6 +121,18 @@ export class RunnerConnection {
   readonly #reconnectInitialDelayMs: number;
   readonly #reconnectMaxDelayMs: number;
   readonly #accountUsage: AccountUsageReader;
+  readonly #demandCredential: RunnerCredential | undefined;
+  #demandSource: RunnerDemandSource | undefined;
+  #stopDemand: (() => void) | undefined;
+  #demandReady = false;
+  #demandPending = false;
+  #demandGeneration: number | undefined;
+  #idle = false;
+  #idleTimer: NodeJS.Timeout | undefined;
+  #idleMs: number;
+  #lastActivity = Date.now();
+  #opening: Promise<void> | undefined;
+  #messageTasks = 0;
   #accepted = false;
   #socket: WebSocket | undefined;
   #heartbeatTimer: NodeJS.Timeout | undefined;
@@ -127,6 +147,9 @@ export class RunnerConnection {
 
   constructor(options: RunnerConnectionOptions) {
     this.#config = options.config;
+    this.#demandCredential = options.demandCredential;
+    this.#demandSource = options.demandSource;
+    this.#idleMs = options.idleMs ?? 300_000;
     this.#accountUsage = options.accountUsage ?? new AccountUsageReader(options.config);
     this.#runnerVersion = options.runnerVersion;
     this.#connectionTokenProvider = options.connectionTokenProvider;
@@ -148,13 +171,22 @@ export class RunnerConnection {
     this.#closing = false;
     this.#unsubscribeEvents ??= this.#harnessSessions.subscribeEvents(event => {if (this.#accepted) this.#sendEventIfConnected(event);},
       error => this.#onLog(error instanceof Error ? error.message : "Session event publication failed."));
+    this.#subscribeDemand();
     await this.#openSocket();
   }
 
   async #openSocket(): Promise<void> {
-    const connectionToken: string | undefined = this.#connectionTokenProvider
+    this.#stopReconnect();
+    const authorization = this.#connectionTokenProvider
       ? await this.#connectionTokenProvider()
       : undefined;
+    if (this.#closing || this.#idle) return;
+    const connectionToken = typeof authorization === "string" ? authorization : authorization?.connection_token;
+    if (typeof authorization === "object" && authorization.demand && this.#demandCredential && !this.#demandSource) {
+      this.#idleMs = authorization.demand.idle_seconds * 1000;
+      this.#demandSource = convexRunnerDemandSource(authorization.demand.convex_url, this.#demandCredential);
+      this.#subscribeDemand();
+    }
     const socket = new WebSocket(this.#config.control_plane_url, {
       ...(connectionToken ? { headers: { authorization: `Bearer ${connectionToken}` } } : {}),
     });
@@ -164,19 +196,21 @@ export class RunnerConnection {
 
     socket.on("message", (data: WebSocket.RawData) => {
       if (this.#socket !== socket) return;
+      this.#messageTasks++;
       this.#handleMessage(data.toString()).catch((error: unknown) => {
         this.#onLog(error instanceof Error ? error.message : "Failed to handle control plane message.");
-      });
+      }).finally(() => {this.#messageTasks--; this.#lastActivity = Date.now();});
     });
 
     socket.on("close", () => {
+      if (this.#socket !== socket) return;
       if (this.#socket === socket) {
         this.#socket = undefined;
         this.#accepted = false;
       }
       this.#stopHeartbeat();
       this.#onLog("Runner disconnected from control plane.");
-      if (!this.#closing) {
+      if (!this.#closing && !this.#idle) {
         this.#scheduleReconnect();
       }
     });
@@ -199,6 +233,8 @@ export class RunnerConnection {
 
   async close(): Promise<void> {
     this.#closing = true;
+    this.#stopDemand?.(); this.#stopDemand = undefined;
+    if (this.#idleTimer) clearInterval(this.#idleTimer); this.#idleTimer = undefined;
     this.#accepted = false;
     this.#unsubscribeEvents?.(); this.#unsubscribeEvents = undefined;
     try {
@@ -266,6 +302,7 @@ export class RunnerConnection {
       return;
     }
 
+    if (envelope.type !== "host.accepted") this.#lastActivity = Date.now();
     switch (envelope.type) {
       case "host.accepted":
         await this.#handleAccepted(envelope);
@@ -371,10 +408,15 @@ export class RunnerConnection {
 
   async #handleAccepted(envelope: HcpHostAcceptedMessage): Promise<void> {
     this.#accepted = true;
+    this.#lastActivity = Date.now();
     this.#onLog(`Control plane accepted ${envelope.payload.protocol_version}.`);
+    const socket = this.#socket;
     await this.#sendCapabilities();
+    // Capability observation can outlast the connection; never start its timers after close or reconnect.
+    if (this.#closing || !this.#accepted || socket !== this.#socket) return;
     this.#replayRequestedEvents(envelope.payload.resume);
     this.#startHeartbeat(envelope.payload.heartbeat_interval_seconds);
+    if (this.#demandSource && !this.#idleTimer) this.#idleTimer = setInterval(() => this.#checkIdle(), Math.min(5000, this.#idleMs));
     await this.#harnessSessions.recoverMcpReviews(event => this.#sendEventIfConnected(event),
       (completion, sessionId, turnId) => this.#watchTurn(completion, sessionId, turnId));
   }
@@ -661,8 +703,48 @@ export class RunnerConnection {
   async #sendCapabilities(): Promise<void> {
     const socket = this.#socket;
     const registry = new ProviderInstanceRegistry(this.#config, await this.#harnessSessions.providerDriverStatuses());
-    const payload: HcpHostCapabilitiesUpdatedPayload = { ...registry.snapshot(), workspace_management: this.#workspaces.snapshot() };
+    const snapshot = registry.snapshot();
+    const payload: HcpHostCapabilitiesUpdatedPayload = { ...snapshot, workspaces: await withWorkspaceGit(snapshot.workspaces), workspace_management: this.#workspaces.snapshot() };
     if (socket === this.#socket && this.#accepted) this.#send(createHcpEnvelope("host.capabilities.updated", payload));
+  }
+
+  #subscribeDemand(): void {
+    if (!this.#demandSource || this.#stopDemand) return;
+    this.#stopDemand = this.#demandSource.subscribe(state => {
+      const changed = this.#demandGeneration !== undefined && state.generation > this.#demandGeneration;
+      this.#demandGeneration = state.generation;
+      this.#demandReady = true;
+      this.#demandPending = state.pending;
+      if (changed || state.pending) {this.#lastActivity = Date.now(); this.#wakeFromIdle();}
+    }, () => {
+      // Never deliberately disconnect without a working wake path.
+      this.#demandReady = false;
+      this.#wakeFromIdle();
+    });
+  }
+
+  #wakeFromIdle(): void {
+    if (!this.#idle || this.#closing) return;
+    this.#idle = false;
+    this.#lastActivity = Date.now();
+    // Wait for the old close before replacing it; stale close handlers must not
+    // stop a new socket's heartbeat or schedule a duplicate reconnect.
+    const old = this.#socket;
+    const open = () => {
+      if (this.#opening || this.#closing) return;
+      this.#opening = this.#openSocket().catch(() => this.#scheduleReconnect()).finally(() => {this.#opening = undefined;});
+    };
+    if (old && old.readyState !== WebSocket.CLOSED) old.once("close", open); else open();
+  }
+
+  #checkIdle(): void {
+    const pending = [...this.#commandRecords.values(), ...this.#localActionRecords.values()].some(record => record.outcome === "pending");
+    if (!this.#accepted || !this.#demandReady || this.#demandPending || this.#messageTasks || pending || this.#harnessSessions.hasActiveWork()) {this.#lastActivity = Date.now(); return;}
+    if (Date.now() - this.#lastActivity < this.#idleMs) return;
+    this.#idle = true;
+    this.#stopReconnect(); this.#stopHeartbeat();
+    this.#socket?.close(4001, "hcp-idle");
+    this.#onLog("Runner transport sleeping; workflow or settings activity will reconnect it.");
   }
 
   #startHeartbeat(intervalSeconds: number): void {
@@ -697,7 +779,7 @@ export class RunnerConnection {
     this.#reconnectAttempt += 1;
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = undefined;
-      if (this.#closing) {
+      if (this.#closing || this.#idle) {
         return;
       }
       this.#openSocket().catch((error: unknown) => {
@@ -725,6 +807,7 @@ export class RunnerConnection {
   }
 
   #sendEventIfConnected(event: HcpHarnessEventPayload): void {
+    this.#lastActivity = Date.now();
     if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
       return;
     }

@@ -41,7 +41,8 @@ function codexReasoningSummary(selection: HarnessModelSelection) {
 
 function codexServiceTier(selection: HarnessModelSelection): {serviceTier?: string} {
   const tier = selection.options?.find(option => option.id === "serviceTier");
-  return tier ? {serviceTier: z.string().min(1).max(128).parse(tier.value)} : {};
+  // The advertised "default" value is the absence of a native tier override.
+  return tier && tier.value !== "default" ? {serviceTier: z.string().min(1).max(128).parse(tier.value)} : {};
 }
 const startedSchema = z.object({
   thread: idObject,

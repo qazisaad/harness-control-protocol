@@ -19,7 +19,8 @@ export function nativeExecutionCapabilities(
     ...(driver === "claude" ? {execution_profiles: [
       {id: "isolated" as const, runtime_lifetime: "turn" as const, native_work: false, session_events: false},
       {id: "interactive" as const, runtime_lifetime: "session" as const, native_work: true, session_events: true, mcp_attachments: true, native_owner_closure: "owned_session" as const, native_approval_review: true, native_approval_feedback: "rejection" as const, root_settings_readback: true, native_permission_prompting: "reject_unapproved" as const, root_interrupt_effect: "root_only" as const, native_tool_selection: {scope: "root_builtins" as const, tools: ["Read", "Glob", "Grep", "TodoWrite"]}, native_work_history: "live_owner" as const, retained_native_work_history: true, idle_configuration_transition: true, idle_mcp_catalog_transition: true,
-        native_policy_control: "idle_native_owner" as const, account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const, native_plan_proposal_observations: ["tool_input"] as Array<"tool_input">, native_plan_observations: ["tool_input"] as Array<"tool_input">, native_goal_observations: "native_transcript" as const, native_execution_outcomes: true, mcp_detach: "idle_session" as const},
+        native_policy_control: "idle_native_owner" as const, account_limit_observations: "native_session" as const, native_async_output: "session" as const, native_retry_observations: "session" as const, native_plan_proposal_observations: ["tool_input"] as Array<"tool_input">, native_plan_observations: ["tool_input"] as Array<"tool_input">, native_goal_observations: "native_transcript" as const, native_execution_outcomes: true, mcp_detach: "idle_session" as const,
+        sandbox_options: ["writable_roots"] as Array<"writable_roots">, writable_roots_enforcement: "native_permissions" as const},
     ]} : {}),
     instruction_roles: driver === "codex" ? ["system", "developer"] : ["system"],
     configuration_inheritance: driver === "codex" ? {mcp_servers: false, plugins: false} :
@@ -65,8 +66,14 @@ export function validateNativeStart(
     if (!supported || input.payload.execution_profile !== "interactive")
       throw new HarnessAdapterError("approval_options_unsupported", "Native approval options require their declared interactive driver and matching approval authority.");
   }
-  if (input.payload.sandbox_options && (driver !== "codex" || input.payload.execution_profile !== "interactive" || input.payload.sandbox_mode !== "workspace_write"))
-    throw new HarnessAdapterError("sandbox_options_unsupported", "Sandbox options require Codex interactive workspace-write enforcement and readback.");
+  if (input.payload.sandbox_options && input.payload.execution_profile !== "interactive")
+    throw new HarnessAdapterError("sandbox_options_unsupported", "Sandbox options require an interactive profile with native readback.");
+  if (input.payload.sandbox_options && driver === "codex" && input.payload.sandbox_mode !== "workspace_write")
+    throw new HarnessAdapterError("sandbox_options_unsupported", "Codex sandbox options require workspace-write enforcement.");
+  // Claude has no OS sandbox: roots extend its native permission scope and cannot carry network authority.
+  if (input.payload.sandbox_options && driver === "claude" && (input.payload.sandbox_mode !== "danger_full_access"
+    || input.payload.sandbox_options.network_access !== undefined || !input.payload.sandbox_options.writable_roots?.length))
+    throw new HarnessAdapterError("sandbox_options_unsupported", "Claude accepts only additional permitted directories through native settings readback.");
   if (input.payload.approval_reviewer === "native_auto" && input.payload.execution_profile !== "interactive")
     throw new HarnessAdapterError("native_approval_review_unsupported", "Native automatic approval review requires the interactive profile.");
   if (driver === "claude" && input.payload.approval_reviewer === "native_auto" && input.payload.approval_policy !== "auto_edits")
@@ -258,6 +265,11 @@ export function selectedEffort(
   for (const option of selection.options ?? []) {
     if (seen.has(option.id)) throw new HarnessAdapterError("unsupported_model_option", "Duplicate model option.");
     seen.add(option.id);
+    if (driver === "claude" && option.id === "contextWindow") {
+      if (option.value !== "default" && option.value !== "1m")
+        throw new HarnessAdapterError("unsupported_model_option", "Claude context window must be default or 1m.");
+      continue;
+    }
     if (driver === "claude" && ["thinking", "ultracode", "fastMode"].includes(option.id)) {
       if (typeof option.value !== "boolean")
         throw new HarnessAdapterError("unsupported_model_option", "Claude session options require boolean values.");
@@ -290,4 +302,15 @@ export function selectedEffort(
     effort = option.value;
   }
   return effort;
+}
+
+/**
+ * Native Claude model id for a selection. A 1M context window is selected by
+ * the CLI's `[1m]` model suffix; settings readback reports the suffixed id.
+ */
+export function claudeNativeModel(selection: HarnessModelSelection): string {
+  const window = selection.options?.find(option => option.id === "contextWindow")?.value;
+  if (window === undefined) return selection.model;
+  const base = selection.model.replace(/(\[1m\])+$/i, "");
+  return window === "1m" ? `${base}[1m]` : base;
 }

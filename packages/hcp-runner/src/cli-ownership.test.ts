@@ -79,7 +79,7 @@ test("CLI crash recovery preserves identity, excludes run/connect competitors, a
   const executable = join(home, "codex.cjs");
   const cli = (args: string[]) => {
     const source = `import { main } from ${JSON.stringify(new URL("./index.ts", import.meta.url).href)}; process.exitCode = await main(JSON.parse(process.argv[2]), process.argv[3]);`;
-    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source, fileURLToPath(import.meta.url), JSON.stringify(args), home], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source, fileURLToPath(import.meta.url), JSON.stringify(args), home], { stdio: ["ignore", "pipe", "pipe"], env: {...process.env, PATH: home} });
     let output = "";
     child.stdout!.on("data", (data: Buffer) => { output += data.toString(); });
     child.stderr!.on("data", (data: Buffer) => { output += data.toString(); });
@@ -129,7 +129,8 @@ test("CLI crash recovery preserves identity, excludes run/connect competitors, a
     await until(() => received.some(message => message.type === "host.capabilities.updated"));
     assert.match(recovered.output(), /Recovered the previous HCP connection/);
     assert.equal(pairingRequests, 0);
-    assert.equal(tokenRequests, 2);
+    // Each saved-credential startup verifies authorization before requesting its socket token.
+    assert.equal(tokenRequests, 4);
     assert.equal(await readFile(configPath, "utf8"), saved);
     assert.equal(await readFile(config.credentials_path!, "utf8"), credentials);
     const hello = received.find(message => message.type === "host.hello");
@@ -157,7 +158,8 @@ test("CLI crash recovery preserves identity, excludes run/connect competitors, a
     const duringStartup = cli(["connect", endpoint, "--no-browser"]);
     await until(() => tokenRequests > priorTokenRequests);
     duringStartup.process.kill("SIGTERM");
-    assert.equal((await duringStartup.exited)[0], 0, duringStartup.output());
+    assert.equal((await duringStartup.exited)[0], 1, duringStartup.output());
+    assert.match(duringStartup.output(), /Setup cancelled/);
     await assert.rejects(readFile(join(directory, "runner.json.lock")), { code: "ENOENT" });
     assert.equal(peers.length, 3);
     const duringPairing = cli(["connect", endpoint, "--pair", "--no-browser"]);

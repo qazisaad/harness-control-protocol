@@ -23,7 +23,7 @@ import {
   loadRunnerCredential,
   normalizeControlPlaneUrl,
   pairWithReferenceControlPlane,
-  requestConnectionToken,
+  requestConnectionAuthorization,
   writeRunnerCredentials,
   type RunnerCredential,
 } from "./pairing/index.js";
@@ -176,7 +176,7 @@ async function runMachine(configPath: string): Promise<number> {
       runnerVersion: RUNNER_VERSION,
       configPath,
       harnessSessions,
-      ...(credential ? { connectionTokenProvider: () => requestConnectionToken(config, credential) } : {}),
+      ...(credential ? { connectionTokenProvider: () => requestConnectionAuthorization(config, credential), demandCredential: credential } : {}),
       onLog: (message: string) => consoleLogger.info(message),
     });
     await connection.connect();

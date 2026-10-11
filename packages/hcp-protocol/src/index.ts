@@ -17,6 +17,8 @@ import {harnessNativePolicyControlAuthoritySchema, nativePolicySelectionKey, typ
 export * from "./policy-control.js";
 import {harnessSandboxOptionsSchema, type HarnessSandboxOptions} from "./sandbox.js";
 export * from "./sandbox.js";
+import {hcpWorkspaceGitSchema, type HcpWorkspaceGit} from "./git-remote.js";
+export * from "./git-remote.js";
 import {harnessNativeWorkRecordSchema} from "./native-work.js";
 import {harnessNativeGoalRequestSchema, harnessNativeGoalRecordSchema, harnessNativeGoalTranscriptSchema, type HarnessNativeGoalRequest} from "./native-goal.js";
 export * from "./native-goal.js";
@@ -347,6 +349,13 @@ export const harnessExecutionProfileCapabilitiesSchema = z.object({id: harnessEx
   /** Structured native plan observations; tool input is intent, not effective todo state. */
   native_plan_observations: z.array(z.enum(["snapshot", "tool_input"])).min(1).max(2).optional(),
   sandbox_options: z.array(z.enum(["network_access", "writable_roots"])).min(1).max(2).optional(),
+  /**
+   * How additional writable roots are enforced. `os_sandbox`: the native sandbox
+   * contains writes to the primary and listed roots. `native_permissions`: the
+   * roots extend the agent's native permission scope only; there is no OS
+   * containment, and the selected approval policy still governs prompts.
+   */
+  writable_roots_enforcement: z.enum(["os_sandbox", "native_permissions"]).optional(),
   native_approval_review: z.boolean().optional(),
   native_approval_feedback: z.literal("rejection").optional(),
   native_goals: z.boolean().optional(),
@@ -431,7 +440,10 @@ export type HcpWorkspaceSnapshot = {
   display_name?: string;
   id: string;
   path: string;
+  /** Operator-declared remote from runner configuration. */
   git_remote?: string;
+  /** Runner-observed git state; omission means unknown or not a repository. */
+  git?: HcpWorkspaceGit;
 };
 
 export type HcpMcpStdioProfileSnapshot = {
@@ -476,7 +488,10 @@ export type HarnessModelSelection = {
 
 export type WorkspacePreflight = {
   workspace_id: string;
+  /** Compared with {@link normalizeGitRemote}, so SSH and HTTPS forms match. */
   expected_git_remote?: string;
+  /** Oldest parentless commit; identifies a repository even without a remote. */
+  expected_root_commit?: string;
   expected_branch?: string;
   allow_dirty_worktree?: boolean;
   required_paths?: string[];
@@ -487,6 +502,7 @@ export type WorkspacePreflightCompleted = {
   cwd: string;
   branch?: string;
   commit?: string;
+  root_commit?: string;
   dirty?: boolean;
   remote?: string;
   result: "passed" | "failed" | "warning";
@@ -1293,6 +1309,7 @@ export const hcpWorkspaceSchema = z
     id: nonEmptyStringSchema,
     path: nonEmptyStringSchema,
     git_remote: nonEmptyStringSchema.optional(),
+    git: hcpWorkspaceGitSchema.optional(),
     display_name: z.string().trim().min(1).max(100).optional(),
   })
   .strict();
@@ -1395,6 +1412,7 @@ export const workspacePreflightSchema = z
   .object({
     workspace_id: nonEmptyStringSchema,
     expected_git_remote: nonEmptyStringSchema.optional(),
+    expected_root_commit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
     expected_branch: nonEmptyStringSchema.optional(),
     allow_dirty_worktree: z.boolean().optional(),
     required_paths: z.array(nonEmptyStringSchema).optional(),
@@ -1407,6 +1425,7 @@ export const workspacePreflightCompletedSchema = z
     cwd: nonEmptyStringSchema,
     branch: nonEmptyStringSchema.optional(),
     commit: nonEmptyStringSchema.optional(),
+    root_commit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
     dirty: z.boolean().optional(),
     remote: nonEmptyStringSchema.optional(),
     result: z.enum(["passed", "failed", "warning"]),

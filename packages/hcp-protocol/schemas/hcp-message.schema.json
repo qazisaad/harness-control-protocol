@@ -6358,6 +6358,33 @@
                     "type": "string",
                     "minLength": 1
                   },
+                  "git": {
+                    "type": "object",
+                    "properties": {
+                      "remote": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
+                      },
+                      "root_commit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40,64}$"
+                      },
+                      "branch": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "head_commit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40,64}$"
+                      },
+                      "dirty": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "display_name": {
                     "type": "string",
                     "minLength": 1,
@@ -7059,6 +7086,13 @@
                                 ]
                               }
                             },
+                            "writable_roots_enforcement": {
+                              "type": "string",
+                              "enum": [
+                                "os_sandbox",
+                                "native_permissions"
+                              ]
+                            },
                             "native_approval_review": {
                               "type": "boolean"
                             },
@@ -7738,6 +7772,33 @@
                   "git_remote": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "git": {
+                    "type": "object",
+                    "properties": {
+                      "remote": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
+                      },
+                      "root_commit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40,64}$"
+                      },
+                      "branch": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "head_commit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{40,64}$"
+                      },
+                      "dirty": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
                   },
                   "display_name": {
                     "type": "string",
@@ -8420,6 +8481,10 @@
                 "expected_git_remote": {
                   "type": "string",
                   "minLength": 1
+                },
+                "expected_root_commit": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40,64}$"
                 },
                 "expected_branch": {
                   "type": "string",
@@ -40349,6 +40414,10 @@
                 "commit": {
                   "type": "string",
                   "minLength": 1
+                },
+                "root_commit": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40,64}$"
                 },
                 "dirty": {
                   "type": "boolean"

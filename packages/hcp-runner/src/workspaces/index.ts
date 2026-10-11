@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { HcpWorkspaceManagement, HcpWorkspacesRequestPayload, HcpWorkspacesResultPayload } from "@harness-control/protocol";
 import { RunnerConfigSchema, type RunnerConfig, type RunnerWorkspaceConfig } from "../config/index.js";
 import type { HarnessSessionManager } from "../harnesses/index.js";
+import { withWorkspaceGit } from "./git.js";
 
 export class WorkspaceManager {
   constructor(
@@ -39,7 +40,9 @@ export class WorkspaceManager {
     } catch (error: unknown) {
       outcome = { kind: "error", message: error instanceof Error ? error.message.slice(0, 1000) : "Workspace update failed." };
     }
-    return { request_id: requestId, outcome, management: this.snapshot(), workspaces: this.config.workspaces.map(workspace => ({ ...workspace })) };
+    // Browsing never changes registrations, so it skips git observation.
+    const workspaces = this.config.workspaces.map(workspace => ({ ...workspace }));
+    return { request_id: requestId, outcome, management: this.snapshot(), workspaces: request.operation.kind === "browse" ? workspaces : await withWorkspaceGit(workspaces) };
   }
 
   private async canonicalRoots(): Promise<string[]> {

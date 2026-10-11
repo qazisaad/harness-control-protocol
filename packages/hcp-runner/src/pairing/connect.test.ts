@@ -10,13 +10,21 @@ import { loadRunnerConfig } from "../config/index.js";
 test("guided setup exchanges once, saves private config, starts immediately, and reconnects without changing folders", async () => {
   const dir = await mkdtemp(join(tmpdir(), "hcp-connect-"));
   const priorPath = process.env.PATH;
+  const ttyDescriptors = [process.stdin, process.stdout].map(stream => Object.getOwnPropertyDescriptor(stream, "isTTY"));
+  for (const stream of [process.stdin, process.stdout]) Object.defineProperty(stream, "isTTY", {value: true, configurable: true});
   let pairingCount = 0;
   let cancelPairing = false;
+  let revoked = false;
+  let unavailable = false;
   let identity: {runner_id: string; host_id: string} = {runner_id:"",host_id:""};
   const server = createServer(async (req, res) => {
     let body = ""; for await (const chunk of req) body += String(chunk);
     res.setHeader("content-type", "application/json");
-    if (req.url === "/pairing-codes") {
+    if (req.url === "/runner-connection-token") {
+      res.statusCode = unavailable ? 503 : revoked ? 403 : 200;
+      res.end(JSON.stringify(unavailable || revoked ? {error:"Unavailable"} : {connection_token:"token",expires_at:new Date(Date.now()+30000).toISOString()}));
+    } else if (req.url === "/pairing-codes") {
+      revoked = false;
       const parsed = JSON.parse(body) as typeof identity; identity = {runner_id:parsed.runner_id,host_id:parsed.host_id}; pairingCount++;
       if (cancelPairing) setImmediate(()=>process.emit("SIGINT"));
       res.end(JSON.stringify({request_id:"request",pairing_code:"ABCDEF123456",pairing_url:`${base.replace("ws:","http:")}/approve`,expires_at:new Date(Date.now()+10000).toISOString(),poll_interval_seconds:1}));
@@ -32,7 +40,7 @@ test("guided setup exchanges once, saves private config, starts immediately, and
     process.env.PATH = dir;
     assert.equal(await openApprovalBrowser("http://localhost/approve"),false);
     const options = parseConnectOptions([base,"--providers","codex","--no-browser"],dir);
-    await connectMachine(options, async path => {
+    await connectMachine({...options, providers: undefined}, async path => {
       const config = await loadRunnerConfig(path);
       assert.equal(config.provider_instances[0]?.driver_kind,"codex");
       assert.equal(config.workspaces.length,0);
@@ -49,13 +57,20 @@ test("guided setup exchanges once, saves private config, starts immediately, and
       assert.equal(await readFile(path,"utf8"),before); return 0;
     });
     assert.equal(pairingCount,1);
+    revoked = true;
+    await connectMachine(parseConnectOptions([base,"--no-browser"],dir), async () => 0);
+    assert.equal(pairingCount, 2, "normal reconnect must request approval for revoked credentials");
+    unavailable = true;
+    await assert.rejects(connectMachine(options, async () => 0), /Unavailable/);
+    assert.equal(pairingCount, 2, "storage or network failures must not replace credentials");
+    unavailable = false;
     const firstIdentity = JSON.parse(await readFile(options.identityPath,"utf8")) as {runner_id:string};
     assert.equal(firstIdentity.runner_id,identity.runner_id);
     await assert.rejects(connectMachine({...options,configPath:join(dir,"other.json")},async()=>0),/already has a configuration/);
     await rm(options.identityPath);
     await connectMachine(options,async()=>0);
     assert.deepEqual(JSON.parse(await readFile(options.identityPath,"utf8")),firstIdentity);
-    assert.equal(pairingCount,1);
+    assert.equal(pairingCount,2);
     const anotherEndpoint = parseConnectOptions([base.replace("127.0.0.1","localhost"),"--providers","codex","--no-browser","--config",join(dir,"custom.json")],dir);
     await connectMachine(anotherEndpoint, async path => {
       assert.equal((await loadRunnerConfig(path)).runner_id,firstIdentity.runner_id);
@@ -71,10 +86,20 @@ test("guided setup exchanges once, saves private config, starts immediately, and
     await assert.rejects(connectMachine({...parseConnectOptions([base,"--no-browser"],dir),controlPlaneUrl:"wss://other.example/hcp/runner"},async()=>0),/another control plane/);
     cancelPairing = true;
     await assert.rejects(connectMachine({...options,pair:true},async()=>0),/Setup cancelled/);
-    assert.equal(await readFile(options.configPath,"utf8"),before);
+    assert.deepEqual(JSON.parse(await readFile(options.configPath,"utf8")),JSON.parse(before));
     await assert.rejects(stat(`${options.configPath}.lock`),{code:"ENOENT"});
+    await rm(join(dir, "codex"));
+    await connectMachine({...options, providers: undefined}, async path => {
+      assert.ok((await loadRunnerConfig(path)).provider_instances.every(provider => !provider.enabled));
+      return 0;
+    });
   } finally {
     process.env.PATH = priorPath;
+    [process.stdin, process.stdout].forEach((stream, index) => {
+      const descriptor = ttyDescriptors[index];
+      if (descriptor) Object.defineProperty(stream, "isTTY", descriptor);
+      else Reflect.deleteProperty(stream, "isTTY");
+    });
     await new Promise<void>(resolve=>server.close(()=>resolve()));
     await rm(dir,{recursive:true,force:true});
   }

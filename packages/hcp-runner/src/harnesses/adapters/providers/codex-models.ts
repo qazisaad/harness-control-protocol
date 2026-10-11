@@ -15,6 +15,8 @@ const pageSchema = z.object({
       ),
       defaultReasoningEffort: z.string(),
       inputModalities: z.array(z.string()).optional(),
+      serviceTiers: z.array(z.object({id: z.string().min(1).max(128), name: z.string().min(1).max(128)})).max(16).optional(),
+      defaultServiceTier: z.string().min(1).max(128).nullable().optional(),
     }),
   ),
   nextCursor: z.string().nullable().optional(),
@@ -66,6 +68,11 @@ export async function codexModels(
                   }),
                 ),
               },
+              // "default" clears the override; native ids such as "priority" select a catalog tier.
+              ...(model.serviceTiers?.length ? [{id: "serviceTier", label: "Speed", type: "select" as const,
+                default_value: model.defaultServiceTier ?? "default",
+                values: [{value: "default", label: "Standard"},
+                  ...model.serviceTiers.filter(tier => tier.id !== "default").map(tier => ({value: tier.id, label: tier.name}))]}] : []),
             ],
           },
         });

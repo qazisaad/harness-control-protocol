@@ -32,11 +32,16 @@ export const pairingExchangeResponseSchema = z.discriminatedUnion("status", [
 ]);
 export const connectionTokenRequestSchema = z.object({
   ...identity,
+  demand_supported: z.boolean().optional(),
   protocol_schema_sha256: z.string().regex(/^[a-f0-9]{64}$/),
   credential_id: z.string().min(1),
   credential_secret: z.string().min(1).max(256),
 }).strict();
+export const runnerDemandChannelSchema = z.object({
+  convex_url: z.string().url(), query_name: z.literal("hcp:runnerDemand"), idle_seconds: z.number().int().min(30).max(3600),
+}).strict();
 export const connectionTokenResponseSchema = z.object({
+  demand: runnerDemandChannelSchema.optional(),
   connection_token: z.string().min(1),
   expires_at: z.string().datetime({ offset: true }),
 }).strict();

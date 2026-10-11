@@ -113,7 +113,7 @@ These implementations do not recover lost live native callbacks or independently
 
 Codex permission-grant requests use the same immutable native-review owner as approvals. The current profile offers turn-scoped grants only. A restricted sandbox never offers acceptance that broadens its containment; rejected requests return an empty native grant. Session-scoped grants require a persistent interactive runtime and remain unavailable.
 
-The fixture suite covers split/large output, native failures and EOF, policy rejection, MCP scope mismatch, option forwarding, cancellation races, and process cleanup. Event transcripts are validated with public schemas and the production reducer, including duplicate replay. Connection tests cover unsupported-command NACKs; session tests reject unimplemented preflight expectations.
+The fixture suite covers split/large output, native failures and EOF, policy rejection, MCP scope mismatch, option forwarding, cancellation races, and process cleanup. Event transcripts are validated with public schemas and the production reducer, including duplicate replay. Connection tests cover unsupported-command NACKs; session tests enforce workspace preflight expectations (0.5.1) before native startup.
 
 Run from this repository root:
 

@@ -124,10 +124,11 @@ export async function loadRunnerCredential(config: RunnerConfig): Promise<Runner
   );
 }
 
-export async function requestConnectionToken(config: RunnerConfig, credential: RunnerCredential): Promise<string> {
+export async function requestConnectionAuthorization(config: RunnerConfig, credential: RunnerCredential, signal?: AbortSignal, demandSupported = true) {
   const response = await postJson(
     new URL("/runner-connection-token", toHttpControlPlaneUrl(config.control_plane_url)),
     {
+      ...(demandSupported ? {demand_supported: true} : {}),
       credential_id: credential.credential_id,
       credential_secret: credential.credential_secret,
       runner_id: config.runner_id,
@@ -136,8 +137,13 @@ export async function requestConnectionToken(config: RunnerConfig, credential: R
       protocol_schema_sha256: createHash("sha256").update(readFileSync(createRequire(import.meta.url).resolve("@harness-control/protocol/schema.json"))).digest("hex"),
     },
     connectionTokenResponseSchema,
+    signal,
   );
-  return response.connection_token;
+  return response;
+}
+
+export async function requestConnectionToken(config: RunnerConfig, credential: RunnerCredential, signal?: AbortSignal): Promise<string> {
+  return (await requestConnectionAuthorization(config, credential, signal, false)).connection_token;
 }
 
 export function normalizeControlPlaneUrl(value: string): string {
@@ -186,6 +192,8 @@ async function readRunnerCredentialsFileIfPresent(path: string): Promise<RunnerC
   }
 }
 
+export class RunnerAuthorizationRejected extends Error {}
+
 async function postJson<T>(url: URL, body: unknown, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
   const response: Response = await fetch(url, {
     method: "POST",
@@ -200,6 +208,7 @@ async function postJson<T>(url: URL, body: unknown, schema: z.ZodType<T>, signal
   const parsed: unknown = raw.length > 0 ? JSON.parse(raw) : {};
   if (!response.ok) {
     const message: string = errorMessageFromJson(parsed) ?? `${url.pathname} returned HTTP ${response.status}.`;
+    if (url.pathname === "/runner-connection-token" && [401, 403].includes(response.status)) throw new RunnerAuthorizationRejected(message);
     throw new Error(message);
   }
   return schema.parse(parsed);

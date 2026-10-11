@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 import { HarnessSessionError, HarnessSessionManager, type HarnessMcpClient } from "./index.js";
 import type { AuditLogEvent } from "../audit/index.js";
@@ -204,14 +205,46 @@ describe("HarnessSessionManager", () => {
     } finally {await manager.stopSession(start.session_id, "test complete"); await workspace.cleanup();}
   });
 
-  it("rejects unimplemented workspace expectations before reporting preflight success", async () => {
+  it("enforces workspace preflight expectations before any native startup", async () => {
     const workspace = await createWorkspace();
     try {
       const manager = new HarnessSessionManager(createConfig(workspace.root));
-      await assert.rejects(manager.startSession({ session_id: "preflight", workspace_id: "repo", provider_instance_id: "mock-provider", driver_kind: "mock",
-        cwd: workspace.root, sandbox_mode: "workspace_write", approval_policy: "ask", continue_session: false,
-        model_selection: { model: "mock" }, mcp_servers: [], workspace_preflight: { workspace_id: "repo", required_paths: ["missing"] } }),
-        (error: unknown) => error instanceof HarnessSessionError && error.code === "preflight_unsupported");
+      const start = (session_id: string, workspace_preflight: HcpSessionStartPayload["workspace_preflight"]) => manager.startSession({ session_id,
+        workspace_id: "repo", provider_instance_id: "mock-provider", driver_kind: "mock", cwd: workspace.root, sandbox_mode: "workspace_write",
+        approval_policy: "ask", continue_session: false, model_selection: { model: "mock" }, mcp_servers: [], ...(workspace_preflight ? { workspace_preflight } : {}) });
+      const failed = (fragment: RegExp) => (error: unknown) => error instanceof HarnessSessionError && error.code === "workspace_preflight_failed" && fragment.test(error.message);
+      await assert.rejects(start("missing", { workspace_id: "repo", required_paths: ["missing"] }), failed(/required path missing/));
+      await assert.rejects(start("escape", { workspace_id: "repo", required_paths: ["../outside"] }), failed(/required path/));
+      // A folder that is not a repository cannot satisfy repository identity or a clean worktree.
+      await assert.rejects(start("remote", { workspace_id: "repo", expected_git_remote: "git@github.com:acme/repo.git" }), failed(/git remote/));
+      await assert.rejects(start("clean", { workspace_id: "repo", allow_dirty_worktree: false }), failed(/uncommitted/));
+      await assert.rejects(start("other", { workspace_id: "other" }), (error: unknown) => error instanceof HarnessSessionError && error.code === "workspace_preflight_invalid");
+      await mkdir(join(workspace.root, "present"));
+      const events = await start("passed", { workspace_id: "repo", required_paths: ["present"] });
+      assert.deepEqual(events.find(event => event.event_type === "workspace.preflight.completed")?.data, { workspace_id: "repo", cwd: workspace.root, result: "passed" });
+      await manager.stopSession("passed", "test complete");
+    } finally { await workspace.cleanup(); }
+  });
+
+  it("reports and verifies the repository identity a session starts from", async () => {
+    const workspace = await createWorkspace();
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: workspace.root });
+    try {
+      git("init", "-q", "-b", "main");
+      git("remote", "add", "origin", "https://token:secret@github.com/Acme/Repo.git");
+      git("commit", "-q", "--allow-empty", "-m", "root");
+      const root = git("rev-parse", "HEAD").toString().trim();
+      const manager = new HarnessSessionManager(createConfig(workspace.root));
+      const events = await manager.startSession({ session_id: "identity", workspace_id: "repo", provider_instance_id: "mock-provider", driver_kind: "mock",
+        cwd: workspace.root, sandbox_mode: "workspace_write", approval_policy: "ask", continue_session: false, model_selection: { model: "mock" }, mcp_servers: [],
+        workspace_preflight: { workspace_id: "repo", expected_git_remote: "git@github.com:acme/repo.git", expected_root_commit: root, expected_branch: "main", allow_dirty_worktree: false } });
+      // SSH and HTTPS forms identify the same repository; published remotes never carry credentials.
+      assert.deepEqual(events.find(event => event.event_type === "workspace.preflight.completed")?.data, { workspace_id: "repo", cwd: workspace.root,
+        branch: "main", commit: root, root_commit: root, dirty: false, remote: "https://github.com/Acme/Repo.git", result: "passed" });
+      await manager.stopSession("identity", "test complete");
+      await assert.rejects(manager.startSession({ session_id: "wrong-root", workspace_id: "repo", provider_instance_id: "mock-provider", driver_kind: "mock",
+        cwd: workspace.root, sandbox_mode: "workspace_write", approval_policy: "ask", continue_session: false, model_selection: { model: "mock" }, mcp_servers: [],
+        workspace_preflight: { workspace_id: "repo", expected_root_commit: "0".repeat(40) } }), /root commit/);
     } finally { await workspace.cleanup(); }
   });
   it("starts sessions and accepts turns with HCP events", async () => {

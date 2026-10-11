@@ -12,7 +12,7 @@ import {
 import { z } from "zod";
 import { HarnessAdapterError } from "../types.js";
 import { adapterMcpServers, assertCliMcpAttachmentProxied, nativeInstructions } from "./shared.js";
-import { selectedEffort, type NativeTurn } from "./native-turn.js";
+import { claudeNativeModel, selectedEffort, type NativeTurn } from "./native-turn.js";
 import { NativeProcess } from "./native-process.js";
 import { randomUUID } from "node:crypto";
 import {realpath} from "node:fs/promises";
@@ -106,7 +106,7 @@ export function createClaudeTurn(
           pathToClaudeCodeExecutable:
             input.provider.executable_path ?? "claude",
           cwd: input.startPayload.cwd,
-          model: selection.model,
+          model: claudeNativeModel(selection),
           ...(effort ? { effort } : {}),
           env: {
             ...globalThis.process.env,

@@ -44,3 +44,16 @@ test("authenticated Claude reports catalog failure without claiming invented mod
   assert.deepEqual(status.models, []);
   assert.match(status.message!, /catalog is unavailable/);
 });
+
+test("Claude advertises 1M context for long-context families and ultracode only when the account reports it", () => {
+  const catalog = [
+    {value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus", supportsEffort: true, supportedEffortLevels: ["high", "xhigh"]},
+    {value: "haiku", resolvedModel: "claude-haiku-5-5", displayName: "Haiku", supportsEffort: true, supportedEffortLevels: ["high"]},
+  ];
+  const ids = (models: ReturnType<typeof projectClaudeModels>) => models.map(model => model.capabilities.option_descriptors.map(option => option.id));
+  assert.deepEqual(ids(projectClaudeModels(catalog)), [["effort", "contextWindow"], ["effort"]]);
+  assert.deepEqual(ids(projectClaudeModels({models: catalog, ultracodeAvailable: true})), [["effort", "ultracode", "contextWindow"], ["effort"]]);
+  assert.deepEqual(ids(projectClaudeModels({models: catalog, ultracodeAvailable: false})), [["effort", "contextWindow"], ["effort"]]);
+  assert.deepEqual(projectClaudeModels(catalog)[0]!.capabilities.option_descriptors[1], {id: "contextWindow", label: "Context window", type: "select",
+    default_value: "default", values: [{value: "default", label: "Default"}, {value: "1m", label: "1M"}]});
+});

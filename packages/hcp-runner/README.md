@@ -76,3 +76,21 @@ Local capability leases bind to HCP sessions and local resources. Keep product o
 A server can explicitly advertise `com.prompt2agent/input-on-expiry: "cancel"` with `com.prompt2agent/input-deadline` on an input-required result. If that deadline expires while the original operation lease is still valid, the runner durably records a cancellation-only continuation and uses the original request state to collect the parent result. It never emits a human approval/input resolution for an automatic expiry. Without the explicit cancellation policy, expiry still stops the operation.
 
 After process loss, an uncertain cancellation is fenced and never replayed; a saved terminal result can be delivered through the original native continuation. Automatic cancellation must produce a terminal result, not another input round. This does not grant permission to execute an expired child.
+
+
+### Demand-driven control planes
+
+A control plane may authorize a separate credential-bound wake subscription in
+the connection-token response. The runner requests this optional capability via
+`demand_supported`. P2A supplies a metadata-only Convex subscription; hashes are
+scoped to wake hints and cannot mint connection tokens or claim commands. When
+this channel works, five minutes without commands or active work closes the HCP
+socket and suppresses reconnect. Cached warm sessions remain local. Active turns,
+reviews, native work and uncertain closure keep transport online. Workflow demand
+or an explicit settings refresh reconnects and rediscovers capabilities; losing
+the wake channel reconnects as a fail-safe. Control planes without this optional
+response retain persistent transport. Fly machine lifecycle is owned by the
+control plane deployment, not this runner.
+
+Deploy control-plane support before distributing this runner build. Local
+validation of demand transport does not certify production Fly sleep/wake.

@@ -19,11 +19,11 @@ import {claudePermissionMode, claudeRejectsUnapprovedPermissions} from "./claude
 import {claudeElicitation} from "./claude-elicitation.js";
 import {hasInheritedClaudePlugins} from "./claude-inventory.js";
 import {claudeContextCapacity} from "./claude-context.js";
-import {claudeEffortControl, claudeBooleanOptions} from "./claude-effort.js";
+import {claudeEffortControl, claudeBooleanOptions, confirmClaudeDirectories, confirmClaudeModel} from "./claude-effort.js";
 import {claudeResultSchema, type ClaudeQueryFactory} from "./claude-runtime.js";
 import {NativeProcess} from "./native-process.js";
 import {adapterMcpServers, assertCliMcpAttachmentProxied, nativeInstructions} from "./shared.js";
-import {selectedEffort} from "./native-turn.js";
+import {claudeNativeModel, selectedEffort} from "./native-turn.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {claudeRateLimitObservation} from "./claude-rate-limits.js";
@@ -68,6 +68,8 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
   #policyProof: {mode: NonNullable<Options["permissionMode"]>; resolve: () => void; reject: (failure: unknown) => void; observed_at?: string} | undefined;
   #mcpConfigurations: NonNullable<Options["mcpServers"]> = {};
   #mcpReady = false;
+  /** Canonical roots authorized by the runner; immutable for this owner. */
+  get #directories(): string[] {return this.start.payload.sandbox_options?.writable_roots?.map(root => root.path) ?? [];}
   #policyControl = false;
   #runPreparing = false;
   readonly #allowsBypass: boolean;
@@ -155,6 +157,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     try {
       this.#open();
       await bounded(this.#stream!.initializationResult());
+      await this.#confirmOpenedSettings();
       const desired = this.#permissionMode("execute");
       // A no-op control may have no status frame. Establish an observed opposite
       // state, then restore the requested state before any user input is offered.
@@ -169,8 +172,37 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       return {source: "native", execution_profile: "interactive", approval_policy: this.start.payload.approval_policy,
         ...(this.start.payload.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto" as const} : {}),
         ...(this.start.payload.approval_options ? {approval_options: structuredClone(this.start.payload.approval_options)} : {}),
+        ...(this.start.payload.sandbox_options ? {sandbox_options: structuredClone(this.start.payload.sandbox_options)} : {}),
         sandbox_mode: "danger_full_access"};
     } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
+  }
+  /**
+   * Opens the owner before any input to prove the additional permitted
+   * directories, then registers selected MCP servers as the first turn would.
+   */
+  async confirmDirectories(): Promise<import("@harness-control/protocol").HarnessNativePolicyReadback> {
+    if (!this.#directories.length || this.#stream || this.#lost)
+      throw error("native_configuration_transition_unsupported", "Directory confirmation requires a fresh owner with selected directories.");
+    this.#selection = this.start.payload.model_selection; this.#mode = "execute";
+    try {
+      this.#open();
+      await bounded(this.#stream!.initializationResult());
+      await this.#confirmOpenedSettings();
+      if (!this.#mcpReady) {
+        await bounded(initializeClaudeMcp(this.#stream!, this.#mcpConfigurations));
+        this.#mcpReady = true;
+      }
+      if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The native owner was lost during directory confirmation.");
+      return {source: "native", execution_profile: "interactive", approval_policy: this.start.payload.approval_policy,
+        ...(this.start.payload.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto" as const} : {}),
+        sandbox_options: structuredClone(this.start.payload.sandbox_options!), sandbox_mode: "danger_full_access"};
+    } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
+  }
+  /** Readback for settings bound when the native owner opens. */
+  async #confirmOpenedSettings(): Promise<void> {
+    if (this.#directories.length) await bounded(confirmClaudeDirectories(this.#stream!, this.#directories));
+    if (this.#selection?.options?.some(option => option.id === "contextWindow"))
+      await bounded(confirmClaudeModel(this.#stream!, claudeNativeModel(this.#selection!)));
   }
   respondApproval(response: Parameters<HarnessNativeInteractions["respondApproval"]>[0]): void {
     const root = [...this.#roots].find(root => root.interactions.owns(response.request_id));
@@ -292,7 +324,12 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       const changeEffort = JSON.stringify(selection.options ?? []) !== JSON.stringify(this.#selection.options ?? []) || Object.keys(booleans).length
         ? claudeEffortControl(this.#stream!, selectedEffort(selection, "claude"), booleans, claudeBooleanOptions(this.#selection)) : undefined;
       try {
-        if (selection.model !== this.#selection.model) await bounded(this.#stream!.setModel(selection.model));
+        if (claudeNativeModel(selection) !== claudeNativeModel(this.#selection)) {
+          await bounded(this.#stream!.setModel(claudeNativeModel(selection)));
+          // The context window is a model suffix, so only a window selection needs model readback.
+          if ([selection, this.#selection].some(item => item.options?.some(option => option.id === "contextWindow")))
+            await bounded(confirmClaudeModel(this.#stream!, claudeNativeModel(selection)));
+        }
         if (changeEffort) effectiveOptions = await bounded(changeEffort());
         if (mode !== this.#mode) await this.#confirmPermissionMode(this.#permissionMode(mode));
       } catch (failure) {this.#lose("transport_lost", failure); throw failure;}
@@ -316,6 +353,10 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
         source: {type: "base64" as const, media_type: image.mime_type, data: image.data_base64}}))];
       if (!this.#stream) try {
         this.#open();
+        if (this.#directories.length || selection.options?.some(option => option.id === "contextWindow")) {
+          await bounded(this.#stream!.initializationResult());
+          await this.#confirmOpenedSettings();
+        }
         if (!this.#mcpReady) {
           await bounded(this.#stream!.initializationResult());
           await bounded(initializeClaudeMcp(this.#stream!, this.#mcpConfigurations));
@@ -381,10 +422,12 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
     const effort = selectedEffort(this.#selection!, "claude") as Options["effort"];
     this.#stream = this.factory({prompt: this.#channel, options: {
       pathToClaudeCodeExecutable: this.start.provider.executable_path ?? "claude", cwd: this.start.payload.cwd,
-      model: this.#selection!.model, ...(effort ? {effort} : {}),
+      model: claudeNativeModel(this.#selection!), ...(effort ? {effort} : {}),
       env: {...process.env, ...this.start.provider.env, ...(this.start.provider.home ? {CLAUDE_CONFIG_DIR: this.start.provider.home} : {})},
       systemPrompt: typeof this.start.payload.instructions === "string" ? {type: "preset", preset: "claude_code", append: this.start.payload.instructions}
-        : nativeInstructions(this.start.payload).system ?? {type: "preset", preset: "claude_code"}, settingSources: [], settings: {disableAllHooks: true},
+        : nativeInstructions(this.start.payload).system ?? {type: "preset", preset: "claude_code"}, settingSources: [], settings: {disableAllHooks: true,
+        // Session-scoped permission directories; confirmed through settings readback before use.
+        ...(this.#directories.length ? {permissions: {additionalDirectories: [...this.#directories]}} : {})},
       persistSession: true, ...(this.start.nativeConversation && !this.start.nativeConversation.fresh ? {resume: this.nativeId} : {sessionId: this.nativeId}),
       // This owner exposes stopTask through HCP work cancellation. Without this declaration,
       // native interrupt also kills independent background tasks on an open input stream.

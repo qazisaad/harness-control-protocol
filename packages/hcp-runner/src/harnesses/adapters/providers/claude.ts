@@ -221,7 +221,8 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
       if (this.#persistent.has(input.payload.session_id)) throw new HarnessAdapterError("session_exists", "The interactive Claude session already has a native owner.");
       const runtime = new PersistentClaudeSession(input, this.#queryFactory);
       this.#persistent.set(input.payload.session_id, runtime);
-      const native_policy_readback = input.payload.conversation_transition || input.payload.approval_reviewer === "native_auto" || input.payload.approval_options ? await runtime.confirmIdlePolicy() : undefined;
+      const native_policy_readback = input.payload.conversation_transition || input.payload.approval_reviewer === "native_auto" || input.payload.approval_options ? await runtime.confirmIdlePolicy()
+        : input.payload.sandbox_options ? await runtime.confirmDirectories() : undefined;
       return {adapter_session_id: input.payload.session_id, native_thread_id: runtime.nativeId,
         ...(runtime.nativeCatalogReadback ? {native_mcp_catalog_readback: runtime.nativeCatalogReadback} : {}),
         ...(native_policy_readback ? {native_policy_readback} : {})};

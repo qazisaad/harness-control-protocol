@@ -1,0 +1,89 @@
+{
+  "id": "workspace-git-unknown-field",
+  "type": "host.capabilities.updated",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00.000Z",
+  "payload": {
+    "providers": [
+      {
+        "provider_instance_id": "claude-local",
+        "driver_kind": "claude",
+        "enabled": true,
+        "installed": true,
+        "status": "ready",
+        "availability": "available",
+        "models": [
+          {
+            "id": "opus",
+            "label": "Opus",
+            "capabilities": {
+              "option_descriptors": [
+                {
+                  "id": "contextWindow",
+                  "label": "Context window",
+                  "type": "select",
+                  "default_value": "default",
+                  "values": [
+                    {
+                      "value": "default",
+                      "label": "Default"
+                    },
+                    {
+                      "value": "1m",
+                      "label": "1M"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "execution_capabilities": {
+          "streaming": true,
+          "multi_turn": true,
+          "session_continuation": true,
+          "execution_profiles": [
+            {
+              "id": "interactive",
+              "runtime_lifetime": "session",
+              "native_work": true,
+              "session_events": true,
+              "root_settings_readback": true,
+              "sandbox_options": [
+                "writable_roots"
+              ],
+              "writable_roots_enforcement": "native_permissions"
+            }
+          ],
+          "sandbox_modes": [
+            "danger_full_access"
+          ],
+          "approval_policies": [
+            "ask",
+            "auto_edits",
+            "full_access"
+          ]
+        }
+      }
+    ],
+    "local_capabilities": [],
+    "workspaces": [
+      {
+        "id": "repo",
+        "path": "/home/user/code/repo",
+        "git": {
+          "remote": "https://github.com/acme/repo.git",
+          "root_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "branch": "main",
+          "head_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "dirty": false,
+          "token": "secret"
+        }
+      },
+      {
+        "id": "scratch",
+        "path": "/home/user/scratch"
+      }
+    ]
+  }
+}

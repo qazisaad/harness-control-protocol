@@ -74,3 +74,39 @@ export function claudeEffortControl(stream: Query, requested: string | undefined
       ...(Object.keys(actual).length ? {booleans: actual} : {})};
   };
 }
+
+type SettingsReader = {getSettings(): Promise<unknown>};
+const appliedModelSchema = z.object({applied: z.object({model: z.string().min(1).max(512)})});
+const directoriesSchema = z.object({sources: z.array(z.object({source: z.string(), settings: z.record(z.string(), z.unknown())})),
+  effective: z.object({permissions: z.object({additionalDirectories: z.array(z.string()).optional()}).optional()}).optional()});
+
+function settingsReader(stream: Query): SettingsReader {
+  const candidate = stream as unknown as Partial<SettingsReader>;
+  if (typeof candidate.getSettings !== "function")
+    throw new HarnessAdapterError("native_option_transition_unsupported", "The Claude runtime does not expose effective-settings readback.");
+  return candidate as SettingsReader;
+}
+
+/** Confirms the effective native model, including whether its 1M context suffix is applied. */
+export async function confirmClaudeModel(stream: Query, nativeModel: string): Promise<string> {
+  const observed = appliedModelSchema.safeParse(await settingsReader(stream).getSettings());
+  const wantsLong = /\[1m\]$/i.test(nativeModel);
+  if (!observed.success || /\[1m\]$/i.test(observed.data.applied.model) !== wantsLong)
+    throw new HarnessAdapterError("native_settings_mismatch", "Claude did not confirm the requested model context window.");
+  return observed.data.applied.model;
+}
+
+/**
+ * Confirms the session-scoped permission directories from the single flag
+ * settings layer and the effective settings. Paths must already be canonical.
+ */
+export async function confirmClaudeDirectories(stream: Query, directories: string[]): Promise<void> {
+  const observed = directoriesSchema.safeParse(await settingsReader(stream).getSettings());
+  const flags = observed.success ? observed.data.sources.filter(source => source.source === "flagSettings") : [];
+  const declared = z.object({permissions: z.object({additionalDirectories: z.array(z.string())})}).safeParse(flags[0]?.settings);
+  const expected = [...directories].sort();
+  const effective = observed.success ? observed.data.effective?.permissions?.additionalDirectories ?? [] : [];
+  if (flags.length !== 1 || !declared.success || JSON.stringify([...declared.data.permissions.additionalDirectories].sort()) !== JSON.stringify(expected)
+    || !expected.every(directory => effective.includes(directory)))
+    throw new HarnessAdapterError("policy_mismatch", "Claude did not confirm the exact additional permitted directories.");
+}
