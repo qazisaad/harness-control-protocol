@@ -28,6 +28,7 @@ import {measuredContext, unavailableContext} from "./native-context.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {claudeRateLimitObservation} from "./claude-rate-limits.js";
 import {detachClaudeMcp, initializeClaudeMcp} from "./claude-mcp-controls.js";
+import {claudeSandboxOptions, confirmClaudeSandbox} from "./claude-sandbox.js";
 
 type Root = {input: HarnessAdapterTurnInput; emit: (event: HarnessAdapterEvent) => void; ids: Set<string>; admissions: Map<string, string>;
   interactions: NativeInteractions; lifetime: AbortController; context: HarnessContextUsage; nativeModel?: string; streamed: boolean; compacted: boolean;
@@ -134,7 +135,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       if (!this.#policyIdle()) throw error("native_policy_unknown", "The native owner ceased to be idle during policy confirmation.");
       const readback: import("@harness-control/protocol").HarnessNativePolicyReadback = {source: "native", execution_profile: "interactive",
         approval_policy: next.approval_policy, ...(next.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto"} : {}),
-        ...(next.approval_options ? {approval_options: structuredClone(next.approval_options)} : {}), sandbox_mode: "danger_full_access"};
+        ...(next.approval_options ? {approval_options: structuredClone(next.approval_options)} : {}), sandbox_mode: this.start.payload.sandbox_mode};
       input.commit(structuredClone(readback), confirmation);
       this.start.payload = next;
       this.#mode = "execute";
@@ -173,7 +174,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
         ...(this.start.payload.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto" as const} : {}),
         ...(this.start.payload.approval_options ? {approval_options: structuredClone(this.start.payload.approval_options)} : {}),
         ...(this.start.payload.sandbox_options ? {sandbox_options: structuredClone(this.start.payload.sandbox_options)} : {}),
-        sandbox_mode: "danger_full_access"};
+        sandbox_mode: this.start.payload.sandbox_mode};
     } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
   }
   /**
@@ -195,11 +196,12 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       if (this.#lost || this.#stopping) throw error("native_owner_unavailable", "The native owner was lost during directory confirmation.");
       return {source: "native", execution_profile: "interactive", approval_policy: this.start.payload.approval_policy,
         ...(this.start.payload.approval_reviewer === "native_auto" ? {approval_reviewer: "native_auto" as const} : {}),
-        sandbox_options: structuredClone(this.start.payload.sandbox_options!), sandbox_mode: "danger_full_access"};
+        sandbox_options: structuredClone(this.start.payload.sandbox_options!), sandbox_mode: this.start.payload.sandbox_mode};
     } catch (failure) {this.#lose("runtime_error", failure); throw failure;}
   }
   /** Readback for settings bound when the native owner opens. */
   async #confirmOpenedSettings(): Promise<void> {
+    await bounded(confirmClaudeSandbox(this.#stream!, this.start.payload));
     if (this.#directories.length) await bounded(confirmClaudeDirectories(this.#stream!, this.#directories));
     if (this.#selection?.options?.some(option => option.id === "contextWindow"))
       await bounded(confirmClaudeModel(this.#stream!, claudeNativeModel(this.#selection!)));
@@ -353,7 +355,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
         source: {type: "base64" as const, media_type: image.mime_type, data: image.data_base64}}))];
       if (!this.#stream) try {
         this.#open();
-        if (this.#directories.length || selection.options?.some(option => option.id === "contextWindow")) {
+        if (this.start.payload.sandbox_mode !== "danger_full_access" || this.#directories.length || selection.options?.some(option => option.id === "contextWindow")) {
           await bounded(this.#stream!.initializationResult());
           await this.#confirmOpenedSettings();
         }
@@ -434,6 +436,7 @@ export class PersistentClaudeSession implements HarnessNativeInteractions {
       perTaskStopAffordance: true,
       // CLI-flag MCP servers are not removed by setMcpServers. Register selected
       // servers through the dynamic control, with readback, before offering input.
+      ...claudeSandboxOptions(this.start.payload),
       ...claudeToolSelectionOptions(this.start.payload.tool_selection),
       includePartialMessages: true, strictMcpConfig: true, mcpServers: {}, permissionMode: this.#permissionMode(this.#mode!),
       allowDangerouslySkipPermissions: this.#allowsBypass,

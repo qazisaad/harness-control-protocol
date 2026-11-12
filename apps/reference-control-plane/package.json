@@ -1,0 +1,29 @@
+{
+  "name": "@harness-control/reference-control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Small, readable HCP control plane: pairing, tokens, revocation and one turn, backed by SQLite.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "check": "tsc -b --pretty false",
+    "start": "tsx src/index.ts",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@harness-control/protocol": "0.5.3",
+    "@harness-control/sdk": "0.5.3",
+    "ws": "^8.21.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@harness-control/runner": "0.5.3",
+    "@types/ws": "^8.18.1"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

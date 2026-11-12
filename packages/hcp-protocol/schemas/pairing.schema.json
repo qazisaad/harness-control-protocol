@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness-control.local/hcp.v0/pairing.schema.json",
+  "title": "HCP pairing and connection-token HTTP contract",
+  "description": "Request and response bodies for the control-plane HTTP endpoints a runner calls before it opens a WebSocket. Paths are rooted at the control-plane origin.",
+  "x-hcp-endpoints": [
+    {
+      "method": "POST",
+      "path": "/pairing-codes",
+      "request": "PairingCreateRequest",
+      "response": "PairingCodeResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/pairing-exchange",
+      "request": "PairingExchangeRequest",
+      "response": "PairingExchangeResponse"
+    },
+    {
+      "method": "POST",
+      "path": "/runner-connection-token",
+      "request": "ConnectionTokenRequest",
+      "response": "ConnectionTokenResponse"
+    }
+  ],
+  "$defs": {
+    "PairingCreateRequest": {
+      "type": "object",
+      "properties": {
+        "runner_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "host_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "protocol_version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "exchange_secret_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "runner_id",
+        "host_id",
+        "protocol_version",
+        "exchange_secret_hash"
+      ],
+      "additionalProperties": false,
+      "title": "PairingCreateRequest"
+    },
+    "PairingCodeResponse": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pairing_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pairing_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "poll_interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        }
+      },
+      "required": [
+        "request_id",
+        "pairing_code",
+        "pairing_url",
+        "expires_at",
+        "poll_interval_seconds"
+      ],
+      "additionalProperties": false,
+      "title": "PairingCodeResponse"
+    },
+    "PairingExchangeRequest": {
+      "type": "object",
+      "properties": {
+        "runner_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "host_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "protocol_version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exchange_secret": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "runner_id",
+        "host_id",
+        "protocol_version",
+        "request_id",
+        "exchange_secret"
+      ],
+      "additionalProperties": false,
+      "title": "PairingExchangeRequest"
+    },
+    "PairingExchangeResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "pending"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "approved"
+            },
+            "control_plane_url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "credential": {
+              "type": "object",
+              "properties": {
+                "credential_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "credential_secret": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "runner_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "host_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "control_plane_url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "issued_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "mcp_proof_secret": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "credential_id",
+                "credential_secret",
+                "runner_id",
+                "host_id",
+                "control_plane_url",
+                "issued_at",
+                "mcp_proof_secret"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "status",
+            "control_plane_url",
+            "credential"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "title": "PairingExchangeResponse"
+    },
+    "RunnerCredential": {
+      "type": "object",
+      "properties": {
+        "credential_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "credential_secret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runner_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "control_plane_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "mcp_proof_secret": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "credential_id",
+        "credential_secret",
+        "runner_id",
+        "host_id",
+        "control_plane_url",
+        "issued_at",
+        "mcp_proof_secret"
+      ],
+      "additionalProperties": false,
+      "title": "RunnerCredential"
+    },
+    "ConnectionTokenRequest": {
+      "type": "object",
+      "properties": {
+        "runner_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "host_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "protocol_version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "demand_supported": {
+          "type": "boolean"
+        },
+        "protocol_schema_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "credential_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "credential_secret": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "runner_id",
+        "host_id",
+        "protocol_version",
+        "protocol_schema_sha256",
+        "credential_id",
+        "credential_secret"
+      ],
+      "additionalProperties": false,
+      "title": "ConnectionTokenRequest"
+    },
+    "ConnectionTokenResponse": {
+      "type": "object",
+      "properties": {
+        "demand": {
+          "type": "object",
+          "properties": {
+            "convex_url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "query_name": {
+              "type": "string",
+              "const": "hcp:runnerDemand"
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            }
+          },
+          "required": [
+            "convex_url",
+            "query_name",
+            "idle_seconds"
+          ],
+          "additionalProperties": false
+        },
+        "connection_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        }
+      },
+      "required": [
+        "connection_token",
+        "expires_at"
+      ],
+      "additionalProperties": false,
+      "title": "ConnectionTokenResponse"
+    }
+  }
+}

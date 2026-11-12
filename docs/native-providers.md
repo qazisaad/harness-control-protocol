@@ -1,37 +1,132 @@
 # Native provider support
 
+For adopters choosing a provider and execution profile: what each built-in runner adapter declares it supports, and how it behaves.
+
+## Support matrix
+
+<!-- generated:provider-matrix:start -->
+<!-- Generated from the runner's capability declarations by `npm run docs:providers`. Do not edit by hand. -->
+
+### Versions
+
+| Provider | Probe reports ready for | Execution profiles published for | Other ready versions publish |
+| --- | --- | --- | --- |
+| Codex | any (authenticated) | `codex-cli 0.160.0`, `codex-cli 0.160.1`, `codex-cli 0.161.0` | same, without `execution_profiles` |
+| Claude | any (authenticated) | any | no version gate |
+| OpenCode | `1.3.15`+ within major version 1 | `1.18.34` | same, without `configuration_inheritance_options`, `execution_profiles` |
+
+### Provider capabilities
+
+| Capability | Codex | Claude | OpenCode |
+| --- | --- | --- | --- |
+| `context_usage` | yes | yes | yes |
+| `portable_history` | yes | yes | yes |
+| `instruction_roles` | `system`, `developer` | `system` | `system` |
+| `configuration_inheritance_options` | — | — | user_settings: no; project_settings: no; hooks: no; mcp_servers: no; plugins: no |
+| `configuration_inheritance` | mcp_servers: no; plugins: no | user_settings: no; project_settings: no; hooks: no; mcp_servers: no; plugins: no | user_settings: yes; project_settings: yes; hooks: yes; mcp_servers: yes; plugins: yes |
+| `streaming` | yes | yes | yes |
+| `multi_turn` | yes | yes | yes |
+| `session_continuation` | yes | yes | yes |
+| `plan_mode` | yes | yes | yes |
+| `native_history` | yes | yes | yes |
+| `empty_conversation` | — | — | yes |
+| `file_inputs` | delivery: `file_context`; max_bytes: 50 MiB; max_files: 100 | delivery: `file_context`; max_bytes: 50 MiB; max_files: 100 | delivery: `file_context`; max_bytes: 50 MiB; max_files: 100 |
+| `owned_image_inputs` | max_bytes: 10 MiB; max_images: 100; max_total_bytes: 80 MiB; mime_types: `image/gif`, `image/jpeg`, `image/png`, `image/webp` | max_bytes: 10 MiB; max_images: 100; max_total_bytes: 80 MiB; mime_types: `image/gif`, `image/jpeg`, `image/png`, `image/webp` | max_bytes: 10 MiB; max_images: 100; max_total_bytes: 80 MiB; mime_types: `image/gif`, `image/jpeg`, `image/png`, `image/webp` |
+| `prompt_context` | yes | yes | yes |
+| `live_history_read` | yes | yes | yes |
+| `native_history_injection` | yes | no | no |
+| `history_pagination` | yes | yes | yes |
+| `conversation_rollback` | yes | yes | yes |
+| `conversation_fork` | yes | yes | yes |
+| `active_steering` | yes | yes | — |
+| `manual_compaction` | yes | yes | yes |
+| `content_retrieval` | yes | yes | yes |
+| `sandbox_modes` | `read_only`, `workspace_write`, `danger_full_access` | `read_only`, `workspace_write`, `danger_full_access` | `danger_full_access` |
+| `approval_policies` | `ask`, `auto_edits`, `full_access` | `ask`, `auto_edits`, `full_access` | `ask`, `auto_edits`, `full_access` |
+
+### Execution profiles
+
+| Profile capability | Codex `isolated` | Codex `interactive` | Claude `isolated` | Claude `interactive` | OpenCode `isolated` | OpenCode `interactive` | OpenCode `background` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `runtime_lifetime` | `turn` | `session` | `turn` | `session` | `session` | `session` | `session` |
+| `native_work` | no | yes | no | yes | no | no | yes |
+| `session_events` | no | yes | no | yes | no | no | yes |
+| `required_configuration_inheritance` | — | — | — | — | — | — | user_settings: no; project_settings: no; hooks: no; mcp_servers: no; plugins: no |
+| `native_owner_closure` | — | `owned_session` | — | `owned_session` | — | `owned_session` | `owned_session` |
+| `mcp_attachments` | — | yes | — | yes | — | yes | yes |
+| `empty_conversation` | — | yes | — | — | — | yes | — |
+| `root_settings_readback` | — | yes | — | yes | — | yes | yes |
+| `native_tool_selection` | — | — | — | scope: `root_builtins`; tools: `Read`, `Glob`, `Grep`, `TodoWrite` | — | — | — |
+| `approval_prompt_filter` | — | yes | — | — | — | — | — |
+| `native_permission_prompting` | — | — | — | `reject_unapproved` | — | — | — |
+| `native_permission_rules` | — | — | — | — | — | scope: `root`; matching: `ordered_glob`; permissions: `*`, `bash`, `edit`, `question`, `task`, `read`, `glob`, `grep`, `list`, `lsp`, `todowrite`, `todoread`, `skill`, `webfetch`, `websearch`, `codesearch`, `external_directory`, `doom_loop` | scope: `root_and_children`; matching: `ordered_glob`; permissions: `*`, `bash`, `edit`, `question`, `task`, `read`, `glob`, `grep`, `list`, `lsp`, `todowrite`, `todoread`, `skill`, `webfetch`, `websearch`, `codesearch`, `external_directory`, `doom_loop` |
+| `native_plan_proposals` | — | yes | — | — | — | — | — |
+| `native_plan_proposal_observations` | — | — | — | `tool_input` | — | — | — |
+| `native_reasoning_segments` | — | yes | — | — | — | — | — |
+| `native_plan_observations` | — | `snapshot` | — | `tool_input` | — | `snapshot` | `snapshot` |
+| `sandbox_options` | — | `network_access`, `writable_roots` | — | `writable_roots` | — | — | — |
+| `writable_roots_enforcement` | — | `os_sandbox` | — | `native_permissions` | — | — | — |
+| `native_approval_review` | — | yes | — | yes | — | — | — |
+| `native_approval_feedback` | — | — | — | `rejection` | — | — | — |
+| `native_goals` | — | yes | — | — | — | — | — |
+| `native_execution_outcomes` | — | yes | — | yes | — | — | — |
+| `native_goal_observations` | — | — | — | `native_transcript` | — | — | — |
+| `native_work_history` | — | `live_owner` | — | `live_owner` | — | — | `live_owner` |
+| `retained_native_work_history` | — | yes | — | yes | — | — | yes |
+| `native_work_fork` | — | yes | — | — | — | — | yes |
+| `native_work_terminal_reconciliation` | — | yes | — | — | — | — | — |
+| `idle_configuration_transition` | — | yes | — | yes | — | yes | — |
+| `native_policy_control` | — | — | — | `idle_native_owner` | — | — | — |
+| `idle_mcp_catalog_transition` | — | — | — | yes | — | yes | — |
+| `native_feedback` | — | owner: `live_conversation`; classifications: `bug`; diagnostics: yes | — | — | — | — | — |
+| `account_limit_observations` | — | — | — | `native_session` | — | — | — |
+| `native_async_output` | — | — | — | `session` | — | — | — |
+| `native_retry_observations` | — | — | — | `session` | — | — | — |
+| `mcp_detach` | — | — | — | `idle_session` | — | — | — |
+| `root_interrupt_effect` | — | `root_only` | — | `root_only` | — | `owned_work` | `owned_work` |
+<!-- generated:provider-matrix:end -->
+
+How to read it:
+
+- Values come from the runner's own capability declarations. A ready probe publishes them in the provider snapshot's `execution_capabilities`. Field names match the protocol schema.
+- `yes` and `no` are declared values. `—` means the field is not declared. Treat it as unknown, never as supported.
+- Provider capabilities apply to every profile. A profile column applies only when a session selects that `execution_profile`. The default profile is `isolated`. An explicitly selected undeclared profile fails before launch.
+- Outside the listed profile versions the probe publishes no profiles. Codex and OpenCode then run only their default behavior.
+- Authorize work from the snapshot your runner sends, not from this page or from a field existing in the protocol. An omitted `execution_capabilities` object means unknown support. Model descriptors advertise image input separately.
+- This page shows what the code declares. It does not certify an installed provider version. Live evidence is in the [verification record](#verification-record).
+- Regenerate the matrix with `npm run docs:providers`. `npm run docs:providers -- --check` fails when it is stale; the runner test suite runs the same check.
+
+## Release status
+
 Current checkpoint: the coordinated unpublished 0.5.0 release gate passes **1,052 tests**, three opt-in skips and **259 corpus cases** (122 valid, 137 invalid). All three independently packed packages match the gated artifacts byte for byte. The private T3 consumer passes **109 pure checks**, scoped types and fresh Codex, Claude and controlled anonymous OpenCode factory acceptance against these final packages. OpenCode factory acceptance includes root fork, populated destination history, rollback to thread start and subsequent resume. Claude includes restoration in a new application session. Active T3 adapters have not been switched and no package has been published.
 
 The tested generic HCP migration checkpoint covers the verified provider profiles and operation inventory; it is not a complete inventory of every native provider feature. Provider transport, native ownership, execution and child custody, supported conversation controls, callbacks, MCP, media/history hydration and native evidence are available through public packages. Remaining T3 work is application-owned production wiring, persistence and DTO/UI projection. Capability limits and refused or unknown native outcomes remain explicit; this is not a universal native-version, account or remote-service certification. Historical counts and excluded probes below retain their original evidence boundaries.
 
-Current integration and remaining work: [generic harness migration handoff](harness-migration-handoff.md). The dated acceptance entries below are historical evidence; statements that the feature branch was unpushed describe those checkpoints. Integrating source into main does not publish new npm packages or complete the T3 replacement.
-
-The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`. This replaces completion-only CLI output parsing. HCP still owns command receipts, session events, replay, and snapshots; provider runtimes own native execution. An ACP bridge is not included.
+Current integration and remaining work: [generic harness migration handoff](maintainers/harness-migration-handoff.md). The dated acceptance entries below are historical evidence; statements that the feature branch was unpushed describe those checkpoints. Integrating source into main does not publish new npm packages or complete the T3 replacement.
 
 ## Supported contract
 
-Codex's interactive profile is verified against `codex-cli 0.160.0`. It initializes one transport and starts/resumes its native thread once per loaded HCP session. Root cancellation sends `turn/interrupt` for that owner's admitted native turn; only an observed interrupted terminal preserves the owner. Failed cancellation, policy/reviewer mismatch and provider death close or fence the transport. It requires the native `user` approval reviewer. Other versions retain the isolated profile. The verified interactive profile owns native child agents after root completion, including late progress, approvals/input, cancellation and terminal shutdown proof. Unknown child membership, autonomous roots and an unclosed root on process death fence unload.
+The runner uses Codex app-server over local stdio and Claude Agent SDK `0.3.267`. This replaces completion-only CLI output parsing. HCP still owns command receipts, session events, replay, and snapshots; provider runtimes own native execution. An ACP bridge is not included.
 
-This table describes the current source implementation. The verification record below describes historical live runs; it does not certify every current operation or installed provider version.
+Codex's `interactive` profile initializes one transport and starts/resumes its native thread once per loaded HCP session. Root cancellation sends `turn/interrupt` for that owner's admitted native turn; only an observed interrupted terminal preserves the owner. Failed cancellation, policy/reviewer mismatch and provider death close or fence the transport. Other Codex versions publish no execution profiles, so sessions run under the default `isolated` profile. The approval reviewer is `user` by default; `native_auto` uses the native auto-reviewer. The interactive profile owns native child agents after root completion, including late progress, approvals/input, cancellation and terminal shutdown proof. Unknown child membership, autonomous roots and an unclosed root on process death fence unload.
 
-| Behavior | Codex | Claude | OpenCode |
+This table describes how each adapter implements its declared capabilities. Support itself is in the matrix above; `—` marks a capability the provider does not declare.
+
+| Mechanism | Codex | Claude | OpenCode |
 | --- | --- | --- | --- |
-| Execution | Default process per turn; verified 0.160.0 interactive profile retains one session-owned app-server transport | Default isolated query per turn; explicit interactive profile retains one session-owned query and pump | OpenCode 1.3.15+ HTTP/SSE within major version 1 |
+| Execution | `isolated`: process per turn; `interactive`: one session-owned app-server transport | `isolated`: query per turn; `interactive`: one session-owned query and pump | Owned HTTP/SSE server |
 | Text/reasoning streaming | Native delta notifications | SDK partial messages | Text/reasoning SSE deltas |
 | Tool activity | Items, commands/output, file changes, plan/diff updates | Tool-use/result item lifecycle | Tool arguments/output/errors and todo updates |
 | Final output | Successful native terminal plus final assistant item required | Successful typed result required | Message response plus session-idle event |
 | Usage | Native conversation token totals, explicitly scoped | Isolated turn totals; interactive query conversation totals, including cache counts and reported cost | Owned root-prompt step totals, with duplicate/order handling and uncertainty |
 | Context measurements | Latest native request counters and reported model capacity, separate from conversation totals | Latest root-request counters and compaction post-token counts; capacity only from the actual root model's native usage entry | Final owned prompt response's last-request counters; validated model/variant; capacity from the matching connected native model catalog |
-| Sandbox | `read_only`, `workspace_write`, `danger_full_access` | `danger_full_access` only | `danger_full_access` only; no filesystem containment |
 | Approval policy | `ask` -> `untrusted`, `auto_edits` -> `on-request`, `full_access` -> `never` | `ask` -> `default`, `auto_edits` -> `acceptEdits`, `full_access` -> `bypassPermissions` | Explicit session rules for all three policies |
 | Model options | `reasoningEffort`; native model catalog | Native supported-model catalog and advertised effort levels; interactive effort updates and resets require effective native readback | Connected native model catalog, image capability and advertised variants; verified interactive/background prompts validate catalog support and confirm native model/variant observations |
 | Multi-turn and durable continuation | Retained native binding | Retained SDK session, including runner recreation | Retained directory-bound session, including runner recreation |
-| Empty native conversation before first prompt | Verified interactive profile creates, materializes and retains an empty thread before a root prompt | Not advertised | Confirmed native session creation and durable binding; read and reopen without a model turn |
+| Empty native conversation before first prompt | `interactive` creates, materializes and retains an empty thread before a root prompt | — | Confirmed native session creation and durable binding; read and reopen without a model turn |
 | Native interactions | Command/file approvals and blocking structured questions; accept/decline/cancel | Isolated root callbacks; interactive retained child callbacks and offered session-local allow rules | Permission replies once/reject; verified interactive profile also offers native session grants; blocking single/multiple-choice questions |
-| Background work | Verified 0.160.0 interactive child agents, original-root ownership, late interactions, observed progress/completion, cancellation and safe unload | Interactive native task progress, original-root ownership, cancellation acknowledgement and observed completion | Verified 1.18.34 controlled background profile; native parent/workspace binding, late interactions, child cancellation and parent continuations |
-| Plan mode and images | Supported | Supported | Supported |
-| Instruction roles | Native system/base and developer | Explicit system prompt | System prompt with admitted-message readback |
-| Steering | Native `turn/steer`, exact active-turn correlation | SDK input channel, exact active-turn correlation | Unsupported |
+| Background work | `interactive` child agents, original-root ownership, late interactions, observed progress/completion, cancellation and safe unload | `interactive` native task progress, original-root ownership, cancellation acknowledgement and observed completion | `background` profile; native parent/workspace binding, late interactions, child cancellation and parent continuations |
+| Steering | Native `turn/steer`, exact active-turn correlation | SDK input channel, exact active-turn correlation | — |
 | Manual compaction | Native compaction completion | `/compact` plus confirmed native compact boundary | Native summarize completion |
 | History, fork and conversation rollback | Read, fork, rollback and runner retirement | SDK history/fork; rollback replaces the logical binding with a verified retained-prefix copy | HTTP history/fork; rollback replaces the logical binding with a verified retained-prefix copy |
 | Portable history | Typed messages, reasoning, commands, file changes and optional extensions | Typed messages, reasoning, tool calls/results and optional extensions | Typed messages, reasoning, tool calls/results and optional extensions |
@@ -39,13 +134,11 @@ This table describes the current source implementation. The verification record 
 
 OpenCode text and tool parts are bound to the admitted prompt through their assistant message. Parts arriving before message metadata are buffered within bounded registries. Older-root updates cannot be assigned to the current app turn; duplicate tool progress is suppressed and terminal tools cannot reopen through stale updates. Generic text deltas can carry optional message and item IDs. Claude root message starts likewise establish a fresh prompt-correlation lane; autonomous wakes cannot inherit an app's lane or complete its root result.
 
-`full_access` describes approval behavior, not filesystem access. Codex workspace-write checks the returned policy and rejects extra writable roots or implicit temporary-directory writes. Claude restricted modes fail before provider execution; SDK permission modes are not treated as filesystem containment.
-
-Provider snapshots include optional `execution_capabilities`: streaming, multi-turn, continuation, Plan mode, history/rollback and supported policies. An omitted capability object means unknown support. Model descriptors separately advertise image input. Use the advertised contract, not the presence of a field or command in the protocol, to authorize execution.
+`full_access` describes approval behavior, not filesystem access. Codex workspace-write checks the returned policy and rejects extra writable roots or implicit temporary-directory writes. Claude contained modes enable its native OS shell sandbox with failure on unavailable enforcement and no unsandboxed escape. The runner confirms effective sandbox settings before input. Native Write/Edit/NotebookEdit and delegated Agent/Task tools are unavailable in contained modes because they bypass the shell sandbox; filesystem mutations use sandboxed Bash. Full access retains the native tool set. Permissions and remote MCP tools remain separate from local filesystem containment. `HCP_NATIVE_SANDBOX_TESTS=1` runs disposable-file checks through successful native Bash turns for all three modes. Claude Code itself creates an empty `.claude/.cc-writes/` directory in the working folder when it runs sandboxed Bash, including in `read_only`; the model's own writes stay blocked. OpenCode has no filesystem containment.
 
 The public adapter interface has an optional `session_events` observation channel and `registerSessionInteractions` callback, tested by the independent packaged consumer. A registered native owner can publish and settle interactions after root completion. Turn-owned requests retain an admitted originating turn. Session-owned input explicitly declares `request_scope: session` and cannot claim a turn, including in the event envelope. Both require an exact session/request owner; these hooks cannot publish new root turns. Lost native callbacks publish `native.request.lost` and cannot be recreated by transport replay.
 
-`execution_profile` defaults to `isolated`. Provider `execution_profiles` describes each supported profile's runtime lifetime, work ownership and session observations; profile-specific declarations apply to the selected profile. An explicitly selected undeclared profile fails before launch. Profile IDs are bounded driver-declared identities; apps use their discovered capabilities and explicit configuration requirements. Profile choice participates in durable continuation binding, so an interactive session cannot silently resume under isolated authority.
+Profile IDs are bounded driver-declared identities; apps use their discovered capabilities and explicit configuration requirements. Profile choice participates in durable continuation binding, so an interactive session cannot silently resume under isolated authority.
 
 OpenCode's `background` profile uses the pinned 1.18.34 experimental native task capability and one retained SSE observer. It verifies native parent sessions, admitted prompts and workspace identity before adopting child execution. Completion notifications create separate parent continuation work with the original job owner; a new user root waits until that continuation ends. Child cancellation requires an acknowledgement and native aborted completion. Root interruption cancels descendants, as reported by `root_interrupt_effect: owned_work`. Unconfirmed membership, callback origins or shutdown closure fence the owner.
 
@@ -71,7 +164,7 @@ OpenCode defaults to native configuration inheritance. Verified version `1.18.34
 
 OpenCode supports immutable system instructions on each normal prompt, with native admitted-message readback before successful completion. Its native system field appends instructions to the selected agent's base prompt; it does not replace that base prompt. Developer instructions remain unsupported. Compaction uses the native summarize endpoint; subsequent normal prompts retain the configured instructions.
 
-OpenCode `1.18.34` offers interactive and controlled background profiles with continuous session observations. Both offer remembered permissions when a request supplies a bounded, nonempty native `always` pattern list. `accept_for_session` maps to the native `always` reply, and successful interaction replies require a boolean native acknowledgement. Grants belong to that live owner and are not copied to a new runtime, fork or restart. A lost or invalid reply acknowledgement closes the runtime and subsequent turns fail until it is unloaded/resumed, preventing reuse of uncertain native grants. The default profile still offers one-time permission replies.
+OpenCode's `interactive` and `background` profiles offer remembered permissions when a request supplies a bounded, nonempty native `always` pattern list. `accept_for_session` maps to the native `always` reply, and successful interaction replies require a boolean native acknowledgement. Grants belong to that live owner and are not copied to a new runtime, fork or restart. A lost or invalid reply acknowledgement closes the runtime and subsequent turns fail until it is unloaded/resumed, preventing reuse of uncertain native grants. The default profile still offers one-time permission replies.
 
 Interactive/background root prompts validate the selected model, variant and image capability against the owned runtime's current connected catalog before native prompt dispatch. HCP then reads the exact admitted native user message and requires the assistant response to confirm the same session, parent prompt, provider and model. Explicit variants must match; a restored native default variant must also exist in the catalog. Successful roots emit `settings.options.effective` with native provenance and root scope. Missing readback cannot become a successful turn. These per-prompt selections preserve the retained runtime and work controller; they make no policy or child-settings readback claim. Live Go tests switch from glm-5.3-flash to glm-5.3 and back while the same background child remains running, then verify completion, cancellation and safe unload. Policy/profile reconfiguration remains a separate gate.
 
@@ -81,7 +174,7 @@ Continuation requires an explicit durable `continuation_group_key` and the origi
 
 An adapter declaring `liveHistoryRead` permits history reads while its retained owner remains loaded; provider discovery advertises `live_history_read`. Reads preserve native revision checks and never unload the session or its work. Mutations and retirement still require an idle owner. A durable continuation binding is required even for live reads. Claude's persistent owner declares the SDK's per-task stop affordance because HCP exposes individual native work cancellation; otherwise the SDK can kill independent background tasks when the root is interrupted.
 
-Codex implements explicit retained-context injection with the conversation `inject` operation. It accepts bounded user/assistant text messages and the current history hash, loads the retained thread without inherited MCP/plugins, and dispatches no model turn. The runner persists a fence before `thread/inject_items` and retains up to 1,024 injection receipts per conversation. A matching duplicate returns its receipt, including after restart and later injections. Only native method-not-found confirms `unsupported` and permits a consumer-chosen fallback. Transport loss or an invalid response leaves the outcome unknown and fences repetition, other mutations, retirement and resume. No system/developer role or tool execution is accepted through this operation. Claude/OpenCode do not advertise native history injection. A Codex interactive empty conversation is materialized during startup, so it can be unloaded and supplied with initial context before its first model prompt. `HCP_LIVE_INJECT=1` extends the empty-conversation acceptance with injection, restart receipt replay and first-prompt recall.
+Codex implements explicit retained-context injection with the conversation `inject` operation. It accepts bounded user/assistant text messages and the current history hash, loads the retained thread without inherited MCP/plugins, and dispatches no model turn. The runner persists a fence before `thread/inject_items` and retains up to 1,024 injection receipts per conversation. A matching duplicate returns its receipt, including after restart and later injections. Only native method-not-found confirms `unsupported` and permits a consumer-chosen fallback. Transport loss or an invalid response leaves the outcome unknown and fences repetition, other mutations, retirement and resume. No system/developer role or tool execution is accepted through this operation. A Codex interactive empty conversation is materialized during startup, so it can be unloaded and supplied with initial context before its first model prompt. `HCP_LIVE_INJECT=1` extends the empty-conversation acceptance with injection, restart receipt replay and first-prompt recall.
 
 Every conversation rollback returns `filesystem_undo: false`. Claude/OpenCode preserve their source transcript and create a replacement native conversation containing the verified retained prefix; native IDs can change. Apps coordinate their own filesystem checkpoints. OpenCode copies and verifies the source permission rules on forks rather than relying on native inheritance.
 
@@ -89,7 +182,7 @@ OpenCode also checks retained native permission rules against the original runne
 
 Codex/Claude reject nonempty `launch_args` and unsupported/duplicate model options. Host-local executable/environment configuration remains trusted configuration, not a remote escape hatch. Codex routes supported native approval/input replies through the owning request; unhandled native requests fail honestly. Live tool-server detach remains unsupported.
 
-OpenCode probe and launch require 1.3.15+ within major version 1; unknown/older/2.x versions fail explicitly. Restricted sandboxes and unknown model options fail before dispatch. Its default inherited configuration cannot satisfy isolation requirements. The verified 1.18.34 controlled configuration option disables all five inherited sources. Native task tools remain denied in isolated/interactive profiles; the explicitly selected background profile requires controlled configuration and routes selected MCP attachments through its owned native plugin. Fixtures verify the HTTP/SSE controls, not live-provider certification. See the native [permission semantics](https://opencode.ai/docs/permissions/) and the separate [v2 contract](https://opencode.ai/v2/docs/permissions).
+OpenCode probe and launch reject unreadable versions and versions outside the supported range in the matrix. Restricted sandboxes and unknown model options fail before dispatch. Its default inherited configuration cannot satisfy isolation requirements. The verified 1.18.34 controlled configuration option disables all five inherited sources. Native task tools remain denied in isolated/interactive profiles; the explicitly selected background profile requires controlled configuration and routes selected MCP attachments through its owned native plugin. Fixtures verify the HTTP/SSE controls, not live-provider certification. See the native [permission semantics](https://opencode.ai/docs/permissions/) and the separate [v2 contract](https://opencode.ai/v2/docs/permissions).
 
 Controlled OpenCode also supports the pinned native public provider (`opencode`) without credentials. It preserves an empty native auth inventory and lets OpenCode select its anonymous catalog; it does not create an API credential. Every dispatch requires the exact connected native model and zero input, output and cache prices in the current catalog. Anonymous storage has a different binding from every API account, so removing or adding a credential cannot resume the other owner. Malformed credentials, OAuth entries, unhandled environment API credentials and other unauthenticated providers still refuse. Free model availability can change; choose a model from native discovery rather than assuming a permanent model name. `HCP_OPENCODE_ANONYMOUS_LIVE=1 node scripts/check-opencode-anonymous-live.mjs` exercises installed public SDK prompts, question/reply identity, retained history, fork, rollback and resume in private state. This is anonymous native acceptance, not proof of a paid account or remote OAuth flow.
 
@@ -109,7 +202,7 @@ Codex, Claude and OpenCode use a shared owner to decide turn termination after r
 
 Diagnostic CLI capture remains bounded at 64 KiB. Codex frames, OpenCode HTTP/SSE responses and Claude history-helper output are bounded at 8 MiB. Stream deltas and history pages are separately bounded. Large output fields carry previews and optional `content_ref`; clients fetch exact bytes with `content` operations in chunks of at most 64 KiB. The default content store retains at most 8 MiB per object, 64 MiB total, 1,024 entries and 24 hours. Expired, evicted or cross-session references fail explicitly. JSON state stores persist content beside the state file. Applications can supply another bounded content store through public runner exports.
 
-These implementations do not recover lost live native callbacks or independently detached work. Transport replay does not recreate a provider process. Persistent Codex/OpenCode work ownership, their native MCP elicitation, broader settings transitions, context injection/file attachments, remaining event/discovery fidelity and additional provider drivers remain migration gates. This source revision is not a full T3 replacement.
+These implementations do not recover lost live native callbacks or independently detached work. Transport replay does not recreate a provider process. Codex/OpenCode native MCP elicitation, broader settings transitions, native context injection beyond Codex, remaining event/discovery fidelity and additional provider drivers remain migration gates. This source revision is not a full T3 replacement.
 
 Codex permission-grant requests use the same immutable native-review owner as approvals. The current profile offers turn-scoped grants only. A restricted sandbox never offers acceptance that broadens its containment; rejected requests return an empty native grant. Session-scoped grants require a persistent interactive runtime and remain unavailable.
 

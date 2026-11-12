@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+/**
+ * HTTP paths a control plane serves for pairing and connection tokens, rooted at
+ * its origin. These are control-plane HTTP messages, separate from WebSocket envelopes.
+ */
+export const PAIRING_HTTP_PATHS = {
+  create: "/pairing-codes",
+  exchange: "/pairing-exchange",
+  connectionToken: "/runner-connection-token",
+} as const;
+
 const identity = { runner_id: z.string().min(1).max(200), host_id: z.string().min(1).max(200), protocol_version: z.literal("hcp.v0") };
 export const pairingCreateRequestSchema = z.object({
   ...identity,
@@ -45,4 +55,10 @@ export const connectionTokenResponseSchema = z.object({
   connection_token: z.string().min(1),
   expires_at: z.string().datetime({ offset: true }),
 }).strict();
+export type PairingCreateRequest = z.infer<typeof pairingCreateRequestSchema>;
 export type PairingCodeResponse = z.infer<typeof pairingCodeResponseSchema>;
+export type PairingExchangeRequest = z.infer<typeof pairingExchangeRequestSchema>;
+export type PairingExchangeResponse = z.infer<typeof pairingExchangeResponseSchema>;
+export type RunnerCredentialContract = z.infer<typeof runnerCredentialSchema>;
+export type ConnectionTokenRequest = z.infer<typeof connectionTokenRequestSchema>;
+export type ConnectionTokenResponse = z.infer<typeof connectionTokenResponseSchema>;

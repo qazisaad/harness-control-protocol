@@ -14,7 +14,7 @@ const modelSchema = z.object({
 });
 
 const catalogSchema = z.union([z.array(modelSchema).max(256),
-  z.object({models: z.array(modelSchema).max(256), ultracodeAvailable: z.boolean().optional()}).strict()]);
+  z.object({models: z.array(modelSchema).max(256), ultracodeAvailable: z.boolean().optional(), default_model_id: z.string().optional()}).strict()]);
 
 /**
  * Claude Code offers 1M context through `[1m]` aliases for the Opus, Sonnet and
@@ -28,7 +28,14 @@ export function projectClaudeModels(value: unknown): HarnessModel[] {
   const ultracodeAvailable = !Array.isArray(catalog) && catalog.ultracodeAvailable === true;
   if (new Set(models.map(model => model.value)).size !== models.length)
     throw new HarnessAdapterError("native_catalog_invalid", "Claude returned duplicate model identifiers.");
-  return models.map(model => ({id: model.value, label: model.displayName, capabilities: {
+  // Claude's advertised `default` model is a native alias that follows account settings.
+  const defaultId = (!Array.isArray(catalog) ? catalog.default_model_id : undefined)
+    ?? models.find(model => model.value === "default")?.value;
+  const exactDefault = models.find(model => model.value === defaultId);
+  const resolvedDefaults = models.filter(model => model.resolvedModel === defaultId);
+  const defaultModel = exactDefault ?? (resolvedDefaults.length === 1 ? resolvedDefaults[0] : undefined);
+  return models.map(model => ({id: model.value, label: model.displayName,
+    ...(model === defaultModel ? {is_default: true} : {}), capabilities: {
     image_input: true,
     option_descriptors: [...(model.supportsEffort && model.supportedEffortLevels?.length ? [{
       id: "effort", label: "Effort", type: "select" as const,
@@ -60,7 +67,10 @@ try {
   // Optional account capability; older runtimes without settings readback omit it.
   const settings = typeof runtime.getSettings === "function" ? await runtime.getSettings().catch(() => undefined) : undefined;
   const ultracodeAvailable = settings?.applied?.ultracodeAvailable;
-  process.stdout.write(JSON.stringify(typeof ultracodeAvailable === "boolean" ? {models, ultracodeAvailable} : models));
+  const defaultModel = settings?.applied?.model;
+  process.stdout.write(JSON.stringify({models,
+    ...(typeof ultracodeAvailable === "boolean" ? {ultracodeAvailable} : {}),
+    ...(typeof defaultModel === "string" ? {default_model_id: defaultModel} : {})}));
 }
 finally {finish(); runtime.close();}
 `;

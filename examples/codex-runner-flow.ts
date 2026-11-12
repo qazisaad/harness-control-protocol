@@ -42,14 +42,8 @@ try {
         enabled: true,
         launch_args: [],
         env: {},
-        models: [
-          {
-            id: "gpt-5.5",
-            label: "GPT-5.5",
-            is_default: true,
-            capabilities: { option_descriptors: [] },
-          },
-        ],
+        // No fixed catalog: Codex reports the models this account can use through native `model/list`.
+        models: [],
         hidden_models: [],
         model_order: [],
         favorite_models: [],
@@ -87,6 +81,9 @@ try {
   try {
     await connection.connect();
     const codexProvider: HarnessProviderSnapshot = await waitForProviderSnapshot("codex-local");
+    // Use the account's native default, so the smoke test works on any Codex plan.
+    const codexModel: string | undefined = process.env.HCP_CODEX_MODEL
+      ?? (codexProvider.models.find((model) => model.is_default) ?? codexProvider.models[0])?.id;
     console.log(
       "codex provider:",
       JSON.stringify(
@@ -149,6 +146,7 @@ try {
       console.log("Skipping live Codex turn because the provider probe is not ready.");
     } else {
       try {
+        if (codexModel === undefined) throw new Error("Codex reported no models. Set HCP_CODEX_MODEL to one your account can use.");
         mockControlPlane.sendSessionStart({
           session_id: "session-1",
           workspace_id: "workspace-1",
@@ -158,7 +156,7 @@ try {
           sandbox_mode: "workspace_write",
           approval_policy: "full_access",
           continue_session: false,
-          model_selection: { model: "gpt-5.5" },
+          model_selection: { model: codexModel },
           mcp_servers: [],
         });
         await waitForEventOrNack("session.configured", "session-1");

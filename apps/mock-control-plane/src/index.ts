@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   HCP_VERSION,
+  PAIRING_HTTP_PATHS,
   pairingCreateRequestSchema,
   pairingExchangeRequestSchema,
   connectionTokenRequestSchema,
@@ -285,7 +286,7 @@ async function handlePairingHttpRequest(
 
   const requestUrl = new URL(request.url ?? "/", normalizeControlPlaneHttpUrl(request, host, port));
   try {
-    if (requestUrl.pathname === "/pairing-codes") {
+    if (requestUrl.pathname === PAIRING_HTTP_PATHS.create) {
       const body = pairingCreateRequestSchema.parse(await readJsonBody(request));
       const runnerId: string = body.runner_id;
       const hostId: string = body.host_id;
@@ -311,7 +312,7 @@ async function handlePairingHttpRequest(
       return true;
     }
 
-    if (requestUrl.pathname === "/pairing-exchange") {
+    if (requestUrl.pathname === PAIRING_HTTP_PATHS.exchange) {
       const body = pairingExchangeRequestSchema.parse(await readJsonBody(request));
       const runnerId: string = body.runner_id;
       const hostId: string = body.host_id;
@@ -370,7 +371,7 @@ async function handlePairingHttpRequest(
       return true;
     }
 
-    if (requestUrl.pathname === "/runner-connection-token") {
+    if (requestUrl.pathname === PAIRING_HTTP_PATHS.connectionToken) {
       const body = connectionTokenRequestSchema.parse(await readJsonBody(request));
       const credentialId: string = body.credential_id;
       const credentialSecret: string = body.credential_secret;

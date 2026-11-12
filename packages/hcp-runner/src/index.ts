@@ -15,6 +15,7 @@ import { RunnerConnection } from "./connection/index.js";
 import { HarnessSessionManager } from "./harnesses/index.js";
 import { consoleLogger } from "./logs/index.js";
 import { connectMachine, parseConnectOptions } from "./connect.js";
+import { checkControlPlane, httpTestHooks } from "./control-plane-check/index.js";
 import { ALREADY_RUNNING, ConnectionOwnership, acquireStateOwnership, connectionDirectory, type StateOwnership } from "./ownership.js";
 import { createDevelopmentHmacProofSigner } from "./mcp/McpAttachmentClient.js";
 import { JsonRunnerStateStore, defaultRunnerStatePath } from "./state/index.js";
@@ -141,8 +142,64 @@ export async function main(argv: string[] = process.argv.slice(2), home: string 
     } catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
   }
 
-  console.log("Usage: hcp-runner <version|connect|pair|run>");
+  if (command === "check-control-plane") {
+    return runControlPlaneCheck(argv.slice(1));
+  }
+
+  console.log("Usage: hcp-runner <version|connect|pair|run|check-control-plane>");
   return command ? 1 : 0;
+}
+
+const CHECK_USAGE = "Usage: hcp-runner check-control-plane <control-plane-url> --hooks <test-hooks-url> [--hooks-token-env NAME] [--revoke-timeout-seconds N] [--json]";
+
+/** Runs the black-box lifecycle checks against a control plane. Exit code 0 only when every check passes. */
+async function runControlPlaneCheck(args: string[]): Promise<number> {
+  let controlPlaneUrl: string | undefined;
+  let hooksUrl: string | undefined;
+  let hooksTokenEnv: string | undefined;
+  let revokeTimeoutSeconds: number | undefined;
+  let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    const value = (): string => {
+      const next = args[index + 1];
+      if (next === undefined) throw new Error(`${argument} needs a value.`);
+      index += 1;
+      return next;
+    };
+    try {
+      if (argument === "--hooks") hooksUrl = value();
+      else if (argument === "--hooks-token-env") hooksTokenEnv = value();
+      else if (argument === "--revoke-timeout-seconds") revokeTimeoutSeconds = Number(value());
+      else if (argument === "--json") json = true;
+      else if (!argument.startsWith("--") && controlPlaneUrl === undefined) controlPlaneUrl = argument;
+      else throw new Error(`Unknown argument ${argument}.`);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      console.error(CHECK_USAGE);
+      return 1;
+    }
+  }
+  if (!controlPlaneUrl || !hooksUrl || (revokeTimeoutSeconds !== undefined && !(revokeTimeoutSeconds > 0))) {
+    console.error(CHECK_USAGE);
+    return 1;
+  }
+  const hooksToken = hooksTokenEnv === undefined ? undefined : process.env[hooksTokenEnv];
+  if (hooksTokenEnv !== undefined && !hooksToken) {
+    console.error(`Environment variable ${hooksTokenEnv} is empty.`);
+    return 1;
+  }
+  const symbols = { pass: "PASS", fail: "FAIL", skip: "SKIP" } as const;
+  const results = await checkControlPlane({
+    controlPlaneUrl,
+    hooks: httpTestHooks(hooksUrl, hooksToken),
+    ...(revokeTimeoutSeconds === undefined ? {} : { revokeTimeoutMs: revokeTimeoutSeconds * 1000 }),
+    ...(json ? {} : { onResult: (result) => console.log(`${symbols[result.outcome]}  ${result.id}  ${result.title}${result.detail ? ` (${result.detail})` : ""}`) }),
+  });
+  const failed = results.filter((result) => result.outcome !== "pass").length;
+  if (json) console.log(JSON.stringify({ passed: failed === 0, results }, null, 2));
+  else console.log(failed === 0 ? `All ${results.length} lifecycle checks passed.` : `${failed} of ${results.length} lifecycle checks did not pass.`);
+  return failed === 0 ? 0 : 1;
 }
 
 async function runMachine(configPath: string): Promise<number> {

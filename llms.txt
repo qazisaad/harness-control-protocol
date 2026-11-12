@@ -1,0 +1,40 @@
+# Harness Control Protocol (HCP)
+
+> HCP lets a hosted app drive coding agents (Claude Code, Codex, OpenCode) on a user's own machine. A local runner (`@harness-control/runner`) connects out to the app's server (the control plane) over WebSocket. The app sends commands and receives events. There is no central HCP service: every app runs its own control plane.
+
+Packages: `@harness-control/protocol` (types, Zod and JSON Schemas, event reducer), `@harness-control/sdk` (app side, TypeScript), `@harness-control/runner` (user's machine, plus `check-control-plane`). All three share one version.
+
+## Rules an integration must follow
+
+- The app owns pairing approval, sign-in, machine ownership, authorisation, the WebSocket server, and storage of commands, events and replay cursors. HCP owns the wire formats, the lifecycle spec and the checks.
+- Pairing uses three HTTP endpoints at the control-plane origin: `POST /pairing-codes`, `POST /pairing-exchange`, `POST /runner-connection-token`. Bodies are in `@harness-control/protocol/pairing.schema.json`.
+- The runner is given the WebSocket URL, for example `https://app.example.com/hcp/runner`. The exchange response's `control_plane_url` must equal that exact URL.
+- Two steps must be atomic: consuming an approved pairing (once only), and spending a connection token (once only, while its credential generation is current).
+- Revocation raises the credential generation, refuses new and previously minted tokens, and closes the live socket.
+- Keep at most one live connection per credential. Check `host.hello`'s `runner_id` and `host_id` against the credential before `accept`.
+- Pin `protocol_schema_sha256` to the protocol version you tested, and refuse others with HTTP 4xx.
+- An ACK means accepted, not finished. A turn ends with `turn.completed`, `turn.failed`, `turn.aborted` or `turn.cancelled`. Start `waitForSessionEvent` before sending the command that causes the event.
+- Store a command before sending it if you need crash recovery, and keep its id on retry. The SDK never retries. A timeout or disconnect means the outcome is unknown: reconcile with a snapshot before sending another change.
+- Pass `accept` only a replay cursor you have durably stored. A missing capability means unknown, not removed.
+- The runner's local policy wins. Never widen a requested sandbox or approval policy to make a provider work.
+- Prove a control plane with `npx @harness-control/runner check-control-plane <runner-url> --hooks <test-hooks-url>`. It needs test-only `approve`, `decline` and `revoke` hooks.
+
+## Docs
+
+- [Docs index and adoption levels](docs/README.md): start here
+- [Concepts](docs/concepts.md): vocabulary and architecture
+- [Control-plane tutorial](docs/control-plane/tutorial.md): a working server on SQLite, step by step
+- [Control-plane lifecycle spec](docs/control-plane/lifecycle.md): states, atomic steps, revocation, check ids
+- [Integration checklist](docs/control-plane/checklist.md): what to own and how to verify it, by level
+- [Public packages](docs/public-packages.md): SDK methods, completion and unknown outcomes
+- [Pairing](docs/pairing.md): the runner's side of pairing
+- [Reliability and snapshots](docs/reliability-and-snapshots.md): delivery, cursors and replay
+- [Provider support](docs/native-providers.md): generated capability tables
+
+## Code
+
+- [Reference control plane](apps/reference-control-plane/src/server.ts) and [its store](apps/reference-control-plane/src/store.ts): copy the structure
+- [Examples, ordered by level](examples/README.md)
+- [SDK README](packages/hcp-sdk/README.md)
+- [Runner README](packages/hcp-runner/README.md)
+- [Protocol README](packages/hcp-protocol/README.md)

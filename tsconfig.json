@@ -17,6 +17,9 @@
       "path": "./apps/sample-mcp-server"
     },
     {
+      "path": "./apps/reference-control-plane"
+    },
+    {
       "path": "./demo/quickstart"
     },
     {

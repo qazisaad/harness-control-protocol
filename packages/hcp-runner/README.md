@@ -20,9 +20,20 @@ Use `--config <path>` to adopt an existing configuration on first setup. Its loc
 
 Run `codex login` or `claude auth login` locally if needed, then restart HCP. The lower-level `pair --out runner.json` and `run --config runner.json` commands remain available for integrations that own their runner identity and configuration lifecycle.
 
-For embedding, public modules are available at `/connection`, `/config`, `/harnesses`, `/mcp`, `/state`, and `/pairing`. Importing the package does not start a runner. See [configuration and examples](https://github.com/qazisaad/harness-control-protocol#runner-configuration), [workspace management](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/workspace-management.md), and [provider support](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/native-providers.md).
+For embedding, public modules are available at `/connection`, `/config`, `/harnesses`, `/mcp`, `/state`, `/pairing`, `/accounts` and `/control-plane-check`. Importing the package does not start a runner. See [configuration and examples](https://github.com/qazisaad/harness-control-protocol#runner-configuration), [workspace management](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/workspace-management.md), and [provider support](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/native-providers.md).
 
 Capabilities vary by provider. In particular, the current Claude adapter does not implement filesystem containment; an app requesting restricted execution must reject that combination instead of widening policy.
+
+## Check a control plane
+
+App developers can check their server against the [control-plane lifecycle spec](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/control-plane/lifecycle.md):
+
+```sh
+hcp-runner check-control-plane https://staging.example.com/hcp/runner \
+  --hooks https://staging.example.com/test-hooks/ --hooks-token-env HCP_TEST_HOOKS_TOKEN
+```
+
+It pairs, connects and revokes a throwaway machine over HTTP and WebSocket only, so it works on a server written in any language. The server must expose test-only approve, decline and revoke hooks. The exit code is 0 only when all 18 checks pass.
 
 ## Account usage
 

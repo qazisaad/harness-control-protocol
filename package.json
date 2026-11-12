@@ -13,7 +13,9 @@
     "dev:mock": "tsx apps/mock-control-plane/src/index.ts",
     "release:check": "node scripts/check-release.mjs",
     "release:publish": "node scripts/publish-release.mjs",
-    "demo:accounts": "tsx demo/accounts/src/index.ts"
+    "demo:accounts": "tsx demo/accounts/src/index.ts",
+    "docs:check": "node scripts/check-doc-links.mjs",
+    "docs:providers": "tsx scripts/generate-provider-matrix.ts"
   },
   "workspaces": [
     "packages/*",

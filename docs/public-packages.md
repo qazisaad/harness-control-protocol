@@ -1,49 +1,153 @@
 # Public packages and integration contract
 
-HCP has three public packages, released together at the same exact version:
+**Who this is for:** app developers using the HCP packages.
+**What you get:** what each package does, what your app owns, and the rules for commands, events and advanced session features.
+**Level:** 1 for the first four sections, 2 and 3 after that.
 
-- `@harness-control/protocol`: wire types, validation, JSON Schema, pairing contracts, and the canonical session event reducer. No provider SDK or Node transport dependency.
-- `@harness-control/sdk`: app-side command construction and one authenticated runner connection. It depends only on the protocol package.
-- `@harness-control/runner`: local CLI and embeddable runner modules, including provider adapters, filesystem policy, durable command receipts, and MCP attachments.
+## The three packages
 
-P2A and external apps use these same exports. P2A's Convex transactions use the SDK's stateless command API; its Python WebSocket service validates JSON Schema exported by the installed protocol package. No Node service is added to P2A.
+All three are released together, at the same exact version.
 
-## Ownership and transport
+| Package | Contains | Depends on |
+| --- | --- | --- |
+| `@harness-control/protocol` | Wire types, validation, JSON Schemas (messages and pairing), pairing contracts and the canonical session event reducer | Zod only. No provider SDK, no Node transport |
+| `@harness-control/sdk` | Typed command builders and one authenticated runner connection (`HcpHostConnection`) | The protocol package only |
+| `@harness-control/runner` | The CLI, embeddable runner modules, provider adapters, filesystem policy, durable command receipts, MCP attachments and `check-control-plane` | Protocol, provider SDKs, `ws` |
 
-The application owns pairing approval, authentication, machine/user ownership, authorization, WebSocket hosting, durable command/event storage, and persisted replay cursors. Authenticate the socket and verify `host.hello` against that identity before calling `accept`. Use one SDK connection per physical socket. Call `disconnect` on socket close/error and create a new connection for the next authenticated socket.
+Every app uses these same public exports. For example, P2A uses the SDK's stateless `createCommand`/`parseCommand` inside Convex transactions. Its Python WebSocket service validates messages against the JSON Schema shipped in the installed protocol package. No Node service is needed for that.
 
-The SDK validates envelopes at entry, builds typed commands, correlates replies, and applies the existing protocol reducer. Its event reducer is an in-memory view, not a durable acknowledgement. Pass only durably committed cursors to `accept`; receiving an event does not authorize advancing a persisted cursor. Apps can restore a supplied reducer from validated persisted snapshots.
+## Who owns what
 
-Providers, models, workspaces, and policies arrive through capability messages. Pass these to the app's projection; omitted capabilities are not deletion. Workspace results and explicitly complete session snapshots have the replacement semantics defined by the protocol. Gaps, conflicts, and replay-unavailable messages are surfaced for explicit snapshot recovery.
+| Your app owns | The SDK does | The runner owns |
+| --- | --- | --- |
+| Pairing approval, sign-in, which user owns which machine, authorisation | Validates every incoming message | Local policy: which agents, folders and tools are allowed |
+| Hosting the WebSocket | Builds typed commands and matches replies to them | Running the coding agents |
+| Storing commands, events and the replay cursor | Keeps an in-memory event view with the protocol reducer | Durable receipts, so retried commands are safe |
+| Deciding what to do after a gap or an unknown outcome | Reports gaps, conflicts and unknown outcomes | Retained event windows for replay |
 
-Apps select an advertised `execution_profile` when starting a session; omission preserves isolated behavior. Each `execution_profiles` entry declares runtime lifetime and native work/session-event support. A persistent adapter registers its session interaction owner with `registerSessionInteractions`. Late approval and input events retain their admitted root turn; responses must match that exact origin. `native.request.lost` ends a live callback, and `native.work.owner_lost` fences the work controller. Replaying those events restores display state, not native callbacks. The packaged conversation-controls consumer exercises a post-completion question through the public SDK and rejects a response from another turn.
+The SDK never widens permissions. Provider capabilities and the runner's local policy always win.
 
-Native asynchronous input without a provider-confirmed root uses `request_scope: "session"` on requested/resolved/lost events and `harness.input.respond`. No `turn_id` is permitted in either the session-owned data or its event envelope. Omitted scope preserves existing turn-bound replies. The native owner validates scope, request, session and answer schema before settling its callback; an application's MCP grant cannot settle it. Native owner loss fences replies even if a callback object remains retained. The public consumer exercises session input and rejects turn-bound and post-owner-loss replies.
+## Connecting one socket
+
+1. Authenticate the socket (see the [lifecycle spec](control-plane/lifecycle.md#the-websocket)).
+2. Create one `HcpHostConnection` for that physical socket.
+3. On `host.hello`, check `runner_id` and `host_id` against the authenticated identity, then call `accept`.
+4. Pass `accept` only a replay cursor you have **durably stored**. Receiving an event does not mean you may advance the stored cursor. The SDK's reducer is an in-memory view, not an acknowledgement.
+5. On socket close or error, call `disconnect`. Create a new connection for the next socket.
+
+After acceptance, the runner sends its capabilities: providers, models, folders and policies. Store them in your app's view. A missing capability means unknown, not deleted. Workspace results and session snapshots marked complete replace what you had, as the protocol defines.
+
+You can restore a reducer from validated, stored snapshots and pass it to the constructor.
 
 ## Commands and completion
 
-Native effective settings are separate from requested configuration. `settings.effective` confirms the complete root settings snapshot; `settings.options.effective` confirms only the native model and model-option snapshot. Both require an admitted `turn_id`, `scope: "root"` and `source: "native"`. Their `model_selection` may contain a canonical native model ID and restored default options even when the request used an alias or removed an override. They do not rewrite already-running child work. Consumers must not infer policy or containment from a model-option observation.
+Every app-to-runner operation has a typed SDK method:
 
-An `empty_conversation` capability on the provider or selected execution profile confirms a native conversation exists at startup, before a model prompt. Include a `continuation_group_key` to retain it across unload and runner recreation. A successful startup persists and reads back the binding before reporting `native_conversation_ready`; adapters cannot satisfy this contract with an unconfirmed generated ID. Startup adapters receive the already-authorized MCP tool catalogs in `mcpToolsets`, so native dynamic tool definitions can be established before a turn without granting idle invocation authority.
+| Area | Methods |
+| --- | --- |
+| Sessions and turns | `startSession` (MCP attachments go here), `sendTurn`, `cancelTurn`, `stopSession`, `requestSnapshot` |
+| Answers | `respondToApproval`, `respondToInput` |
+| Tools and machine | `detachTools`, `runLocalAction`, `manageWorkspaces` (list, add, rename, remove) |
+| Conversations | `conversation` and typed helpers; see [conversation controls](#conversation-controls) |
 
-Approvals, input and lost-callback events may include `native_work_id` when the native owner confirms the child execution. They retain the child's original root turn even while another root runs; session-scoped input cannot claim a work ID without that origin. The runner checks live work membership before admitting a new child request. Adapters use `reviewNativeWorkMcp(workId)` for child MCP operations and the shared `dispatchMcp` slot for the whole approval, invocation and elicitation lifecycle. Callback loss never resumes the root to recreate a child callback, and unresolved MCP receipts fence subsequent dispatch. This generic interface is independent of any consuming application's task or thread model.
+What each call resolves to:
 
-Only one root turn can be admitted per session at a time. Rejected concurrent turn IDs remain reusable. Cancellation of an older root cannot interrupt a newer root or its MCP reviewer; interactive work owners receive native interruption before the corresponding root reviewer is closed.
+| Call | Resolves to | Finished when |
+| --- | --- | --- |
+| Session and turn commands | An ACK: the runner **accepted** it | The matching terminal `harness.event`, such as `turn.completed` |
+| Snapshot, workspace and local-action requests | Their matching result message. An ACK never finishes them | The result arrives |
+| Any refused command | Rejects with `HcpCommandRejectedError` and the runner's structured error (a NACK) | — |
 
-The SDK's `conversation` method and typed helpers expose capability-gated history reads, fork, rollback, content retrieval, work controls and explicit context injection through `injectContext`. `live_history_read` permits reading a retained thread without unloading its native owner; mutations require an idle owner. Injection carries user/assistant text and an expected history hash. Its matching result distinguishes applied context from confirmed native method absence. An unknown dispatch outcome must never be converted into a second prompt delivery. Durable injection fences and receipts remain owned by the runner, without product IDs or handoff formatting rules.
+Rules:
 
-Every current app-to-runner operation has a typed SDK method: session start, turn send/cancel, session stop/snapshot, approval/input response, MCP detach, local actions, and workspace list/add/rename/remove through `manageWorkspaces`. MCP attachments are part of session start. Provider capabilities and local policy remain authoritative; the SDK never widens requested permissions.
+- **Store a command before sending it** if you need to recover from a crash. Keep the same id and payload on every retry.
+- The SDK **never retries** by itself.
+- Workspace and local-action errors come back as typed result messages, not NACKs, so their snapshots and audit records are kept.
+- **Start waiting for an event before you send** the command that causes it. `waitForSessionEvent` only sees events after the point it starts.
+- Only **one root turn** runs per session at a time. A refused concurrent turn id can be used again. Cancelling an older turn cannot interrupt a newer one or its MCP reviewer.
 
-Prepare and persist the complete command before sending if crash recovery is required. Its id and payload survive retries. The SDK never retries automatically. Session/turn command promises resolve to an ACK, which means accepted, not completed. Consume `harness.event` through the terminal event. Snapshot, workspace, and local-action requests resolve only to their matching result; an ACK cannot finish these requests. Workspace/local errors remain typed result messages so their snapshots and audit evidence are not lost. NACKs reject with the runner's structured error.
+### When the outcome is unknown
 
-Timeout, cancellation of a local wait, or connection loss can leave the operation's outcome unknown. They do not cancel a remote operation. Reconcile via snapshots/list before creating another mutation; use the explicit cancel command for a running turn. All pending waits are rejected when their connection closes. The application bounds retained event storage according to its lifecycle.
+A timeout, a cancelled local wait or a lost connection rejects with `HcpOutcomeUnknownError`. All pending waits reject when the connection closes. None of these cancel the work on the runner.
 
-## Release and validation
+- Reconcile first, with a snapshot or a list, before sending another change.
+- To stop a running turn, send an explicit cancel.
+- Never turn an unknown outcome into a second delivery of the same prompt.
 
-Build and test the repo, pack allowlisted files, and install all three tarballs in a clean external project. That project imports public exports only and drives the real runner over loopback WebSocket through folder changes and a mock-provider session's terminal event. This verifies package and protocol boundaries; it does not claim live Codex/Claude execution.
+Your app decides how long to keep event history.
 
-Publish protocol first, then SDK, then runner. P2A pins exact registry versions and derives Python schemas from the installed package, avoiding a separate checkout as schema owner. npm account access to the scope is required to publish. Packed release candidates can be tested before publishing; they are not described as registry releases.
+## Execution profiles and late requests
 
-Account usage adds a capability-gated read/snapshot pair and a canonical account-source projection. Capacity policy, budgets and administrative actions are owned entirely by the consuming app; HCP publishes no policy package. No additional deployed service is required. See [account capacity](account-capacity.md) for freshness, omission, identity, and administrative recovery contracts.
+**Level 2.**
 
-Version 0.4.0 adds `host.accounts.read` and `host.accounts.snapshot` while retaining `hcp.v0`. Only send account reads when `account_usage` is advertised. Old consumers with strict schemas must upgrade their installed protocol/schema before opting into these messages. P2A adoption is a separate change; no P2A code or pinned dependency is updated here.
+- Choose an advertised `execution_profile` when starting a session. Leaving it out keeps the `isolated` behaviour.
+- Each profile in `execution_profiles` declares its runtime lifetime and whether it supports native work and between-turn session events. See [provider support](native-providers.md).
+- A persistent adapter registers who answers its session's interactions with `registerSessionInteractions`.
+- Approval and input requests that arrive late keep the root turn they were admitted under. Your answer must name that exact origin.
+- `native.request.lost` means the live callback is gone. `native.work.owner_lost` fences the work controller. Replaying these events restores what you display, not the callbacks.
+
+### Session-scoped input
+
+Some agents ask for input without a confirmed root turn.
+
+- These use `request_scope: "session"` on the requested, resolved and lost events, and on `harness.input.respond`.
+- No `turn_id` is allowed in that data or in its event envelope.
+- Without `request_scope`, replies stay bound to a turn, as before.
+- The native owner checks scope, request, session and answer schema before accepting. An app's MCP grant cannot answer it.
+- Once the owner is lost, replies are refused, even if a callback object still exists.
+
+The packaged example consumers exercise a question asked after a turn completes, and session-scoped input. They check that answers from another turn, turn-bound answers to session input, and answers after owner loss are refused.
+
+## Effective settings
+
+**Level 3.** What you asked for and what the agent actually used are reported separately:
+
+| Event | Confirms |
+| --- | --- |
+| `settings.effective` | The complete root settings snapshot |
+| `settings.options.effective` | Only the native model and model options |
+
+- Both require an admitted `turn_id`, `scope: "root"` and `source: "native"`.
+- `model_selection` may hold the agent's canonical model id and restored default options, even if you sent an alias or removed an override.
+- They do not change child work that is already running.
+- Never infer policy or containment from a model-option event.
+
+## Empty conversations
+
+**Level 3.** An `empty_conversation` capability (on the provider or the selected profile) confirms that a native conversation exists at startup, before any prompt.
+
+- Send a `continuation_group_key` to keep it across unloads and runner restarts.
+- Startup saves and reads back the binding before reporting `native_conversation_ready`. An adapter cannot report it with an unconfirmed generated id.
+- Startup adapters receive the already-authorised MCP tool lists in `mcpToolsets`. Native tool definitions can exist before the first turn, without permission to call tools while idle.
+
+## Child agents (native work)
+
+**Level 3.** Approval, input and lost-callback events may carry `native_work_id` when the native owner confirms a child execution.
+
+- They keep the child's original root turn, even while another root turn runs.
+- Session-scoped input cannot claim a work id without that origin.
+- The runner checks that the work is live before admitting a new child request.
+- Adapters use `reviewNativeWorkMcp(workId)` for child MCP operations, and the shared `dispatchMcp` slot for the whole approval, call and input lifecycle.
+- A lost callback never resumes the root to recreate it. Unresolved MCP receipts block later dispatch.
+
+This interface does not depend on any app's task or thread model.
+
+## Conversation controls
+
+**Level 3.** `conversation` and its helpers offer, when the capability is advertised: history reads, fork, rollback, content retrieval, work controls and context injection (`injectContext`).
+
+- `live_history_read` lets you read a retained thread without unloading its owner. Changes need an idle owner.
+- Injection carries user and assistant text plus an expected history hash. Its result says whether the context was applied, or the agent confirmed it has no such method.
+- Injection fences and receipts are owned by the runner. They carry no product ids or formatting rules.
+
+See the [SDK README](../packages/hcp-sdk/README.md#conversation-controls) for examples.
+
+## Account usage
+
+**Level 3.** A read and snapshot pair, gated by the `account_usage` capability, reports provider account limits without a session. Only send account reads when the runner advertises `account_usage`. Capacity policy, budgets and admin actions belong to your app. HCP needs no extra service. See [account capacity](account-capacity.md).
+
+## Releasing and validating the packages
+
+For maintainers. `npm run release:check` builds and tests the repository, packs only the allowed files, and installs all three tarballs in a clean project. That project uses public exports only, and drives a real runner over loopback WebSocket through folder changes and a mock-provider session's terminal event. This proves package and protocol boundaries. It does not prove live Codex or Claude execution.
+
+Publish in this order: protocol, then SDK, then runner. Consumers such as P2A pin exact registry versions and take their schemas from the installed package. Publishing needs npm access to the `@harness-control` scope. A packed candidate can be tested before publishing; it is not a registry release. See the [release process](maintainers/release-process.md).

@@ -546,17 +546,7 @@ for (const driver of ["codex", "claude"]) {
       }),
       HarnessAdapterError,
     );
-    if (driver === "claude")
-      await assert.rejects(
-        adapter.startSession({
-          payload: {
-            ...start(driver, tmpdir()),
-            sandbox_mode: "workspace_write",
-          },
-          provider: provider(driver),
-        }),
-        HarnessAdapterError,
-      );
+
   });
 }
 
@@ -684,9 +674,7 @@ it("native probes advertise the same execution policies enforced at session star
     assert.deepEqual(status.execution_capabilities?.approval_policies, ["ask", "auto_edits", "full_access"]);
     assert.deepEqual(
       status.execution_capabilities?.sandbox_modes,
-      driver === "codex"
-        ? ["read_only", "workspace_write", "danger_full_access"]
-        : ["danger_full_access"],
+      ["read_only", "workspace_write", "danger_full_access"],
     );
     assert.equal(status.execution_capabilities?.session_continuation, true);
   }

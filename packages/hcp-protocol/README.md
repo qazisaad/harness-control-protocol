@@ -11,9 +11,17 @@ import { parseHcpMessage, HcpSessionEventReducer } from "@harness-control/protoc
 const message = parseHcpMessage(JSON.parse(wireMessage));
 ```
 
-Use `@harness-control/protocol/schema.json` for validators in Python or other languages. Use `@harness-control/sdk` for app-side commands and request correlation, and `@harness-control/runner` on the local machine.
+For Python or other languages, generate models and validators from the JSON Schemas:
 
-The package includes `hcp-protocol-conformance` and conformance fixtures. See [HCP documentation](https://github.com/qazisaad/harness-control-protocol#readme) for wire semantics and compatibility. Package versions and the wire protocol version (`hcp.v0`) are separate.
+| Export | Contains |
+| --- | --- |
+| `@harness-control/protocol/schema.json` | Every WebSocket message |
+| `@harness-control/protocol/pairing.schema.json` | The pairing and connection-token HTTP bodies. `x-hcp-endpoints` maps each path to its request and response definitions. |
+| `@harness-control/protocol/mcp-review.json` | The MCP review extension |
+
+In TypeScript, the same contracts are the Zod schemas, and `PAIRING_HTTP_PATHS` names the HTTP paths. Use `@harness-control/sdk` for app-side commands and request correlation, and `@harness-control/runner` on the local machine.
+
+The package includes `hcp-protocol-conformance` and conformance fixtures. These check message shapes only. To check a control plane's pairing, token and revocation behaviour, use `hcp-runner check-control-plane` (see the [lifecycle spec](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/control-plane/lifecycle.md)). See [HCP documentation](https://github.com/qazisaad/harness-control-protocol#readme) for wire semantics and compatibility. Package versions and the wire protocol version (`hcp.v0`) are separate.
 
 ### MCP review extension v1
 
@@ -29,4 +37,4 @@ Durable continuation is an adapter capability (`durableMcpContinuation: true`), 
 
 `harness.session.start.instructions` accepts explicit native roles, such as `{system: "...", developer: "..."}`, separately from turn input. Discovery advertises supported roles; Codex supports system/developer, Claude and OpenCode support system. Unsupported roles refuse rather than become ordinary prompt text. Use matching protocol, SDK and runner/schema versions.
 
-For compatibility with published 0.4.12, the legacy string form (at most 131072 characters) remains accepted: Codex delivers it as native developer instructions, Claude appends it to its system preset, and OpenCode reports `instructions_unsupported` before launch. Explicit role objects are preferred for new consumers. Changed instruction authority cannot silently reuse a retained conversation binding. See the [migration handoff](../../docs/harness-migration-handoff.md) for current source and release status.
+For compatibility with published 0.4.12, the legacy string form (at most 131072 characters) remains accepted: Codex delivers it as native developer instructions, Claude appends it to its system preset, and OpenCode reports `instructions_unsupported` before launch. Explicit role objects are preferred for new consumers. Changed instruction authority cannot silently reuse a retained conversation binding. See the [migration handoff](../../docs/maintainers/harness-migration-handoff.md) for current source and release status.
