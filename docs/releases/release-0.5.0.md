@@ -4,7 +4,7 @@ Current checkpoint: the coordinated unpublished 0.5.0 release gate passes **1,05
 
 The tested generic HCP migration checkpoint covers the verified provider profiles and operation inventory; it is not a complete inventory of every native provider feature. Provider transport, native ownership, execution and child custody, supported conversation controls, callbacks, MCP, media/history hydration and native evidence are available through public packages. Remaining T3 work is application-owned production wiring, persistence and DTO/UI projection. Capability limits and refused or unknown native outcomes remain explicit; this is not a universal native-version, account or remote-service certification. Historical counts and excluded probes below retain their original evidence boundaries.
 
-This is an unpublished coordinated candidate for `@harness-control/protocol`, `@harness-control/sdk` and `@harness-control/runner`. It is not a claim that the T3 migration is complete. See [harness-parity.md](harness-parity.md) for current evidence and open gates. Publication requires a separate instruction.
+This is an unpublished coordinated candidate for `@harness-control/protocol`, `@harness-control/sdk` and `@harness-control/runner`. It is not a claim that the T3 migration is complete. See [harness-parity.md](../maintainers/harness-parity.md) for current evidence and open gates. Publication requires a separate instruction.
 
 ## Consumer changes
 

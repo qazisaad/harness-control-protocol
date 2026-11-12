@@ -1,5 +1,5 @@
 import { codexModels } from "./codex-models.js";
-import type { HarnessModel, HarnessNativeFeedbackCapabilities } from "@harness-control/protocol";
+import type { HarnessExecutionCapabilities, HarnessModel, HarnessNativeFeedbackCapabilities } from "@harness-control/protocol";
 import type { ProviderInstanceConfig } from "../../../config/index.js";
 import type { ProviderDriverStatus } from "../../../host/provider-registry.js";
 import {
@@ -49,7 +49,16 @@ const retainedProfiles = [
   {id: "interactive", runtime_lifetime: "session", native_work: true, session_events: true, mcp_attachments: true, native_owner_closure: "owned_session" as const, root_interrupt_effect: "root_only", root_settings_readback: true, approval_prompt_filter: true, sandbox_options: ["network_access", "writable_roots"] as Array<"network_access" | "writable_roots">, writable_roots_enforcement: "os_sandbox" as const, native_approval_review: true, native_plan_observations: ["snapshot"] as Array<"snapshot">, native_plan_proposals: true, native_reasoning_segments: true, native_goals: true, native_execution_outcomes: true, empty_conversation: true, native_work_history: "live_owner", idle_configuration_transition: true,
     retained_native_work_history: true, native_work_fork: true, native_work_terminal_reconciliation: true, native_feedback: nativeFeedback},
 ] as const;
-function retainedVersion(version: string | undefined): boolean {return /^codex-cli (?:0\.160\.[01]|0\.161\.0)$/.test(version ?? "");}
+/** Codex CLI versions verified for the retained app-server profiles; other versions publish no execution profiles. */
+export const CODEX_RETAINED_PROFILE_VERSIONS = ["0.160.0", "0.160.1", "0.161.0"] as const;
+function retainedVersion(version: string | undefined): boolean {
+  const match = /^codex-cli (\S+)$/.exec(version ?? "");
+  return !!match && (CODEX_RETAINED_PROFILE_VERSIONS as readonly string[]).includes(match[1]!);
+}
+/** Capabilities a ready probe publishes for the reported `codex --version` line. */
+export function codexExecutionCapabilities(version: string | undefined): HarnessExecutionCapabilities {
+  return {...nativeExecutionCapabilities("codex"), ...(retainedVersion(version) ? {execution_profiles: [...retainedProfiles]} : {})};
+}
 export type CodexHarnessAdapterOptions = {
   processSpawner?: CliProcessSpawner;
   probeTimeoutMs?: number;
@@ -211,7 +220,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
     return {
       provider_instance_id: provider.id,
       driver_kind: "codex",
-      execution_capabilities: {...nativeExecutionCapabilities("codex"), ...(retainedVersion(version) ? {execution_profiles: [...retainedProfiles]} : {})},
+      execution_capabilities: codexExecutionCapabilities(version),
       installed: true,
       available: true,
       status: "ready",
@@ -237,7 +246,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
       const version = await this.#runProcess(input.provider.executable_path ?? "codex", ["--version"],
         {cwd: input.payload.cwd, env: providerEnvironment(input.provider)}, this.#probeTimeoutMs);
       if (version.timedOut || version.exitCode !== 0 || !retainedVersion(firstLine(version.stdout)))
-        throw new HarnessAdapterError("native_profile_unsupported", "Persistent Codex requires the verified 0.160.0, 0.160.1 or 0.161.0 app-server protocol.");
+        throw new HarnessAdapterError("native_profile_unsupported", `Persistent Codex requires the verified ${CODEX_RETAINED_PROFILE_VERSIONS.slice(0, -1).join(", ")} or ${CODEX_RETAINED_PROFILE_VERSIONS.at(-1)} app-server protocol.`);
       if (this.#closed) throw new HarnessAdapterError("runner_closed", "Codex runtime owner closed during its version probe.");
       if (!input.emitSessionEvent || !input.registerSessionInteractions)
         throw new HarnessAdapterError("native_session_owner_required", "Interactive Codex requires registered session observation and interaction owners.");

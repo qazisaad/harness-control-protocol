@@ -10,36 +10,26 @@ HCP connects hosted apps, workflow systems, and local coding-agent harnesses thr
 
 This repository contains the protocol package, runner implementation, MCP attachment layer, local capability engine, mock control plane, sample MCP server, examples, and architecture docs needed to build and test HCP integrations.
 
+## Start here
+
+Read the [docs index](docs/README.md), which has a path for each reader:
+
+| You are | Start with |
+| --- | --- |
+| Building an app that uses HCP | [Concepts](docs/concepts.md), then [build a control plane in an afternoon](docs/control-plane/tutorial.md) |
+| Connecting your own machine | [Runner README](packages/hcp-runner/README.md) |
+| Adding a new coding agent | [Architecture](docs/architecture.md) and the [custom harness example](examples/custom-harness.ts) |
+| Changing the protocol | [Compatibility policy](docs/compatibility.md) |
+
+You don't need every feature. The [adoption levels](docs/README.md#adoption-levels) tell you where to stop: Level 1 runs a turn, Level 2 adds tools and approvals, Level 3 adds durable sessions and conversation controls.
+
+Using an AI coding agent to integrate? Point it at [`llms.txt`](llms.txt).
+
 ## Project Status
 
-Harness Control Protocol is an early, pre-1.0 foundation. The protocol, runner adapters, app-side SDK, and P2A integration are implemented. Provider support remains capability-dependent; see the provider support matrix before enabling execution.
+HCP is pre-1.0. The protocol, runner, app-side SDK, a reference control plane and a control-plane lifecycle check are implemented, and P2A is the first consuming application. Provider support depends on each agent's capabilities; see the generated [provider support tables](docs/native-providers.md). Changes are recorded in [release notes](docs/releases/).
 
-Implemented today:
-
-- HCP v0 envelopes, message schemas, event types, local action contracts, and parser helpers.
-- Public JSON Schema export, conformance fixtures, and a conformance CLI.
-- Runner CLI commands for `version`, `connect`, `pair`, `run`, and `accounts`.
-- Approval-gated reference pairing with a private exchange secret, atomic local credential storage, and short-lived connection tokens.
-- Outbound WebSocket lifecycle with hello, accept/reject, heartbeat, reconnect, control-plane-owned replay cursors, and capability snapshots.
-- At-least-once command handling with immediate ACK/NACK responses and durable duplicate-command idempotency.
-- Atomic runner state for retained events, command receipts, and local-action receipts across process restarts.
-- Complete/partial session event snapshots with explicit replacement, preservation, and tombstone semantics.
-- Adapter-based session lifecycle with deterministic mock, native Codex app-server, Claude Agent SDK, and streaming OpenCode adapters. See [provider support](docs/native-providers.md) for the exact supported policies and remaining gaps.
-- Live [workspace registration management](docs/workspace-management.md) with local root policy, stable ids, revision checks, and atomic configuration updates.
-- Local capability leases and real filesystem, Git, shell, and dev-server executors.
-- MCP Streamable HTTP attachments and runner-owned named stdio profiles using the official Model Context Protocol TypeScript SDK.
-- Attachment policy for allowed/denied tools, expiry checks, proof-bound requests, redaction, and close-on-session-end.
-- Sample Streamable HTTP MCP server with server-side proof verification.
-- Mock control plane and end-to-end example for local development and integration testing.
-- Codex and Claude Code live-smoke examples that advertise real local provider readiness, validate proxied MCP setup, and run one real provider turn when local CLI config and auth are valid.
-- Browser quickstart demo for local action onboarding, Codex/Claude prompt checks, and sample Streamable HTTP MCP attachment setup.
-
-Account capacity is observed through the protocol, SDK and runner and shown by an independent read-only [reference dashboard](demo/accounts/README.md). HCP reads account limits without sessions, deduplicates observations across machines and reports freshness. Capacity policy, budgets, renewals and any provider administration belong to the consuming application; HCP transports no billing commands or admin credentials. See the [contract and validation record](docs/account-capacity.md).
-
-Next major work:
-
-- Richer provider-native event normalization.
-- Broader adoption of the public SDK across control-plane integrations.
+Account capacity is observed through the protocol, SDK and runner and shown by an independent read-only [reference dashboard](demo/accounts/README.md). Capacity policy, budgets, renewals and provider administration belong to the consuming application. See [account capacity](docs/account-capacity.md).
 
 ## Why HCP Exists
 
@@ -67,17 +57,13 @@ The runner is the local trust boundary. It advertises what is available, accepts
 | `demo/accounts` | Standalone read-only account observation dashboard. |
 | `packages/hcp-sdk` | App-side typed commands, reply correlation, and connection event reduction. |
 | `packages/hcp-runner` | Local runner CLI, connection lifecycle, config loading, session management, MCP attachment client, and local action policies. |
-| `apps/mock-control-plane` | Local WebSocket control plane for development, tests, and third-party validation. |
+| `apps/reference-control-plane` | Small deployable control plane on SQLite: pairing, tokens, revocation, folders and one turn. Used by the [tutorial](docs/control-plane/tutorial.md). |
+| `apps/mock-control-plane` | In-process WebSocket control plane for runner development and tests. Not for deployment. |
 | `apps/sample-mcp-server` | Streamable HTTP MCP server that verifies HCP proof-of-possession headers. |
 | `demo/quickstart` | Browser-based quickstart control plane for local actions, provider turns, and sample MCP attachment flow. |
-| `examples/basic-runner-flow.ts` | Standalone reference flow from pairing through session turn and cleanup. |
-| `examples/codex-runner-flow.ts` | Live-smoke reference flow for local Codex CLI readiness, proxied MCP setup, and one Codex turn. |
-| `examples/claude-runner-flow.ts` | Live-smoke reference flow for local Claude Code readiness, proxied MCP setup, and one Claude Code turn. |
-| `docs/architecture.md` | Architecture boundary and MCP SDK responsibility split. |
-| `docs/compatibility.md` | Compatibility policy for protocol, runner, MCP, and package surfaces. |
-| `docs/reliability-and-snapshots.md` | At-least-once delivery, cursor ownership, durable receipts, and snapshot omission rules. |
-| `docs/release.md` | Pre-1.0 release and package publishing checklist. |
-| `docs/license-decision.md` | Apache-2.0 licensing rationale. |
+| `examples` | Ordered examples, from one turn to adapters; see the [examples index](examples/README.md). `examples/package-checks` holds the per-feature release fixtures. |
+| `docs` | User documentation; see the [docs index](docs/README.md). `docs/releases` has release notes, `docs/maintainers` has maintainer notes. |
+| `llms.txt` | A short integration guide for AI coding agents. |
 | `CONTRIBUTING.md` | Development setup, validation, and pull request expectations. |
 | `SECURITY.md` | Security boundary and vulnerability reporting policy. |
 
@@ -352,7 +338,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting and supported securit
 
 ## Contributing
 
-For the current generic harness controls work, its validation and remaining migration tasks, start with the [implementation and agent handoff](docs/harness-migration-handoff.md).
+For the current generic harness controls work, its validation and remaining migration tasks, start with the [implementation and agent handoff](docs/maintainers/harness-migration-handoff.md).
 
 Contributions are welcome while the project is still taking shape. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and pull request expectations. The most useful contributions right now are small, focused pull requests that improve one of the core contracts:
 

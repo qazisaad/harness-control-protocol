@@ -1,6 +1,6 @@
 {
   "name": "@harness-control/runner",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -37,6 +37,10 @@
       "types": "./dist/pairing/index.d.ts",
       "import": "./dist/pairing/index.js"
     },
+    "./control-plane-check": {
+      "types": "./dist/control-plane-check/index.d.ts",
+      "import": "./dist/control-plane-check/index.js"
+    },
     "./accounts": {
       "types": "./dist/accounts/index.d.ts",
       "import": "./dist/accounts/index.js"
@@ -49,16 +53,16 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.267",
-    "@harness-control/protocol": "0.5.2",
-    "@modelcontextprotocol/client": "2.0.0",
-    "@modelcontextprotocol/core": "2.0.0",
-    "@modelcontextprotocol/node": "2.0.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@harness-control/protocol": "0.5.3",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/core": "2.4.0",
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@modelcontextprotocol/server": "2.4.0",
     "convex": "^1.31.7",
     "fs-native-extensions": "1.5.1",
     "ws": "^8.21.0",
-    "zod": "^4.4.3"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

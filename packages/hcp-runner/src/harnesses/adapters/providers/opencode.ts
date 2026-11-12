@@ -92,11 +92,24 @@ const executionCapabilities: HarnessExecutionCapabilities = {
   sandbox_modes: ["danger_full_access"], approval_policies: ["ask", "auto_edits", "full_access"],
 };
 
+/** Oldest release of the HTTP/SSE contract this adapter implements; newer releases are accepted within the same major version. */
+export const OPENCODE_MINIMUM_VERSION = {major: 1, minor: 3, patch: 15} as const;
+const openCodeMinimumVersion = `${OPENCODE_MINIMUM_VERSION.major}.${OPENCODE_MINIMUM_VERSION.minor}.${OPENCODE_MINIMUM_VERSION.patch}`;
+/** The only release verified for the controlled execution profiles; other supported releases publish none. */
+export const OPENCODE_CONTROLLED_PROFILE_VERSION = "1.18.34";
 function supportedVersion(version: string | undefined): boolean {
-  const match = version?.match(/^(?:opencode\s+)?1\.(\d+)\.(\d+)(?:[-+][^\s]+)?$/);
-  return !!match && (Number(match[1]) > 3 || (Number(match[1]) === 3 && Number(match[2]) >= 15));
+  const match = version?.match(/^(?:opencode\s+)?(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?$/);
+  if (!match || match[1] !== String(OPENCODE_MINIMUM_VERSION.major)) return false;
+  const [minor, patch] = [Number(match[2]), Number(match[3])];
+  return minor > OPENCODE_MINIMUM_VERSION.minor || (minor === OPENCODE_MINIMUM_VERSION.minor && patch >= OPENCODE_MINIMUM_VERSION.patch);
 }
-function controlledVersion(version: string | undefined): boolean {return /^(?:opencode\s+)?1\.18\.34$/.test(version ?? "");}
+function controlledVersion(version: string | undefined): boolean {return version?.replace(/^opencode\s+/, "") === OPENCODE_CONTROLLED_PROFILE_VERSION;}
+/** Capabilities a probe publishes for the reported `opencode --version` line; undefined when this adapter does not support that release. */
+export function openCodeExecutionCapabilities(version: string | undefined): HarnessExecutionCapabilities | undefined {
+  if (!supportedVersion(version)) return undefined;
+  return {...executionCapabilities,
+    ...(controlledVersion(version) ? {configuration_inheritance_options: [controlledOpenCodeInheritance], execution_profiles: [...executionProfiles]} : {})};
+}
 function nativeReference(runtime: OpenCodeRuntime): string {
   return runtime.ownedAccount ? controlledOpenCodeReference({session_id: runtime.sessionId, provider_id: runtime.ownedAccount.providerId,
     account_binding: runtime.ownedAccount.binding, ...(runtime.backgroundPermissions ? {native_work: true} : {})}) : runtime.sessionId;
@@ -262,6 +275,7 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
         models: openCodeModels(provider),
       };
     }
+    const capabilities = openCodeExecutionCapabilities(version);
     let models: import("@harness-control/protocol").HarnessModel[] = openCodeModels(provider);
     let catalogUnavailable = false;
     if (supportedVersion(version) && !models.length) {
@@ -273,9 +287,8 @@ export class OpenCodeHarnessAdapter implements HarnessAdapter {
       installed: true,
       available: supportedVersion(version),
       status: supportedVersion(version) ? "ready" : "unavailable",
-      ...(supportedVersion(version) ? {execution_capabilities: {...executionCapabilities,
-        ...(controlledVersion(version) ? {configuration_inheritance_options: [...this.configurationInheritanceOptions], execution_profiles: [...executionProfiles]} : {})}} :
-        {message: "This OpenCode adapter requires the 1.3.15+ HTTP/SSE contract within major version 1."}),
+      ...(capabilities ? {execution_capabilities: capabilities} :
+        {message: `This OpenCode adapter requires the ${openCodeMinimumVersion}+ HTTP/SSE contract within major version ${OPENCODE_MINIMUM_VERSION.major}.`}),
       ...(version ? { version } : {}),
       models,
       ...(catalogUnavailable ? {message: "OpenCode is installed; its native model catalog is unavailable."} : {}),
@@ -602,9 +615,9 @@ async function startOpenCodeRuntime(input: OpenCodeRuntimeStartInput): Promise<O
   const probe = await runProbe(input.executable, [...input.launchArgs, "--version"],
     {env: input.env}, DEFAULT_PROBE_TIMEOUT_MS);
   if (probe.timedOut || probe.error || probe.exitCode !== 0 || !supportedVersion(firstLine(probe.stdout)))
-    throw new HarnessAdapterError("provider_version_unsupported", "A readable OpenCode 1.3.15+ runtime within major version 1 is required before launch.");
+    throw new HarnessAdapterError("provider_version_unsupported", `A readable OpenCode ${openCodeMinimumVersion}+ runtime within major version ${OPENCODE_MINIMUM_VERSION.major} is required before launch.`);
   if ((input.controlled || input.interactive) && !controlledVersion(firstLine(probe.stdout)))
-    throw new HarnessAdapterError("configuration_isolation_unsupported", "Controlled configuration and interactive permissions require the verified OpenCode 1.18.34 runtime.");
+    throw new HarnessAdapterError("configuration_isolation_unsupported", `Controlled configuration and interactive permissions require the verified OpenCode ${OPENCODE_CONTROLLED_PROFILE_VERSION} runtime.`);
   const ownedTools = input.workOwner?.mcpToolsets?.some(set => set.tools.length) ? await openCodeOwnedToolServer() : undefined;
   let ownedPolicy: Awaited<ReturnType<typeof openCodeOwnedPolicyServer>> | undefined;
   try {if (input.workOwner && input.approvalOptions) ownedPolicy = await openCodeOwnedPolicyServer();}

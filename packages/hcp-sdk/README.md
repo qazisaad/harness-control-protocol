@@ -68,7 +68,7 @@ Read/fork/rollback require an idle retained conversation; steering requires the 
 
 Conversation calls resolve to their matching `harness.conversation.result`, including steering turn IDs, fork destinations and content IDs/offsets. Compaction is a turn action: its ACK confirms acceptance; a terminal event confirms the outcome. Use durable command IDs and reconcile unknown mutations before retrying.
 
-Large output/history fields can include `content_ref`. Call `readContent(sessionId, reference.content_id, byteOffset, byteLimit)` with at most 64 KiB per chunk. Decode `data_base64` to bytes and concatenate before UTF-8 decoding; `next_offset` identifies the next chunk. References remain session/provider/workspace scoped and can expire or be evicted. See the [independent consumer](../../examples/conversation-controls-consumer.mjs).
+Large output/history fields can include `content_ref`. Call `readContent(sessionId, reference.content_id, byteOffset, byteLimit)` with at most 64 KiB per chunk. Decode `data_base64` to bytes and concatenate before UTF-8 decoding; `next_offset` identifies the next chunk. References remain session/provider/workspace scoped and can expire or be evicted. See the [independent consumer](../../examples/package-checks/conversation-controls-consumer.mjs).
 
 Use a new `HcpHostConnection` for each physical socket. Pass only your durably committed resume cursor to `accept`. `events` uses the canonical protocol reducer; gap/conflict results and `host.replay.unavailable` require application recovery. Retaining an event in memory does not acknowledge durable consumption. The app owns event retention and can supply a restored reducer to the constructor.
 
@@ -137,7 +137,7 @@ A persistent profile can declare `native_owner_closure: "owned_session"`. Its su
 
 `subscribeSessionObservations(callback)` supplies copied committed events and lost-continuity notifications independently of command waits. Exact replay duplicates do not produce another event callback; snapshots can supply retained events, so consumers retain per-session positions. Callback failures detach that observer, with a maximum of 128 observers. Disconnect detaches all observers after their final uncertainty notification.
 
-The [independent ownership consumer](../../examples/native-session-ownership-consumer.mjs) demonstrates these lifecycle distinctions through the public package and validated wire events.
+The [independent ownership consumer](../../examples/package-checks/native-session-ownership-consumer.mjs) demonstrates these lifecycle distinctions through the public package and validated wire events.
 
 Native question forms preserve native headings, exact option labels and descriptions as JSON Schema `title` and `anyOf` annotations. `uniqueItems` and native answer bounds describe the same selection constraints as reply validation; custom answers remain available only where the native question permits them. Free-answer length counts Unicode code points consistently with JSON Schema, including supplementary-plane characters. Applications own UI presentation and product answer adaptation.
 

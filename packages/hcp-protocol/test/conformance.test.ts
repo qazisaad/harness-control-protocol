@@ -14,7 +14,7 @@ import {
   type ConformanceCase,
   type ConformanceRunResult,
 } from "../src/conformance.js";
-import { createHcpMessageJsonSchema, type JsonSchema, type JsonSchemaValue } from "../src/json-schema.js";
+import { createHcpMessageJsonSchema, createPairingJsonSchema, type JsonSchema, type JsonSchemaValue } from "../src/json-schema.js";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtureRoot = join(packageRoot, "fixtures", "conformance");
@@ -107,6 +107,24 @@ test("JSON Schema validates the conformance fixture corpus", async () => {
     const parsed: unknown = JSON.parse(content) as unknown;
     const valid: boolean = validate(parsed);
     assert.equal(valid, testCase.expectation === "valid", `${testCase.filePath}: ${ajv.errorsText(validate.errors)}`);
+  }
+});
+
+test("pairing JSON Schema matches the packaged file and validates pairing bodies", async () => {
+  const schema: JsonSchema = createPairingJsonSchema();
+  assert.deepEqual(JSON.parse(await readFile(join(packageRoot, "schemas", "pairing.schema.json"), "utf8")), schema);
+  const ajv = new Ajv2020({ strict: false, validateFormats: false });
+  ajv.addSchema(schema);
+  const check = (name: string, value: unknown): boolean => ajv.validate(`${schema.$id}#/$defs/${name}`, value) as boolean;
+  const hash: string = "a".repeat(64);
+  assert.equal(check("PairingCreateRequest", { runner_id: "r", host_id: "h", protocol_version: "hcp.v0", exchange_secret_hash: hash }), true);
+  assert.equal(check("PairingCreateRequest", { runner_id: "r", host_id: "h", protocol_version: "hcp.v0", exchange_secret_hash: "short" }), false);
+  assert.equal(check("PairingExchangeResponse", { status: "pending" }), true);
+  assert.equal(check("PairingExchangeResponse", { status: "approved" }), false);
+  assert.equal(check("ConnectionTokenResponse", { connection_token: "t", expires_at: "2026-01-01T00:00:00Z", extra: 1 }), false);
+  const endpoints = schema["x-hcp-endpoints"] as { request: string; response: string }[];
+  for (const endpoint of endpoints) {
+    assert.ok(schema.$defs && endpoint.request in (schema.$defs as object) && endpoint.response in (schema.$defs as object));
   }
 });
 

@@ -6,7 +6,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { HCP_VERSION, runnerCredentialSchema, pairingCodeResponseSchema, pairingExchangeResponseSchema, connectionTokenResponseSchema, type PairingCodeResponse } from "@harness-control/protocol";
+import { HCP_VERSION, PAIRING_HTTP_PATHS, runnerCredentialSchema, pairingCodeResponseSchema, pairingExchangeResponseSchema, connectionTokenResponseSchema, type PairingCodeResponse } from "@harness-control/protocol";
 import { z } from "zod";
 
 import type { RunnerConfig } from "../config/index.js";
@@ -47,7 +47,7 @@ export function defaultCredentialsPath(): string {
 export async function pairWithReferenceControlPlane(options: ReferencePairingOptions): Promise<ReferencePairingResult> {
   const baseUrl: URL = toHttpControlPlaneUrl(options.controlPlaneUrl);
   const exchangeSecret: string = randomBytes(32).toString("base64url");
-  const codeResponse = await postJson(new URL("/pairing-codes", baseUrl), {
+  const codeResponse = await postJson(new URL(PAIRING_HTTP_PATHS.create, baseUrl), {
     runner_id: options.runnerId,
     host_id: options.hostId,
     protocol_version: HCP_VERSION,
@@ -58,7 +58,7 @@ export async function pairWithReferenceControlPlane(options: ReferencePairingOpt
   while (Date.now() < deadline) {
     const timeout = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-    const exchange = await postJson(new URL("/pairing-exchange", baseUrl), {
+    const exchange = await postJson(new URL(PAIRING_HTTP_PATHS.exchange, baseUrl), {
       request_id: codeResponse.request_id,
       exchange_secret: exchangeSecret,
       runner_id: options.runnerId,
@@ -124,9 +124,14 @@ export async function loadRunnerCredential(config: RunnerConfig): Promise<Runner
   );
 }
 
+/** Digest of the installed protocol package's message schema; control planes pin it to admit compatible runners. */
+export function protocolSchemaSha256(): string {
+  return createHash("sha256").update(readFileSync(createRequire(import.meta.url).resolve("@harness-control/protocol/schema.json"))).digest("hex");
+}
+
 export async function requestConnectionAuthorization(config: RunnerConfig, credential: RunnerCredential, signal?: AbortSignal, demandSupported = true) {
   const response = await postJson(
-    new URL("/runner-connection-token", toHttpControlPlaneUrl(config.control_plane_url)),
+    new URL(PAIRING_HTTP_PATHS.connectionToken, toHttpControlPlaneUrl(config.control_plane_url)),
     {
       ...(demandSupported ? {demand_supported: true} : {}),
       credential_id: credential.credential_id,
@@ -134,7 +139,7 @@ export async function requestConnectionAuthorization(config: RunnerConfig, crede
       runner_id: config.runner_id,
       host_id: config.host_id ?? config.runner_id,
       protocol_version: HCP_VERSION,
-      protocol_schema_sha256: createHash("sha256").update(readFileSync(createRequire(import.meta.url).resolve("@harness-control/protocol/schema.json"))).digest("hex"),
+      protocol_schema_sha256: protocolSchemaSha256(),
     },
     connectionTokenResponseSchema,
     signal,
@@ -208,7 +213,7 @@ async function postJson<T>(url: URL, body: unknown, schema: z.ZodType<T>, signal
   const parsed: unknown = raw.length > 0 ? JSON.parse(raw) : {};
   if (!response.ok) {
     const message: string = errorMessageFromJson(parsed) ?? `${url.pathname} returned HTTP ${response.status}.`;
-    if (url.pathname === "/runner-connection-token" && [401, 403].includes(response.status)) throw new RunnerAuthorizationRejected(message);
+    if (url.pathname === PAIRING_HTTP_PATHS.connectionToken && [401, 403].includes(response.status)) throw new RunnerAuthorizationRejected(message);
     throw new Error(message);
   }
   return schema.parse(parsed);

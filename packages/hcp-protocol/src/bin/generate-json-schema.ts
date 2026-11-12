@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createHcpMessageJsonSchema } from "../json-schema.js";
+import { createHcpMessageJsonSchema, createPairingJsonSchema } from "../json-schema.js";
 
 const defaultOutputPath = fileURLToPath(new URL("../../schemas/hcp-message.schema.json", import.meta.url));
 const outputPath: string = process.argv[2] === undefined ? defaultOutputPath : resolve(process.argv[2]);
@@ -16,3 +16,4 @@ process.stdout.write(`${outputPath}\n`);
 
 const { createMcpReviewContract } = await import("../mcp-review.js");
 await writeFile(fileURLToPath(new URL("../../schemas/mcp-review.json", import.meta.url)), `${JSON.stringify(createMcpReviewContract(), null, 2)}\n`, "utf8");
+await writeFile(fileURLToPath(new URL("../../schemas/pairing.schema.json", import.meta.url)), `${JSON.stringify(createPairingJsonSchema(), null, 2)}\n`, "utf8");

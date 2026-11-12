@@ -38,7 +38,7 @@ Control planes must restrict management to authorized machine owners, bind dispa
 
 ## Repository identity
 
-Workspaces in capabilities and complete `host.workspaces.result` snapshots may include runner-observed `git` state: credential-free `remote`, `root_commit`, `branch`, `head_commit` and `dirty`. Fields are omitted when unknown or when the folder is not a repository. Browse results never observe repositories. Use `normalizeGitRemote` and `root_commit` to recognize the same repository across machines and paths; neither proves two checkouts contain the same files. Session starts report the observed state in `workspace.preflight.completed`, and `workspace_preflight` can require a remote, root commit, branch, clean worktree or paths before any native startup. See [release-0.5.1.md](release-0.5.1.md).
+Workspaces in capabilities and complete `host.workspaces.result` snapshots may include runner-observed `git` state: credential-free `remote`, `root_commit`, `branch`, `head_commit` and `dirty`. Fields are omitted when unknown or when the folder is not a repository. Browse results never observe repositories. Use `normalizeGitRemote` and `root_commit` to recognize the same repository across machines and paths; neither proves two checkouts contain the same files. Session starts report the observed state in `workspace.preflight.completed`, and `workspace_preflight` can require a remote, root commit, branch, clean worktree or paths before any native startup. See [release-0.5.1.md](releases/release-0.5.1.md).
 
 ## Browse folders
 

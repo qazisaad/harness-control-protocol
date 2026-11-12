@@ -54,8 +54,8 @@ test("isolated and read-only profiles cannot silently accept unsupported sandbox
   try {
     assert.throws(() => validateNativeStart({payload: {...f.input.startPayload, execution_profile: "isolated"}, provider: f.input.provider}, "codex"), /interactive profile with native readback/);
     assert.throws(() => validateNativeStart({payload: {...f.input.startPayload, sandbox_mode: "read_only" as const}, provider: f.input.provider}, "codex"), /workspace-write enforcement/);
-    // Claude has no OS sandbox: its roots require declared full access and carry no network authority.
-    assert.throws(() => validateNativeStart({payload: {...f.input.startPayload, driver_kind: "claude"}, provider: f.input.provider}, "claude"), /additional permitted directories/);
+    // Claude contained profiles enforce roots and networking through its native shell sandbox.
+    assert.doesNotThrow(() => validateNativeStart({payload: {...f.input.startPayload, driver_kind: "claude"}, provider: f.input.provider}, "claude"));
     assert.throws(() => validateNativeStart({payload: {...f.input.startPayload, driver_kind: "claude", sandbox_mode: "danger_full_access" as const,
       sandbox_options: {network_access: true, writable_roots: f.input.startPayload.sandbox_options!.writable_roots!}}, provider: f.input.provider}, "claude"), /additional permitted directories/);
     assert.equal(f.calls.length, 0);

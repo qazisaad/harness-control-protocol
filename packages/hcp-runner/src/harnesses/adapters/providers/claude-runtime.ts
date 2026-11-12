@@ -24,6 +24,7 @@ import {claudeContextCapacity} from "./claude-context.js";
 import { ClaudeInput } from "./claude-input.js";
 import {retainedContent, retainedFinalText, textChunks} from "./content-projection.js";
 import {measuredContext, unavailableContext} from "./native-context.js";
+import {claudeSandboxOptions, confirmClaudeSandbox} from "./claude-sandbox.js";
 
 export const claudeResultSchema = z.object({
   type: z.literal("result"),
@@ -71,7 +72,6 @@ export function createClaudeTurn(
     if (images.length) message.message.content = [{type: "text", text: input.payload.input},
       ...images.map(image => ({type: "image" as const, source: {type: "base64" as const,
         media_type: image.mime_type, data: image.data_base64}}))];
-    channel.offer(message);
     const interactions = new NativeInteractions(input.startPayload, input.payload, {threadId: nativeId, turnId: () => input.payload.turn_id}, emit);
     let initialized = false;
     const selection =
@@ -106,6 +106,7 @@ export function createClaudeTurn(
           pathToClaudeCodeExecutable:
             input.provider.executable_path ?? "claude",
           cwd: input.startPayload.cwd,
+          ...claudeSandboxOptions(input.startPayload),
           model: claudeNativeModel(selection),
           ...(effort ? { effort } : {}),
           env: {
@@ -147,6 +148,11 @@ export function createClaudeTurn(
           },
         },
       });
+      if (input.startPayload.sandbox_mode !== "danger_full_access") {
+        await stream.initializationResult();
+        await confirmClaudeSandbox(stream, input.startPayload);
+      }
+      channel.offer(message);
       let result: z.infer<typeof claudeResultSchema> | undefined;
       let compacted = false;
       let streamed = false;

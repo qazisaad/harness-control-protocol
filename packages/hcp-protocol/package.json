@@ -1,6 +1,6 @@
 {
   "name": "@harness-control/protocol",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -25,6 +25,9 @@
       "default": "./schemas/hcp-message.schema.json"
     },
     "./package.json": "./package.json",
+    "./pairing.schema.json": {
+      "default": "./schemas/pairing.schema.json"
+    },
     "./mcp-review.json": {
       "default": "./schemas/mcp-review.json"
     },

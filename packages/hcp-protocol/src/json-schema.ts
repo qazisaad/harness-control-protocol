@@ -8,6 +8,16 @@ import {
   knownHcpEventDataSchemas,
   type KnownHcpEventType,
 } from "./index.js";
+import {
+  PAIRING_HTTP_PATHS,
+  connectionTokenRequestSchema,
+  connectionTokenResponseSchema,
+  pairingCodeResponseSchema,
+  pairingCreateRequestSchema,
+  pairingExchangeRequestSchema,
+  pairingExchangeResponseSchema,
+  runnerCredentialSchema,
+} from "./pairing.js";
 
 export type JsonSchemaValue = boolean | JsonSchema;
 
@@ -247,3 +257,40 @@ export function createHcpMessageJsonSchema(): JsonSchema {
 }
 
 export const hcpMessageJsonSchema: JsonSchema = createHcpMessageJsonSchema();
+
+export const HCP_PAIRING_JSON_SCHEMA_ID = `https://schemas.harness-control.local/${HCP_VERSION}/pairing.schema.json`;
+
+/**
+ * JSON Schema bundle for the pairing and connection-token HTTP contract, so apps
+ * in any language can generate models from the same definitions the runner uses.
+ * Each `x-hcp-endpoints` entry names the request and response definitions for one path.
+ */
+export function createPairingJsonSchema(): JsonSchema {
+  const definitions = {
+    PairingCreateRequest: pairingCreateRequestSchema,
+    PairingCodeResponse: pairingCodeResponseSchema,
+    PairingExchangeRequest: pairingExchangeRequestSchema,
+    PairingExchangeResponse: pairingExchangeResponseSchema,
+    RunnerCredential: runnerCredentialSchema,
+    ConnectionTokenRequest: connectionTokenRequestSchema,
+    ConnectionTokenResponse: connectionTokenResponseSchema,
+  } satisfies Record<string, z.ZodType<unknown>>;
+  const $defs: Record<string, JsonSchema> = Object.fromEntries(Object.entries(definitions).map(([name, schema]) => {
+    const definition: JsonSchema = toRootJsonSchema(schema);
+    delete definition.$schema;
+    definition.title = name;
+    return [name, definition];
+  }));
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: HCP_PAIRING_JSON_SCHEMA_ID,
+    title: "HCP pairing and connection-token HTTP contract",
+    description: "Request and response bodies for the control-plane HTTP endpoints a runner calls before it opens a WebSocket. Paths are rooted at the control-plane origin.",
+    "x-hcp-endpoints": [
+      { method: "POST", path: PAIRING_HTTP_PATHS.create, request: "PairingCreateRequest", response: "PairingCodeResponse" },
+      { method: "POST", path: PAIRING_HTTP_PATHS.exchange, request: "PairingExchangeRequest", response: "PairingExchangeResponse" },
+      { method: "POST", path: PAIRING_HTTP_PATHS.connectionToken, request: "ConnectionTokenRequest", response: "ConnectionTokenResponse" },
+    ],
+    $defs,
+  };
+}

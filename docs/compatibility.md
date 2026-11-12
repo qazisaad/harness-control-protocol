@@ -43,9 +43,13 @@ The native Codex/Claude drivers replace the old completion-only CLI paths. Their
 
 ## Runner Compatibility
 
+### 0.5.3
+
+The WebSocket message schema is unchanged, so `protocol_schema_sha256` matches 0.5.2 and control planes pinned to 0.5.2 admit 0.5.3 runners. Claude now advertises `read_only` and `workspace_write` and enforces them with its OS shell sandbox. In those modes its Write, Edit, NotebookEdit and sub-agent tools are unavailable, so apps that relied on Claude rejecting contained modes must now expect them to run. Claude models mark the account default with `is_default`. The pairing HTTP contract is newly exported as `pairing.schema.json`; it describes existing behaviour and changes nothing on the wire. See [release-0.5.3.md](releases/release-0.5.3.md).
+
 ### 0.5.1
 
-Upgrade protocol, SDK, runner and the consumer's generated schema together. Older strict parsers reject workspace `git`, preflight `expected_root_commit`/`root_commit` and the profile field `writable_roots_enforcement`. Workspace preflight is now enforced instead of refused, so a consumer that sent expectations must be ready for `workspace_preflight_failed`. Claude interactive now accepts permission-scoped `writable_roots` under `danger_full_access`; consumers must present this as native permission scope, not OS containment. See [release-0.5.1.md](release-0.5.1.md).
+Upgrade protocol, SDK, runner and the consumer's generated schema together. Older strict parsers reject workspace `git`, preflight `expected_root_commit`/`root_commit` and the profile field `writable_roots_enforcement`. Workspace preflight is now enforced instead of refused, so a consumer that sent expectations must be ready for `workspace_preflight_failed`. Claude interactive now accepts permission-scoped `writable_roots` under `danger_full_access`; consumers must present this as native permission scope, not OS containment. See [release-0.5.1.md](releases/release-0.5.1.md).
 
 ### 0.5.0 migration candidate
 

@@ -45,10 +45,7 @@ export function nativeExecutionCapabilities(
     context_usage: true,
     portable_history: true,
     approval_policies: ["ask", "auto_edits", "full_access"],
-    sandbox_modes:
-      driver === "codex"
-        ? ["read_only", "workspace_write", "danger_full_access"]
-        : ["danger_full_access"],
+    sandbox_modes: ["read_only", "workspace_write", "danger_full_access"],
   };
 }
 
@@ -70,10 +67,10 @@ export function validateNativeStart(
     throw new HarnessAdapterError("sandbox_options_unsupported", "Sandbox options require an interactive profile with native readback.");
   if (input.payload.sandbox_options && driver === "codex" && input.payload.sandbox_mode !== "workspace_write")
     throw new HarnessAdapterError("sandbox_options_unsupported", "Codex sandbox options require workspace-write enforcement.");
-  // Claude has no OS sandbox: roots extend its native permission scope and cannot carry network authority.
-  if (input.payload.sandbox_options && driver === "claude" && (input.payload.sandbox_mode !== "danger_full_access"
-    || input.payload.sandbox_options.network_access !== undefined || !input.payload.sandbox_options.writable_roots?.length))
-    throw new HarnessAdapterError("sandbox_options_unsupported", "Claude accepts only additional permitted directories through native settings readback.");
+  if (input.payload.sandbox_options && driver === "claude"
+    && input.payload.sandbox_mode === "danger_full_access"
+    && (input.payload.sandbox_options.network_access !== undefined || !input.payload.sandbox_options.writable_roots?.length))
+    throw new HarnessAdapterError("sandbox_options_unsupported", "Full-access Claude supports additional permitted directories; network containment requires a sandboxed mode.");
   if (input.payload.approval_reviewer === "native_auto" && input.payload.execution_profile !== "interactive")
     throw new HarnessAdapterError("native_approval_review_unsupported", "Native automatic approval review requires the interactive profile.");
   if (driver === "claude" && input.payload.approval_reviewer === "native_auto" && input.payload.approval_policy !== "auto_edits")

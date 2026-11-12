@@ -57,3 +57,16 @@ test("Claude advertises 1M context for long-context families and ultracode only 
   assert.deepEqual(projectClaudeModels(catalog)[0]!.capabilities.option_descriptors[1], {id: "contextWindow", label: "Context window", type: "select",
     default_value: "default", values: [{value: "default", label: "Default"}, {value: "1m", label: "1M"}]});
 });
+
+
+test("native defaults are resolved unambiguously without guessing the first model", () => {
+  const models = [{value: "sonnet", displayName: "Sonnet", resolvedModel: "native-sonnet"},
+    {value: "opus", displayName: "Opus", resolvedModel: "native-opus"}];
+  assert.deepEqual(projectClaudeModels({models, default_model_id: "native-opus"}).map(model => model.is_default), [undefined, true]);
+  assert.deepEqual(projectClaudeModels({models, default_model_id: "missing"}).map(model => model.is_default), [undefined, undefined]);
+});
+
+
+test("the advertised native default alias is selectable without inventing a concrete model", () => {
+  assert.equal(projectClaudeModels([{value: "default", displayName: "Default"}])[0]?.is_default, true);
+});
