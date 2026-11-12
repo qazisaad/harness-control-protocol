@@ -43,6 +43,10 @@ The native Codex/Claude drivers replace the old completion-only CLI paths. Their
 
 ## Runner Compatibility
 
+### 0.5.4
+
+The zod upgrade changes the generated message schema, so `protocol_schema_sha256` changes and pinned control planes must move to 0.5.4 together with their runners. Timestamps now require seconds; unions of plain types are written as type lists with the same meaning. See [release-0.5.4.md](releases/release-0.5.4.md).
+
 ### 0.5.3
 
 The WebSocket message schema is unchanged, so `protocol_schema_sha256` matches 0.5.2 and control planes pinned to 0.5.2 admit 0.5.3 runners. Claude now advertises `read_only` and `workspace_write` and enforces them with its OS shell sandbox. In those modes its Write, Edit, NotebookEdit and sub-agent tools are unavailable, so apps that relied on Claude rejecting contained modes must now expect them to run. Claude models mark the account default with `is_default`. The pairing HTTP contract is newly exported as `pairing.schema.json`; it describes existing behaviour and changes nothing on the wire. See [release-0.5.3.md](releases/release-0.5.3.md).

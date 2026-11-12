@@ -1,6 +1,6 @@
 {
   "name": "@harness-control/protocol",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -43,7 +43,7 @@
     "test": "tsx --test src/**/*.test.ts test/**/*.test.ts"
   },
   "dependencies": {
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "description": "Types, validation, JSON Schema and reducers for Harness Control Protocol",
   "engines": {

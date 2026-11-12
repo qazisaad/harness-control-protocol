@@ -39,7 +39,7 @@ npm run dev:runner -- connect http://127.0.0.1:8787/hcp/runner
 
 Pick the coding agents to enable. The runner opens the pairing page, which shows a code and an approval command.
 
-The published runner works too (`npx @harness-control/runner@0.5.3 connect …`). The server only admits runners built from the same protocol schema it was built with (see [connection tokens](lifecycle.md#connection-tokens)).
+The published runner works too (`npx @harness-control/runner@0.5.4 connect …`). The server only admits runners built from the same protocol schema it was built with (see [connection tokens](lifecycle.md#connection-tokens)).
 
 ## 3. Approve it
 
