@@ -22,7 +22,7 @@ Protocol, SDK and runner are released together at 0.5.3. The wire version remain
 ## Security
 
 - The runner's MCP dependencies are upgraded to `@modelcontextprotocol/client` 2.4.0, `core` 2.4.0, `server` 2.4.0, `node` 2.1.2 and `sdk` 1.32.2. This fixes published high-severity advisories, including HTTP transports re-sending custom headers on cross-origin redirects, unbounded request bodies, and mixed-up shared transports.
-- Known remaining advisory: zod 4.4.3 ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), memory use when validating oversized constrained collections). Upgrading zod changes generated schema output and timestamp validation, which changes `protocol_schema_sha256`. It is held back for a coordinated release with consumers' schema pins.
+- Known remaining advisory (fixed in [0.5.4](release-0.5.4.md)): zod 4.4.3 ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), memory use when validating oversized constrained collections). Upgrading zod changes generated schema output and timestamp validation, which changes `protocol_schema_sha256`. It is held back for a coordinated release with consumers' schema pins.
 
 ## Examples
 
