@@ -17,6 +17,7 @@ Packages: `@harness-control/protocol` (types, Zod and JSON Schemas, event reduce
 - Store a command before sending it if you need crash recovery, and keep its id on retry. The SDK never retries. A timeout or disconnect means the outcome is unknown: reconcile with a snapshot before sending another change.
 - Pass `accept` only a replay cursor you have durably stored. A missing capability means unknown, not removed.
 - The runner's local policy wins. Never widen a requested sandbox or approval policy to make a provider work.
+- Agent setup from the app (`setupProvider`) names only the agent and `install` or `update`. It works only for agents the machine's user listed in `provider_setup.remote_agents`; the runner picks the tested version. Sign-in is never automated: show `auth.login_command` to the user.
 - Prove a control plane with `npx @harness-control/runner check-control-plane <runner-url> --hooks <test-hooks-url>`. It needs test-only `approve`, `decline` and `revoke` hooks.
 
 ## Docs
@@ -30,6 +31,7 @@ Packages: `@harness-control/protocol` (types, Zod and JSON Schemas, event reduce
 - [Pairing](docs/pairing.md): the runner's side of pairing
 - [Reliability and snapshots](docs/reliability-and-snapshots.md): delivery, cursors and replay
 - [Provider support](docs/native-providers.md): generated capability tables
+- [Installing coding agents](docs/provider-setup.md): `hcp-runner providers install|update|status`, remote setup policy and `setupProvider`
 
 ## Code
 

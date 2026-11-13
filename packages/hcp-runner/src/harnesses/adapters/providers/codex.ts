@@ -23,6 +23,7 @@ import {
   type CodexProcessRunOptions,
   firstLine,
   processFailureMessage,
+  shellCommandLine,
   spawnProviderCliProcess,
   startManagedCliProcess,
 } from "./cli-process.js";
@@ -194,6 +195,7 @@ export class CodexHarnessAdapter implements HarnessAdapter {
           "Codex is not authenticated.",
           diagnosticPaths,
         ),
+        loginCommand: shellCommandLine(codexHomeEnvironment(provider), [executable, ...launchArgs, "login"]),
         models: normalizeProviderModels(provider.models),
       };
     }
@@ -412,8 +414,12 @@ function providerEnvironment(
 ): Record<string, string> {
   return {
     ...provider.env,
-    ...(provider.home ? { CODEX_HOME: provider.home } : {}),
+    ...codexHomeEnvironment(provider),
   };
+}
+/** Only the configuration home; the provider's other environment may hold secrets and is never echoed. */
+function codexHomeEnvironment(provider: ProviderInstanceConfig): Record<string, string> {
+  return provider.home ? { CODEX_HOME: provider.home } : {};
 }
 function codexLaunchArgs(provider: ProviderInstanceConfig): string[] {
   return provider.launch_args;

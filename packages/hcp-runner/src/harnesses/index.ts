@@ -269,6 +269,19 @@ export class HarnessSessionManager {
     });
   }
 
+  /** Provider executables change only between sessions, behind the same boundary as session starts. */
+  updateProviderConfiguration<T>(operation: () => Promise<T>): Promise<T> {
+    return this.#serializeWorkspace(async () => {
+      if (this.activeSessionCount() > 0) throw new HarnessSessionError("provider_setup_busy", "Stop active sessions before changing coding agents.");
+      return operation();
+    });
+  }
+
+  /** Probes the given configured instances without republishing capabilities. */
+  probeProviders(providers: ProviderInstanceConfig[]): Promise<ProviderDriverStatus[]> {
+    return this.#adapterRegistry.probeProviders(providers);
+  }
+
   async #nativeFeedbackOperation(commandId: string, request: HcpConversationRequestPayload & {operation: Extract<HcpConversationRequestPayload["operation"], {kind: "feedback"}>}): Promise<HcpConversationResultPayload> {
     const binding = this.#stateStore.nativeConversationForSession(request.session_id);
     if (!binding) throw new HarnessAdapterError("native_feedback_binding", "Feedback requires a retained native conversation binding.");

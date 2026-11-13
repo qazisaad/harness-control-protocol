@@ -1,0 +1,13 @@
+{
+  "id": "provider-setup-result-installed",
+  "type": "host.providers.setup.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:30Z",
+  "payload": {
+    "request_id": "provider-setup-request",
+    "agent": "codex",
+    "action": "install",
+    "outcome": {"kind": "installed", "version": "0.161.0", "changed": true, "status": "unauthenticated",
+      "login_command": "/home/user/.hcp-runner/providers/codex/0.161.0/node_modules/.bin/codex login"}
+  }
+}

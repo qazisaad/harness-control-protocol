@@ -24,6 +24,8 @@ export type ProviderDriverStatus = {
   authStatus?: NonNullable<HarnessProviderSnapshot["auth"]>["status"];
   version?: string;
   message?: string;
+  /** Sign-in command for the machine's user; adapters set it only with status "unauthenticated". */
+  loginCommand?: string;
   models: HarnessModel[];
 };
 
@@ -126,6 +128,7 @@ export class ProviderInstanceRegistry {
       continuation_group_key: computeContinuationGroupKey(provider),
       auth: {
         status: driver?.authStatus ?? (status === "unauthenticated" ? "unauthenticated" : "unknown"),
+        ...(status === "unauthenticated" && driver?.loginCommand ? { login_command: driver.loginCommand } : {}),
       },
       models: provider.models.length > 0 ? normalizeHarnessModels(provider.models) : driver?.models ?? [],
       local_capabilities: provider.local_capabilities,

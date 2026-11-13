@@ -1,6 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { open, readFile, rename, rm } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
+import { hcpProviderSetupAgentSchema } from "@harness-control/protocol";
 import { z } from "zod";
 
 const envRecordSchema = z.record(z.string(), z.string());
@@ -105,6 +108,11 @@ export const RunnerConfigSchema = z.object({
   workspaces: z.array(RunnerWorkspaceConfigSchema).max(128).default([]),
   workspace_revision: z.string().min(1).optional(),
   workspace_management: z.object({ allowed_roots: z.array(z.string().min(1).refine(isAbsolute, "Use an absolute folder path")).max(32) }).optional(),
+  /** Agents the control plane may install or update on this machine. Absent means remote setup is off; only the local user edits it. */
+  provider_setup: z.object({
+    remote_agents: z.array(hcpProviderSetupAgentSchema).min(1)
+      .refine(agents => new Set(agents).size === agents.length, "List each agent once."),
+  }).strict().optional(),
   provider_instances: z.array(ProviderInstanceConfigSchema).max(32).default([]),
   mcp_stdio_profiles: z.array(McpStdioProfileConfigSchema).default([]),
   local_capabilities: z
@@ -151,4 +159,40 @@ export async function loadRunnerConfig(path: string): Promise<RunnerConfig> {
   const raw: string = await readFile(path, "utf8");
   const parsed: unknown = JSON.parse(raw);
   return RunnerConfigSchema.parse(parsed);
+}
+
+/** The saved configuration changed underneath the runner, or the edit would make it invalid. Nothing was written. */
+export class RunnerConfigUpdateError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "RunnerConfigUpdateError";
+  }
+}
+
+/**
+ * Applies one edit to the saved runner configuration and to the shared in-memory `current` config.
+ * The edit sees the raw file so fields the user wrote stay as written and defaults are not expanded.
+ * Refuses when the file no longer matches `current`, so a runner never overwrites a hand edit it has not loaded.
+ */
+export async function updateRunnerConfigFile(
+  configPath: string,
+  current: RunnerConfig,
+  edit: (raw: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  const raw = z.record(z.string(), z.unknown()).parse(JSON.parse(await readFile(configPath, "utf8")));
+  const saved = RunnerConfigSchema.safeParse(raw);
+  if (!saved.success || !isDeepStrictEqual(saved.data, current)) throw new RunnerConfigUpdateError("Runner configuration changed on disk. Restart the runner before changing it remotely.");
+  const nextRaw = edit(raw);
+  const next = RunnerConfigSchema.safeParse(nextRaw);
+  if (!next.success) throw new RunnerConfigUpdateError(`The change would make the runner configuration invalid: ${z.prettifyError(next.error)}`, { cause: next.error });
+  const temporaryPath = `${configPath}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporaryPath, "wx", 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(nextRaw, null, 2)}\n`);
+      await file.sync();
+    } finally { await file.close(); }
+    await rename(temporaryPath, configPath);
+  } finally { await rm(temporaryPath, { force: true }); }
+  Object.assign(current, next.data);
 }

@@ -1,0 +1,14 @@
+{
+  "id": "provider-setup-capabilities",
+  "type": "host.capabilities.updated",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {
+    "providers": [{"provider_instance_id": "codex-local", "driver_kind": "codex", "enabled": true, "installed": true, "version": "codex-cli 0.161.0",
+      "status": "unauthenticated", "availability": "unavailable", "message": "Codex is not authenticated.",
+      "auth": {"status": "unauthenticated", "login_command": "CODEX_HOME=/home/user/.codex-work codex login"}, "models": []}],
+    "local_capabilities": [],
+    "workspaces": [],
+    "provider_setup": {"agents": [{"agent": "codex", "version": "0.161.0"}, {"agent": "opencode", "version": "1.18.34"}]}
+  }
+}

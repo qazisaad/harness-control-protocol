@@ -22,7 +22,7 @@
     "start:stdio": "tsx src/stdio.ts"
   },
   "dependencies": {
-    "@harness-control/runner": "0.5.4",
+    "@harness-control/runner": "0.6.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "zod": "^4.6.7"
   }

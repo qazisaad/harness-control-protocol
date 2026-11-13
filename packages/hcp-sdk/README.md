@@ -34,9 +34,9 @@ const command = createCommand({
 const acknowledgement = await host.send(command);
 ```
 
-`startSession`, `sendTurn`, `cancelTurn`, `stopSession`, `requestSnapshot`, `respondToApproval`, `respondToInput`, `detachTools`, `runLocalAction`, and `manageWorkspaces` provide typed convenience calls. Each accepts a protocol payload, optional command identity/timestamp/metadata, and optional wait timeout/AbortSignal. MCP attachments are supplied in `startSession`. Model discovery comes from `host.capabilities.updated`; workspace operations are `list`, `add`, `rename`, and `remove`.
+`startSession`, `sendTurn`, `cancelTurn`, `stopSession`, `requestSnapshot`, `respondToApproval`, `respondToInput`, `detachTools`, `runLocalAction`, `manageWorkspaces`, and `setupProvider` provide typed convenience calls. Each accepts a protocol payload, optional command identity/timestamp/metadata, and optional wait timeout/AbortSignal. MCP attachments are supplied in `startSession`. Model discovery comes from `host.capabilities.updated`; workspace operations are `list`, `add`, `rename`, and `remove`.
 
-Session commands resolve to an ACK. Snapshot, workspace, and local-action commands resolve to their matching result. Local/workspace errors are typed result messages; NACKs throw `HcpCommandRejectedError`. Disconnect, timeout, or aborting a wait throws `HcpOutcomeUnknownError` and never retries or cancels remote work. Send an explicit cancel command when appropriate.
+Session commands resolve to an ACK. Snapshot, workspace, provider setup, and local-action commands resolve to their matching result. `setupProvider` names only the agent and `install` or `update`, waits up to 15 minutes by default, and resolves with `host.providers.setup.result`; see [installing coding agents](https://github.com/qazisaad/harness-control-protocol/blob/main/docs/provider-setup.md). Local/workspace errors are typed result messages; NACKs throw `HcpCommandRejectedError`. Disconnect, timeout, or aborting a wait throws `HcpOutcomeUnknownError` and never retries or cancels remote work. Send an explicit cancel command when appropriate.
 
 ## Conversation controls
 

@@ -15,6 +15,7 @@ import {
   type HcpNackPayload,
   type HcpSessionSnapshotPayload,
   hcpConversationResultPayloadSchema, type HcpConversationResultPayload,
+  hcpProviderSetupResultPayloadSchema, type HcpProviderSetupResultPayload,
   harnessNativeWorkRecordSchema,
   isNativeWorkTerminal,
   harnessNativeGoalRecordSchema,
@@ -67,11 +68,19 @@ export type PersistedLocalActionReceipt =
       payload: LocalActionErrorPayload;
     };
 
+/** A settled remote provider setup; a repeated request id receives this result instead of a second install. */
+export type PersistedProviderSetupReceipt = {
+  payloadHash: string;
+  settledAt: string;
+  result: HcpProviderSetupResultPayload;
+};
+
 type RunnerStateData = {
   version: 1;
   events: Record<string, HcpHarnessEventPayload[]>;
   commandReceipts: Record<string, PersistedCommandReceipt>;
   localActionReceipts: Record<string, PersistedLocalActionReceipt>;
+  providerSetupReceipts: Record<string, PersistedProviderSetupReceipt>;
   mcpReviews: Record<string, PersistedMcpReview>;
   nativeConversations: Record<string, NativeConversation>;
   nativeWork: Record<string, NativeWorkState>;
@@ -223,12 +232,19 @@ const persistedLocalActionReceiptSchema = z.discriminatedUnion("outcome", [
     .strict(),
 ]);
 
+const persistedProviderSetupReceiptSchema = z.object({
+  payloadHash: z.string().min(1),
+  settledAt: z.string().datetime({ offset: true }),
+  result: hcpProviderSetupResultPayloadSchema,
+}).strict();
+
 const runnerStateDataSchema = z
   .object({
     version: z.literal(1),
     events: z.record(z.string(), z.array(hcpHarnessEventPayloadSchema)),
     commandReceipts: z.record(z.string(), persistedCommandReceiptSchema),
     localActionReceipts: z.record(z.string(), persistedLocalActionReceiptSchema),
+    providerSetupReceipts: z.record(z.string(), persistedProviderSetupReceiptSchema).default({}),
     mcpReviews: z.record(z.string(), persistedMcpReviewSchema).default({}),
     nativeConversations: z.record(z.string(), nativeConversationSchema).default({}),
     nativeWork: z.record(z.string(), nativeWorkStateSchema).default({}),
@@ -268,6 +284,8 @@ export interface RunnerStateStore {
   setCommandReceipt(commandId: string, receipt: PersistedCommandReceipt): void;
   getLocalActionReceipt(requestId: string): PersistedLocalActionReceipt | undefined;
   setLocalActionReceipt(requestId: string, receipt: PersistedLocalActionReceipt): void;
+  getProviderSetupReceipt(requestId: string): PersistedProviderSetupReceipt | undefined;
+  setProviderSetupReceipt(requestId: string, receipt: PersistedProviderSetupReceipt): void;
 }
 
 abstract class BaseRunnerStateStore implements RunnerStateStore {
@@ -279,7 +297,7 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
   constructor(data: RunnerStateData, options: RunnerStateStoreOptions) {
     this.data = data;
     // External IDs are dictionary keys, including Object.prototype names.
-    for (const key of ["events", "commandReceipts", "localActionReceipts", "mcpReviews", "nativeConversations", "nativeWork", "exitedSessions"] as const)
+    for (const key of ["events", "commandReceipts", "localActionReceipts", "providerSetupReceipts", "mcpReviews", "nativeConversations", "nativeWork", "exitedSessions"] as const)
       this.data[key] = Object.assign(Object.create(null), this.data[key]);
     for (const [id, events] of Object.entries(data.events))
       if (events.some(event => event.event_type === "session.exited")) this.data.exitedSessions[id] = true;
@@ -728,6 +746,19 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     this.persist();
   }
 
+  getProviderSetupReceipt(requestId: string): PersistedProviderSetupReceipt | undefined {
+    if (this.#pruneExpiredReceipts()) {
+      this.persist();
+    }
+    return this.data.providerSetupReceipts[requestId];
+  }
+
+  setProviderSetupReceipt(requestId: string, receipt: PersistedProviderSetupReceipt): void {
+    this.data.providerSetupReceipts[requestId] = receipt;
+    this.#pruneExpiredReceipts();
+    this.persist();
+  }
+
   #pruneExpiredReceipts(): boolean {
     const cutoff: number = this.#now().getTime() - this.#receiptRetentionMs;
     let changed = false;
@@ -740,6 +771,12 @@ abstract class BaseRunnerStateStore implements RunnerStateStore {
     for (const [requestId, receipt] of Object.entries(this.data.localActionReceipts)) {
       if (new Date(receipt.settledAt).getTime() < cutoff) {
         delete this.data.localActionReceipts[requestId];
+        changed = true;
+      }
+    }
+    for (const [requestId, receipt] of Object.entries(this.data.providerSetupReceipts)) {
+      if (new Date(receipt.settledAt).getTime() < cutoff) {
+        delete this.data.providerSetupReceipts[requestId];
         changed = true;
       }
     }
@@ -784,6 +821,7 @@ function emptyRunnerState(): RunnerStateData {
     events: {},
     commandReceipts: {},
     localActionReceipts: {},
+    providerSetupReceipts: {},
     mcpReviews: {},
     nativeConversations: {},
     nativeWork: {},

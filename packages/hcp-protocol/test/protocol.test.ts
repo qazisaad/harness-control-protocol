@@ -24,6 +24,9 @@ import {
   type LocalActionResponsePayload,
   type LocalCapabilityLease,
   type McpServerAttachment,
+  hcpProviderSetupResultPayloadSchema,
+  hcpProviderSetupSchema,
+  providerAuthSnapshotSchema,
 } from "../src/index.js";
 
 const sentAt = "2026-01-01T00:00:00.000Z";
@@ -348,6 +351,17 @@ describe("HCP protocol runtime parsing", () => {
       }).error.code,
       "local_capability_lease_missing",
     );
+  });
+
+  it("ties login commands to unauthenticated providers in snapshots and setup results", () => {
+    assert.equal(providerAuthSnapshotSchema.safeParse({ status: "unauthenticated", login_command: "codex login" }).success, true);
+    assert.equal(providerAuthSnapshotSchema.safeParse({ status: "authenticated", login_command: "codex login" }).success, false);
+    const result = { request_id: "r1", agent: "codex", action: "update" };
+    assert.equal(hcpProviderSetupResultPayloadSchema.safeParse({ ...result,
+      outcome: { kind: "installed", version: "0.161.0", changed: false, status: "ready", login_command: "codex login" } }).success, false);
+    assert.equal(hcpProviderSetupResultPayloadSchema.safeParse({ ...result,
+      outcome: { kind: "installed", version: "0.161.0", changed: false, status: "ready" } }).success, true);
+    assert.equal(hcpProviderSetupSchema.safeParse({ agents: [{ agent: "codex", version: "1" }, { agent: "codex", version: "2" }] }).success, false);
   });
 
   it("validates local action lease binding, approvals, and output limits", () => {

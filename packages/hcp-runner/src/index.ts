@@ -15,6 +15,7 @@ import { RunnerConnection } from "./connection/index.js";
 import { HarnessSessionManager } from "./harnesses/index.js";
 import { consoleLogger } from "./logs/index.js";
 import { connectMachine, parseConnectOptions } from "./connect.js";
+import { runProvidersCommand } from "./provider-setup/cli.js";
 import { checkControlPlane, httpTestHooks } from "./control-plane-check/index.js";
 import { ALREADY_RUNNING, ConnectionOwnership, acquireStateOwnership, connectionDirectory, type StateOwnership } from "./ownership.js";
 import { createDevelopmentHmacProofSigner } from "./mcp/McpAttachmentClient.js";
@@ -142,11 +143,16 @@ export async function main(argv: string[] = process.argv.slice(2), home: string 
     } catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
   }
 
+  if (command === "providers") {
+    try { return await runProvidersCommand(argv.slice(1), home); }
+    catch (error) { console.error(error instanceof Error ? error.message : String(error)); return 1; }
+  }
+
   if (command === "check-control-plane") {
     return runControlPlaneCheck(argv.slice(1));
   }
 
-  console.log("Usage: hcp-runner <version|connect|pair|run|check-control-plane>");
+  console.log("Usage: hcp-runner <version|connect|pair|run|providers|check-control-plane>");
   return command ? 1 : 0;
 }
 

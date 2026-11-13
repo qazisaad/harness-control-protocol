@@ -6433,6 +6433,245 @@
         },
         "type": {
           "type": "string",
+          "const": "host.providers.setup.request"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "install",
+                "update"
+              ]
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          "required": [
+            "agent",
+            "action",
+            "expires_at"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "const": "host.providers.setup.result"
+        },
+        "version": {
+          "type": "string",
+          "const": "hcp.v0"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agent": {
+              "type": "string",
+              "enum": [
+                "claude",
+                "codex",
+                "opencode"
+              ]
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "install",
+                "update"
+              ]
+            },
+            "outcome": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "installed"
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "unavailable",
+                        "unauthenticated",
+                        "disabled",
+                        "error",
+                        "unknown"
+                      ]
+                    },
+                    "login_command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "version",
+                    "changed",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "refused"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "remote_setup_disabled",
+                        "agent_not_allowed",
+                        "already_installed",
+                        "request_expired",
+                        "unsupported_platform",
+                        "request_id_reused"
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "reason",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "failed"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "install_failed",
+                        "verification_failed",
+                        "configuration_failed"
+                      ]
+                    },
+                    "message": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "reason",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "request_id",
+            "agent",
+            "action",
+            "outcome"
+          ],
+          "additionalProperties": false
+        },
+        "metadata": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version",
+        "sent_at",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
           "const": "hcp.command.ack"
         },
         "version": {
@@ -7493,6 +7732,11 @@
                       "email": {
                         "type": "string",
                         "minLength": 1
+                      },
+                      "login_command": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
                       }
                     },
                     "required": [
@@ -7826,6 +8070,42 @@
               "required": [
                 "revision",
                 "allowed_roots"
+              ],
+              "additionalProperties": false
+            },
+            "provider_setup": {
+              "type": "object",
+              "properties": {
+                "agents": {
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "agent": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "version": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      }
+                    },
+                    "required": [
+                      "agent",
+                      "version"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "agents"
               ],
               "additionalProperties": false
             },
@@ -21854,6 +22134,11 @@
                     "email": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "login_command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "required": [
@@ -22101,6 +22386,11 @@
                     "email": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "login_command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "required": [
@@ -22348,6 +22638,11 @@
                     "email": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "login_command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096
                     }
                   },
                   "required": [

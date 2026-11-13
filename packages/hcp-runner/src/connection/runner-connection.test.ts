@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server as HttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1220,6 +1220,50 @@ it("manages folders over HCP and republishes the saved catalog", async () => {
   } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
 });
 
+
+it("installs an allowed agent on request, answers a repeated id from its receipt and republishes capabilities", async () => {
+  const workspace = await createWorkspace();
+  const configPath = join(workspace.root, "runner.json");
+  const installRoot = join(workspace.root, "providers");
+  const installs: string[] = [];
+  const request = { agent: "codex" as const, action: "install" as const, expires_at: new Date(Date.now() + 60_000).toISOString() };
+  const server = await startServer(async (socket, messages) => {
+    await waitForMessage(messages, "host.hello");
+    socket.send(JSON.stringify(createHcpEnvelope("host.accepted", { protocol_version: HCP_VERSION, heartbeat_interval_seconds: 60 })));
+    await waitForMessage(messages, "host.capabilities.updated");
+    socket.send(JSON.stringify({ ...createHcpEnvelope("host.providers.setup.request", request), id: "setup-1" }));
+    await waitForMessage(messages, "host.providers.setup.result");
+    socket.send(JSON.stringify({ ...createHcpEnvelope("host.providers.setup.request", request), id: "setup-1" }));
+  });
+  const config: RunnerConfig = { ...createConfigBase(workspace.root), control_plane_url: server.url, provider_setup: { remote_agents: ["codex"] } };
+  await writeFile(configPath, JSON.stringify(config));
+  const connection = new RunnerConnection({ config, configPath, runnerVersion: "test", providerSetup: { installRoot, installer: async ({ packageSpec, prefix }) => {
+    installs.push(packageSpec);
+    const binary = join(prefix, "node_modules", ".bin", "codex");
+    await mkdir(join(prefix, "node_modules", ".bin"), { recursive: true });
+    await writeFile(binary, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"codex-cli 0.161.0\"; exit 0; fi\nexit 1\n");
+    await chmod(binary, 0o755);
+  } } });
+  try {
+    await connection.connect();
+    const initial = await waitForMessage(server.messages, "host.capabilities.updated");
+    assert.deepEqual(initial.payload.provider_setup, { agents: [{ agent: "codex", version: "0.161.0" }] });
+    const result = await waitForMessage(server.messages, "host.providers.setup.result");
+    const executable = join(installRoot, "codex", "0.161.0", "node_modules", ".bin", "codex");
+    assert.deepEqual(result.payload, { request_id: "setup-1", agent: "codex", action: "install",
+      outcome: { kind: "installed", version: "0.161.0", changed: true, status: "unauthenticated", login_command: `${executable} login` } });
+    const updated = await waitForMessageCountAndGet(server.messages, "host.capabilities.updated", 2);
+    const codex = updated.payload.providers.find(provider => provider.driver_kind === "codex");
+    assert.equal(codex?.status, "unauthenticated");
+    assert.equal(codex?.auth?.login_command, `${executable} login`);
+    await waitForMessageCount(server.messages, "host.providers.setup.result", 2);
+    const repeated = server.messages.filter(message => message.type === "host.providers.setup.result")[1]!;
+    assert.deepEqual(repeated.payload, result.payload);
+    assert.deepEqual(installs, ["@openai/codex@0.161.0"]);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(server.messages.filter(message => message.type === "host.capabilities.updated").length, 2, "a replayed result changes nothing");
+  } finally { await connection.close(); await server.close(); await workspace.cleanup(); }
+});
 
 it("browses directories without probing or publishing another capability snapshot", async () => {
   const workspace = await createWorkspace();

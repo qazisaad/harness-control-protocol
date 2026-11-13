@@ -1,11 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { homedir } from "node:os";
-import { isDeepStrictEqual } from "node:util";
-import { z } from "zod";
 import type { HcpWorkspaceManagement, HcpWorkspacesRequestPayload, HcpWorkspacesResultPayload } from "@harness-control/protocol";
-import { RunnerConfigSchema, type RunnerConfig, type RunnerWorkspaceConfig } from "../config/index.js";
+import { updateRunnerConfigFile, type RunnerConfig, type RunnerWorkspaceConfig } from "../config/index.js";
 import type { HarnessSessionManager } from "../harnesses/index.js";
 import { withWorkspaceGit } from "./git.js";
 
@@ -117,21 +115,7 @@ export class WorkspaceManager {
       if (operation.kind === "rename") workspace.display_name = operation.display_name;
       else workspaces = workspaces.filter(entry => entry.id !== operation.id);
     }
-    const raw = z.record(z.string(), z.unknown()).parse(JSON.parse(await readFile(configPath, "utf8")));
-    if (!isDeepStrictEqual(RunnerConfigSchema.parse(raw), this.config)) throw new Error("Runner configuration changed on disk. Restart the runner before managing workspaces.");
-    const revision = randomUUID();
-    RunnerConfigSchema.parse({ ...raw, workspaces, workspace_revision: revision });
-    const temporaryPath = `${configPath}.${randomUUID()}.tmp`;
-    try {
-      const file = await open(temporaryPath, "wx", 0o600);
-      try {
-        await file.writeFile(`${JSON.stringify({ ...raw, workspaces, workspace_revision: revision }, null, 2)}\n`);
-        await file.sync();
-      } finally { await file.close(); }
-      await rename(temporaryPath, configPath);
-      this.config.workspaces = workspaces;
-      this.config.workspace_revision = revision;
-    } finally { await rm(temporaryPath, { force: true }); }
+    await updateRunnerConfigFile(configPath, this.config, raw => ({ ...raw, workspaces, workspace_revision: randomUUID() }));
   }
 }
 

@@ -8,6 +8,8 @@ import { z } from "zod";
 
 import { loadRunnerConfig, ProviderInstanceConfigSchema, RunnerConfigSchema, type RunnerConfig } from "./config/index.js";
 import { createDefaultHarnessAdapterRegistry } from "./harnesses/adapters/registry.js";
+import { PROVIDER_RELEASES } from "./harnesses/provider-releases.js";
+import { shellCommandLine } from "./harnesses/adapters/providers/cli-process.js";
 import { loadRunnerCredential, requestConnectionToken, RunnerAuthorizationRejected, normalizeControlPlaneUrl, pairWithReferenceControlPlane, writeRunnerCredentials } from "./pairing/index.js";
 
 import { ALREADY_RUNNING, ConnectionOwnership, connectionDirectory } from "./ownership.js";
@@ -116,15 +118,17 @@ export async function connectMachine(options: ConnectOptions, run: (path: string
         credentials_path: join(dirname(configPath), "credentials.json"), state_path: join(dirname(configPath), "state.json"),
         workspaces: [], workspace_management: { allowed_roots: [parse(homedir()).root] }, provider_instances: [] });
     }
-    const bundled = ["codex", "claude", "opencode"].filter(driver => !config.provider_instances.some(p => p.driver_kind === driver))
-      .map(driver => ProviderInstanceConfigSchema.parse({ id: `${driver}-local`, driver_kind: driver, display_name: driver === "claude" ? "Claude Code" : driver === "codex" ? "Codex" : "OpenCode" }));
+    const bundled = (["codex", "claude", "opencode"] as const).filter(driver => !config.provider_instances.some(p => p.driver_kind === driver))
+      .map(driver => ProviderInstanceConfigSchema.parse({ id: `${driver}-local`, driver_kind: driver, display_name: PROVIDER_RELEASES[driver].displayName }));
     const candidates = [...config.provider_instances, ...bundled];
     const registry = createDefaultHarnessAdapterRegistry();
     let statuses;
     try { statuses = await registry.probeProviders(candidates); }
     finally { await registry.close(); }
     console.log("Coding agents on this computer:");
-    for (const status of statuses) console.log(`  ${status.driver_kind}: ${!status.installed ? "not installed" : status.authStatus === "unauthenticated" ? "sign in required" : status.status ?? "unknown"}`);
+    for (const status of statuses) console.log(`  ${status.driver_kind}: ${!status.installed
+      ? `not installed. Install the tested version with: ${shellCommandLine({}, ["hcp-runner", "providers", "install", status.driver_kind, "--config", configPath])}`
+      : status.status === "unauthenticated" ? `sign in required${status.loginCommand ? `. Run: ${status.loginCommand}` : ""}` : status.status ?? "unknown"}`);
     const installed = [...new Set(statuses.filter(status => status.installed).map(status => status.driver_kind))];
     // Discovery belongs to the runner; execution choices belong to the control plane.
     // Keep --providers as an explicit automation override, never an interactive prompt.

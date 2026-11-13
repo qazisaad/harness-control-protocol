@@ -261,6 +261,21 @@ test("workspace completion requires its matching result, not ACK or unrelated re
   assert.equal((await result).payload.outcome.kind, "error");
 });
 
+test("provider setup completes only with its matching result, never with ACK, another id or another agent", async () => {
+  const { peer } = connected();
+  let settled = false;
+  const result = peer.setupProvider({ agent: "codex", action: "install", expires_at: "2999-01-01T00:00:00Z" }, { id: "setup-1" })
+    .then(message => { settled = true; return message; });
+  const outcome = { kind: "installed", version: "0.161.0", changed: true, status: "unauthenticated", login_command: "codex login" } as const;
+  peer.receive(ack("setup-1"));
+  peer.receive(createHcpEnvelope("host.providers.setup.result", { request_id: "other", agent: "codex", action: "install", outcome }));
+  peer.receive(createHcpEnvelope("host.providers.setup.result", { request_id: "setup-1", agent: "claude", action: "install", outcome }));
+  await Promise.resolve();
+  assert.equal(settled, false);
+  peer.receive(createHcpEnvelope("host.providers.setup.result", { request_id: "setup-1", agent: "codex", action: "install", outcome }));
+  assert.deepEqual((await result).payload.outcome, outcome);
+});
+
 test("snapshot matches command_id and uses the canonical reducer for gap recovery", async () => {
   const { peer } = connected();
   const gap = peer.receive(fixture("provider-event"));
