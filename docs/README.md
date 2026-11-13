@@ -21,7 +21,8 @@ You write the server side, the *control plane*. HCP gives you the protocol, a Ty
 1. [Runner README](../packages/hcp-runner/README.md): install, `hcp-runner connect`, and keeping it running.
 2. [Pairing](pairing.md): what happens when you approve a machine.
 3. [Workspace management](workspace-management.md): which folders your app can see.
-4. [Provider support](native-providers.md): what each coding agent can do.
+4. [Installing coding agents](provider-setup.md): install the tested Claude Code, Codex or OpenCode version, and whether your app may do it.
+5. [Provider support](native-providers.md): what each coding agent can do.
 
 ### I'm adding a new coding agent (adapter)
 
@@ -56,6 +57,7 @@ You don't need everything. Stop at the level your product needs.
 | [Integration checklist](control-plane/checklist.md) | 1–3 | What your app must own, and how to check it |
 | [Pairing](pairing.md) | 1 | The runner's side of pairing |
 | [Workspace management](workspace-management.md) | 1 | Adding and listing folders |
+| [Installing coding agents](provider-setup.md) | 1 | Local install, update and status; optional app-triggered setup |
 | [Runner ownership](runner-ownership.md) | 1 | One runner per machine and endpoint |
 | [Public packages](public-packages.md) | 1–2 | SDK, commands, completion |
 | [Architecture](architecture.md) | 2 | Runner boundaries and MCP responsibilities |

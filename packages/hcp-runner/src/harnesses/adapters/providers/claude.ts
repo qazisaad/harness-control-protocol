@@ -20,6 +20,7 @@ import {
   type CodexProcessRunOptions,
   firstLine,
   processFailureMessage,
+  shellCommandLine,
   spawnProviderCliProcess,
   startManagedCliProcess,
 } from "./cli-process.js";
@@ -174,6 +175,7 @@ export class ClaudeHarnessAdapter implements HarnessAdapter {
           "Claude Code is not authenticated.",
           diagnosticPaths,
         ),
+        loginCommand: shellCommandLine(claudeHomeEnvironment(provider), [executable, ...launchArgs, "auth", "login"]),
         models: normalizeProviderModels(provider.models),
       };
     }
@@ -332,8 +334,12 @@ function claudeEnvironment(
 ): Record<string, string> {
   return {
     ...provider.env,
-    ...(provider.home ? { CLAUDE_CONFIG_DIR: provider.home } : {}),
+    ...claudeHomeEnvironment(provider),
   };
+}
+/** Only the configuration home; the provider's other environment may hold secrets and is never echoed. */
+function claudeHomeEnvironment(provider: ProviderInstanceConfig): Record<string, string> {
+  return provider.home ? { CLAUDE_CONFIG_DIR: provider.home } : {};
 }
 function claudeLaunchArgs(provider: ProviderInstanceConfig): string[] {
   return provider.launch_args;

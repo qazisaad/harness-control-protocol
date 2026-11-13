@@ -102,6 +102,12 @@ export function startManagedCliProcess(options: CliManagedProcessOptions): CliMa
   };
 }
 
+/** Renders a command line for the machine's user to paste into a POSIX shell, quoting each value that needs it. */
+export function shellCommandLine(environment: Record<string, string>, argv: string[]): string {
+  const quote = (value: string): string => /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+  return [...Object.entries(environment).map(([name, value]) => `${name}=${quote(value)}`), ...argv.map(quote)].join(" ");
+}
+
 export function spawnProviderCliProcess(
   executable: string,
   argv: string[],

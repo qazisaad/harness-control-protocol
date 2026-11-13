@@ -1,0 +1,7 @@
+{
+  "id": "provider-setup-request-package",
+  "type": "host.providers.setup.request",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:00Z",
+  "payload": {"agent": "codex", "action": "install", "expires_at": "2026-01-01T00:01:00Z", "package": "@openai/codex@latest"}
+}

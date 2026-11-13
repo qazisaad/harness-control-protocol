@@ -242,6 +242,8 @@ A runner config describes the local host, allowed workspaces, provider instances
 
 Provider and MCP executable paths, arguments, home directories, and environment variables stay in local runner config. Capability snapshots advertise only stdio profile ids, provider bindings, and tool policy.
 
+`hcp-runner providers install <claude|codex|opencode> --config runner.json` installs the runner's tested agent version into `~/.hcp-runner/providers` and sets that provider's `executable_path`. An optional `"provider_setup": {"remote_agents": ["codex"]}` lets the control plane request the same install; it is off when absent. See [installing coding agents](docs/provider-setup.md).
+
 For OpenCode, configure `driver_kind: "opencode"` and use OpenCode model ids in `provider/model` form, for example `anthropic/claude-sonnet-4`. The adapter starts a session-owned `opencode serve` process, creates a server session, subscribes to `/event` before prompting, emits text and reasoning deltas immediately, and waits for `session.idle` before publishing the terminal HCP event. `harness.turn.cancel` aborts the OpenCode session and session stop terminates the server process.
 
 Build and run the reference stdio server directly with `npm run build --workspace @harness-control/sample-mcp-server` followed by `node apps/sample-mcp-server/dist/stdio.js`. In normal HCP use, put that command in `mcp_stdio_profiles` and let the control plane request only its profile id.

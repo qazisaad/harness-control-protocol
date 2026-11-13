@@ -145,6 +145,7 @@ export class HcpHostConnection {
       case "hcp.command.ack":
       case "hcp.command.nack":
       case "host.workspaces.result":
+      case "host.providers.setup.result":
       case "harness.conversation.result":
       case "local.action.response":
       case "local.action.error":
@@ -249,7 +250,7 @@ export class HcpHostConnection {
     let pending: Pending | undefined;
     if (message.type === "hcp.command.ack" || message.type === "hcp.command.nack") {
       pending = this.#pending.get(message.payload.command_id);
-      if (message.type === "hcp.command.ack" && pending && ["host.accounts.read", "host.workspaces.request", "harness.session.snapshot.request", "harness.conversation.request", "local.action.request"].includes(pending.command.type)) return;
+      if (message.type === "hcp.command.ack" && pending && ["host.accounts.read", "host.workspaces.request", "host.providers.setup.request", "harness.session.snapshot.request", "harness.conversation.request", "local.action.request"].includes(pending.command.type)) return;
     } else if (message.type === "harness.conversation.result") {
       pending = this.#pending.get(message.payload.command_id);
       if (pending?.command.type !== "harness.conversation.request"
@@ -298,6 +299,10 @@ export class HcpHostConnection {
     } else if (message.type === "local.action.response" || message.type === "local.action.error") {
       pending = [...this.#pending.values()].find(p => p.command.type === "local.action.request"
         && p.command.payload.request_id === message.payload.request_id && p.command.payload.action === message.payload.action);
+    } else if (message.type === "host.providers.setup.result") {
+      pending = this.#pending.get(message.payload.request_id);
+      if (pending?.command.type !== "host.providers.setup.request" || pending.command.payload.agent !== message.payload.agent
+        || pending.command.payload.action !== message.payload.action) return;
     } else if (message.type === "host.workspaces.result" || message.type === "harness.session.snapshot") {
       pending = this.#pending.get(message.type === "host.workspaces.result" ? message.payload.request_id : message.payload.command_id);
       if (pending && (message.type === "host.workspaces.result" ? pending.command.type !== "host.workspaces.request"
@@ -559,6 +564,14 @@ export class HcpHostConnection {
   }
   manageWorkspaces(payload: Payload<"host.workspaces.request">, command?: CommandOptions, wait?: WaitOptions) {
     return this.send(createCommand({ type: "host.workspaces.request", payload }, command), wait);
+  }
+  /**
+   * Asks the runner to install or update one agent at the runner's tested version. Resolves with the
+   * terminal `host.providers.setup.result`; a timeout or disconnect leaves the outcome unknown, so read
+   * capabilities or resend the same command id, which returns the recorded result without a second install.
+   */
+  setupProvider(payload: Payload<"host.providers.setup.request">, command?: CommandOptions, wait?: WaitOptions) {
+    return this.send(createCommand({ type: "host.providers.setup.request", payload }, command), { timeoutMs: 15 * 60_000, ...wait });
   }
 }
 type Payload<T extends HcpCommandType> = Extract<HcpCommand, { type: T }>["payload"];

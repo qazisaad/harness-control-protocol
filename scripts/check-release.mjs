@@ -85,6 +85,10 @@ try {
   run(process.execPath, ["mcp-detach-consumer.mjs"], consumer);
   copyFileSync(join(root, "examples/package-checks/startup-cleanup-consumer.mjs"), join(consumer, "startup-cleanup-consumer.mjs"));
   run(process.execPath, ["startup-cleanup-consumer.mjs"], consumer);
+  if (process.platform !== "win32") {
+    copyFileSync(join(root, "examples/package-checks/provider-setup-consumer.mjs"), join(consumer, "provider-setup-consumer.mjs"));
+    run(process.execPath, ["provider-setup-consumer.mjs"], consumer);
+  }
   writeFileSync(join(output, "manifest.json"), JSON.stringify({ packages: manifests }, null, 2) + "\n");
   console.log(`Validated release artifacts: ${output}`);
 } finally { rmSync(consumer, { recursive: true, force: true }); }

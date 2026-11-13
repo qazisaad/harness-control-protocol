@@ -35,6 +35,7 @@ flowchart LR
 | **Connection token** | A short-lived, single-use token that admits one WebSocket. |
 | **Provider instance** | One coding agent set up on the runner, such as `claude` or `codex`. Its `driver_kind` names the adapter that drives it. |
 | **Capabilities** | What the runner reports it can do: agents, models, folders and features. Sent in `host.capabilities.updated`. Missing means unknown, not "no". |
+| **Provider setup** | Installing the runner's tested version of a coding agent, locally with `hcp-runner providers install` or from your app with `setupProvider` when the machine allows it. See [installing coding agents](provider-setup.md). |
 | **Workspace** | A folder the user has allowed on that machine. Your app adds folders with `manageWorkspaces`; the runner checks them against its local allowed roots. |
 | **Session** | One run of a coding agent in one workspace, started by `harness.session.start`. |
 | **Turn** | One prompt and its answer inside a session, sent by `harness.turn.send`. |

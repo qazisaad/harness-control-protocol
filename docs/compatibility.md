@@ -43,6 +43,10 @@ The native Codex/Claude drivers replace the old completion-only CLI paths. Their
 
 ## Runner Compatibility
 
+### 0.6.0
+
+New `host.providers.setup.request` and `host.providers.setup.result` message types, the optional capability field `provider_setup` and the optional `auth.login_command` change the generated message schema, so `protocol_schema_sha256` changes. Control planes that pin the digest must update their pin and runner install command to 0.6.0 together with their runners; strict 0.5.x parsers reject the new types and fields. Remote agent setup is off unless the machine's user lists agents in `provider_setup.remote_agents`. See [installing coding agents](provider-setup.md) and [release-0.6.0.md](releases/release-0.6.0.md).
+
 ### 0.5.4
 
 The zod upgrade changes the generated message schema, so `protocol_schema_sha256` changes and pinned control planes must move to 0.5.4 together with their runners. Timestamps now require seconds; unions of plain types are written as type lists with the same meaning. See [release-0.5.4.md](releases/release-0.5.4.md).

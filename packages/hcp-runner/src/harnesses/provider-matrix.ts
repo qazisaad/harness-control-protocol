@@ -11,6 +11,7 @@ import {
   OPENCODE_MINIMUM_VERSION,
   openCodeExecutionCapabilities,
 } from "./adapters/providers/opencode.js";
+import { PROVIDER_RELEASES, type ProviderRelease } from "./provider-releases.js";
 
 /**
  * Renders the provider support matrix in docs/native-providers.md from the same
@@ -30,6 +31,8 @@ type ProviderCapabilitySource = {
   capabilities: HarnessExecutionCapabilities;
   /** What a ready probe publishes outside the profile versions; absent when no version gate exists. */
   otherVersionCapabilities?: HarnessExecutionCapabilities;
+  /** The tested release `hcp-runner providers install` and remote setup install. */
+  release: ProviderRelease;
 };
 
 const executionCapabilitiesSchema = harnessProviderSnapshotSchema.shape.execution_capabilities.unwrap();
@@ -50,12 +53,14 @@ function providerSources(): ProviderCapabilitySource[] {
       capabilities: codexExecutionCapabilities(`codex-cli ${codexProfileVersion}`),
       // The probe passes `undefined` when `codex --version` prints nothing, which no gate accepts.
       otherVersionCapabilities: codexExecutionCapabilities(undefined),
+      release: PROVIDER_RELEASES.codex,
     },
     {
       name: "Claude",
       readyVersions: "any (authenticated)",
       profileVersions: "any",
       capabilities: nativeExecutionCapabilities("claude"),
+      release: PROVIDER_RELEASES.claude,
     },
     {
       name: "OpenCode",
@@ -63,6 +68,7 @@ function providerSources(): ProviderCapabilitySource[] {
       profileVersions: `\`${OPENCODE_CONTROLLED_PROFILE_VERSION}\``,
       capabilities: requireCapabilities("OpenCode", openCodeExecutionCapabilities(OPENCODE_CONTROLLED_PROFILE_VERSION)),
       otherVersionCapabilities: requireCapabilities("OpenCode", openCodeExecutionCapabilities(openCodeMinimum)),
+      release: PROVIDER_RELEASES.opencode,
     },
   ];
 }
@@ -130,8 +136,9 @@ export function renderProviderMatrix(): string {
   }
 
   const versions = table(
-    ["Provider", "Probe reports ready for", "Execution profiles published for", "Other ready versions publish"],
-    sources.map(source => [source.name, source.readyVersions, source.profileVersions, otherVersionDifference(source)]),
+    ["Provider", "Probe reports ready for", "Execution profiles published for", "Other ready versions publish", "Runner installs"],
+    sources.map(source => [source.name, source.readyVersions, source.profileVersions, otherVersionDifference(source),
+      `\`${source.release.npmPackage}@${source.release.version}\``]),
   );
 
   const providerFields = Object.keys(executionCapabilitiesSchema.shape).filter(field => field !== "execution_profiles");

@@ -59,6 +59,8 @@ export const HOST_LIFECYCLE_MESSAGE_TYPES = [
   "host.replay.unavailable",
   "host.workspaces.request",
   "host.workspaces.result",
+  "host.providers.setup.request",
+  "host.providers.setup.result",
 ] as const;
 
 export const CONTROL_PLANE_COMMAND_MESSAGE_TYPES = [
@@ -271,6 +273,8 @@ export type ProviderAuthSnapshot = {
   type?: string;
   label?: string;
   email?: string;
+  /** Command line the machine's user runs in a local terminal to sign in; only with status "unauthenticated". */
+  login_command?: string;
 };
 
 export type HarnessOptionDescriptor = {
@@ -458,6 +462,7 @@ export type HcpHostCapabilitiesUpdatedPayload = {
   local_capabilities: LocalCapabilitySnapshot[];
   workspaces: HcpWorkspaceSnapshot[];
   workspace_management?: HcpWorkspaceManagement;
+  provider_setup?: HcpProviderSetup;
   mcp_stdio_profiles?: HcpMcpStdioProfileSnapshot[];
 };
 
@@ -1197,8 +1202,12 @@ export const providerAuthSnapshotSchema = z
     type: nonEmptyStringSchema.optional(),
     label: nonEmptyStringSchema.optional(),
     email: nonEmptyStringSchema.optional(),
+    login_command: z.string().min(1).max(4096).optional(),
   })
-  .strict();
+  .strict()
+  .refine(auth => auth.login_command === undefined || auth.status === "unauthenticated", {
+    message: "A login command is only published for an unauthenticated provider.", path: ["login_command"],
+  });
 
 export const harnessOptionDescriptorSchema = z
   .object({
@@ -1358,12 +1367,61 @@ export const hcpWorkspacesResultPayloadSchema = z.object({
 }).strict();
 export type HcpWorkspacesResultPayload = z.infer<typeof hcpWorkspacesResultPayloadSchema>;
 
+/** Coding agents the runner can install from its own release table; the app names one, never a package, version or path. */
+export const HCP_PROVIDER_SETUP_AGENTS = ["claude", "codex", "opencode"] as const;
+export const hcpProviderSetupAgentSchema = z.enum(HCP_PROVIDER_SETUP_AGENTS);
+export type HcpProviderSetupAgent = z.infer<typeof hcpProviderSetupAgentSchema>;
+/** Remote setup policy published in capabilities. An empty list means the machine's user has not allowed remote setup. */
+export const hcpProviderSetupSchema = z.object({
+  agents: z.array(z.object({agent: hcpProviderSetupAgentSchema, version: z.string().min(1).max(100)}).strict())
+    .max(HCP_PROVIDER_SETUP_AGENTS.length)
+    .refine(agents => new Set(agents.map(entry => entry.agent)).size === agents.length, "Provider setup agents must be unique."),
+}).strict();
+export type HcpProviderSetup = z.infer<typeof hcpProviderSetupSchema>;
+export const hcpProviderSetupRequestPayloadSchema = z.object({
+  agent: hcpProviderSetupAgentSchema,
+  action: z.enum(["install", "update"]),
+  expires_at: timestampSchema,
+}).strict();
+export type HcpProviderSetupRequestPayload = z.infer<typeof hcpProviderSetupRequestPayloadSchema>;
+export const hcpProviderSetupOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("installed"),
+    version: z.string().min(1).max(100),
+    /** False when the agent already reported this version and nothing was installed or reconfigured. */
+    changed: z.boolean(),
+    status: harnessProviderSnapshotSchema.shape.status,
+    login_command: z.string().min(1).max(4096).optional(),
+  }).strict().refine(outcome => outcome.login_command === undefined || outcome.status === "unauthenticated", {
+    message: "A login command is only returned for an unauthenticated provider.", path: ["login_command"],
+  }),
+  z.object({
+    kind: z.literal("refused"),
+    reason: z.enum(["remote_setup_disabled", "agent_not_allowed", "already_installed", "request_expired", "unsupported_platform", "request_id_reused"]),
+    message: z.string().min(1).max(1000),
+  }).strict(),
+  z.object({
+    kind: z.literal("failed"),
+    reason: z.enum(["install_failed", "verification_failed", "configuration_failed"]),
+    message: z.string().min(1).max(1000),
+  }).strict(),
+]);
+export type HcpProviderSetupOutcome = z.infer<typeof hcpProviderSetupOutcomeSchema>;
+export const hcpProviderSetupResultPayloadSchema = z.object({
+  request_id: nonEmptyStringSchema,
+  agent: hcpProviderSetupAgentSchema,
+  action: hcpProviderSetupRequestPayloadSchema.shape.action,
+  outcome: hcpProviderSetupOutcomeSchema,
+}).strict();
+export type HcpProviderSetupResultPayload = z.infer<typeof hcpProviderSetupResultPayloadSchema>;
+
 export const hcpHostCapabilitiesUpdatedPayloadSchema = z
   .object({
     providers: z.array(harnessProviderSnapshotSchema),
     local_capabilities: z.array(localCapabilitySnapshotSchema),
     workspaces: z.array(hcpWorkspaceSchema),
     workspace_management: hcpWorkspaceManagementSchema.optional(),
+    provider_setup: hcpProviderSetupSchema.optional(),
     mcp_stdio_profiles: z.array(hcpMcpStdioProfileSnapshotSchema).optional(),
   })
   .strict();
@@ -3278,6 +3336,8 @@ export const hcpHarnessEventMessageSchema = hcpTypedEnvelopeSchema("harness.even
 
 export const hcpWorkspacesRequestMessageSchema = hcpTypedEnvelopeSchema("host.workspaces.request", hcpWorkspacesRequestPayloadSchema);
 export const hcpWorkspacesResultMessageSchema = hcpTypedEnvelopeSchema("host.workspaces.result", hcpWorkspacesResultPayloadSchema);
+export const hcpProviderSetupRequestMessageSchema = hcpTypedEnvelopeSchema("host.providers.setup.request", hcpProviderSetupRequestPayloadSchema);
+export const hcpProviderSetupResultMessageSchema = hcpTypedEnvelopeSchema("host.providers.setup.result", hcpProviderSetupResultPayloadSchema);
 
 export const hcpAccountsReadMessageSchema = hcpTypedEnvelopeSchema("host.accounts.read", hcpAccountsReadPayloadSchema);
 export const hcpAccountsSnapshotMessageSchema = hcpTypedEnvelopeSchema("host.accounts.snapshot", hcpAccountsSnapshotPayloadSchema);
@@ -3290,6 +3350,8 @@ export const hcpMessageSchema = z.discriminatedUnion("type", [
   hcpAccountsSnapshotMessageSchema,
   hcpWorkspacesRequestMessageSchema,
   hcpWorkspacesResultMessageSchema,
+  hcpProviderSetupRequestMessageSchema,
+  hcpProviderSetupResultMessageSchema,
   hcpCommandAckMessageSchema,
   hcpCommandNackMessageSchema,
   hcpHostHelloMessageSchema,
@@ -3351,6 +3413,8 @@ export type HcpMessage =
   | HcpEnvelope<"host.accounts.snapshot", HcpAccountsSnapshotPayload>
   | HcpEnvelope<"host.workspaces.request", HcpWorkspacesRequestPayload>
   | HcpEnvelope<"host.workspaces.result", HcpWorkspacesResultPayload>
+  | HcpEnvelope<"host.providers.setup.request", HcpProviderSetupRequestPayload>
+  | HcpEnvelope<"host.providers.setup.result", HcpProviderSetupResultPayload>
   | HcpCommandAckMessage
   | HcpCommandNackMessage
   | HcpHostHelloMessage

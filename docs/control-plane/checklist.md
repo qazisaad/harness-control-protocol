@@ -19,6 +19,7 @@ HCP is a protocol and a runner, not a hosted service. Everything below is your a
 | Keep at most one live connection per machine | `socket.single_live_connection` |
 | Revoke: refuse tokens and close the live socket within your stated time | `revoke.*` with `--revoke-timeout-seconds` set to your promise |
 | Add folders only when the user asks, through `manageWorkspaces` | Manual test: a new machine shows no folders |
+| If you offer agent setup, let only the machine owner trigger `setupProvider`, show `auth.login_command` instead of signing in, and treat a lost result as unknown | [Installing coding agents](../provider-setup.md#for-app-builders); disconnect mid-install, then read capabilities |
 | Treat an ACK as "accepted" and wait for a terminal turn event | Code review; start waiting before sending |
 | Run `hcp-runner check-control-plane` against staging in CI | CI job output |
 

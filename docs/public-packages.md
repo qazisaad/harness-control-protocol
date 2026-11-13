@@ -47,7 +47,7 @@ Every app-to-runner operation has a typed SDK method:
 | --- | --- |
 | Sessions and turns | `startSession` (MCP attachments go here), `sendTurn`, `cancelTurn`, `stopSession`, `requestSnapshot` |
 | Answers | `respondToApproval`, `respondToInput` |
-| Tools and machine | `detachTools`, `runLocalAction`, `manageWorkspaces` (list, add, rename, remove) |
+| Tools and machine | `detachTools`, `runLocalAction`, `manageWorkspaces` (list, add, rename, remove), `setupProvider` ([install or update an agent](provider-setup.md)) |
 | Conversations | `conversation` and typed helpers; see [conversation controls](#conversation-controls) |
 
 What each call resolves to:
@@ -55,7 +55,7 @@ What each call resolves to:
 | Call | Resolves to | Finished when |
 | --- | --- | --- |
 | Session and turn commands | An ACK: the runner **accepted** it | The matching terminal `harness.event`, such as `turn.completed` |
-| Snapshot, workspace and local-action requests | Their matching result message. An ACK never finishes them | The result arrives |
+| Snapshot, workspace, provider setup and local-action requests | Their matching result message. An ACK never finishes them | The result arrives |
 | Any refused command | Rejects with `HcpCommandRejectedError` and the runner's structured error (a NACK) | — |
 
 Rules:

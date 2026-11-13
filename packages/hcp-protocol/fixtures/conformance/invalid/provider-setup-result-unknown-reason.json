@@ -1,0 +1,12 @@
+{
+  "id": "provider-setup-result-unknown-reason",
+  "type": "host.providers.setup.result",
+  "version": "hcp.v0",
+  "sent_at": "2026-01-01T00:00:01Z",
+  "payload": {
+    "request_id": "provider-setup-request",
+    "agent": "codex",
+    "action": "install",
+    "outcome": {"kind": "failed", "reason": "timeout", "message": "npm took too long."}
+  }
+}

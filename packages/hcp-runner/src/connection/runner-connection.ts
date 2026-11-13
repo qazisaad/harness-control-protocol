@@ -2,6 +2,7 @@ import {convexRunnerDemandSource, type RunnerDemandSource} from "./runner-demand
 import type {RunnerCredential} from "../pairing/index.js";
 import { AccountUsageReader } from "../accounts/index.js";
 import { WorkspaceManager } from "../workspaces/index.js";
+import { ProviderSetup, RemoteProviderSetup, defaultProviderInstallRoot, npmPackageInstaller, type ProviderPackageInstaller } from "../provider-setup/index.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -107,11 +108,14 @@ export type RunnerConnectionOptions = {
   harnessSessions?: HarnessSessionManager;
   reconnect?: RunnerReconnectOptions;
   accountUsage?: AccountUsageReader;
+  /** Where remote setup installs agents and how it fetches packages; defaults to npm into ~/.hcp-runner/providers. */
+  providerSetup?: { installRoot?: string; installer?: ProviderPackageInstaller };
 };
 
 export class RunnerConnection {
   readonly #config: RunnerConfig;
   readonly #workspaces: WorkspaceManager;
+  readonly #providerSetup: RemoteProviderSetup;
   readonly #runnerVersion: string;
   readonly #connectionTokenProvider: (() => Promise<string | RunnerAuthorization | undefined>) | undefined;
   readonly #onLog: (message: string) => void;
@@ -157,6 +161,15 @@ export class RunnerConnection {
     this.#harnessSessions = options.harnessSessions ?? new HarnessSessionManager(options.config);
     this.#stateStore = this.#harnessSessions.stateStore();
     this.#workspaces = new WorkspaceManager(options.config, options.configPath, this.#harnessSessions);
+    const harnessSessions = this.#harnessSessions;
+    this.#providerSetup = new RemoteProviderSetup(options.config, options.configPath === undefined ? undefined : new ProviderSetup({
+      config: options.config,
+      configPath: options.configPath,
+      installRoot: options.providerSetup?.installRoot ?? defaultProviderInstallRoot(),
+      installer: options.providerSetup?.installer ?? npmPackageInstaller,
+      probe: providers => harnessSessions.probeProviders(providers),
+      commitConfiguration: change => harnessSessions.updateProviderConfiguration(change),
+    }), this.#stateStore);
     this.#localActionDispatcher = new LocalActionDispatcher({
       executor: new LocalCapabilityExecutor(this.#harnessSessions.localCapabilityEngine()),
       resolveContext: (payload) => this.#harnessSessions.resolveLocalActionContext(payload),
@@ -340,6 +353,18 @@ export class RunnerConnection {
         return;
       }
       case "host.workspaces.result":
+        return;
+      case "host.providers.setup.request": {
+        const socket = this.#socket;
+        if (!this.#accepted) return;
+        const started = performance.now();
+        const {result, replayed} = await this.#providerSetup.execute(envelope.id, envelope.payload);
+        if (socket === this.#socket && this.#accepted) this.#send(createHcpEnvelope("host.providers.setup.result", result, {duration_ms: performance.now() - started}));
+        // Publish on whichever connection is current so a reconnected app still learns the new executable.
+        if (!replayed && result.outcome.kind === "installed" && result.outcome.changed) await this.#sendCapabilities();
+        return;
+      }
+      case "host.providers.setup.result":
         return;
       case "harness.session.start":
         await this.#handleCommand(envelope, (message) => this.#handleSessionStart(message));
@@ -704,7 +729,7 @@ export class RunnerConnection {
     const socket = this.#socket;
     const registry = new ProviderInstanceRegistry(this.#config, await this.#harnessSessions.providerDriverStatuses());
     const snapshot = registry.snapshot();
-    const payload: HcpHostCapabilitiesUpdatedPayload = { ...snapshot, workspaces: await withWorkspaceGit(snapshot.workspaces), workspace_management: this.#workspaces.snapshot() };
+    const payload: HcpHostCapabilitiesUpdatedPayload = { ...snapshot, workspaces: await withWorkspaceGit(snapshot.workspaces), workspace_management: this.#workspaces.snapshot(), provider_setup: this.#providerSetup.snapshot() };
     if (socket === this.#socket && this.#accepted) this.#send(createHcpEnvelope("host.capabilities.updated", payload));
   }
 

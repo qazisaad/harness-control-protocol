@@ -9,11 +9,11 @@ For adopters choosing a provider and execution profile: what each built-in runne
 
 ### Versions
 
-| Provider | Probe reports ready for | Execution profiles published for | Other ready versions publish |
-| --- | --- | --- | --- |
-| Codex | any (authenticated) | `codex-cli 0.160.0`, `codex-cli 0.160.1`, `codex-cli 0.161.0` | same, without `execution_profiles` |
-| Claude | any (authenticated) | any | no version gate |
-| OpenCode | `1.3.15`+ within major version 1 | `1.18.34` | same, without `configuration_inheritance_options`, `execution_profiles` |
+| Provider | Probe reports ready for | Execution profiles published for | Other ready versions publish | Runner installs |
+| --- | --- | --- | --- | --- |
+| Codex | any (authenticated) | `codex-cli 0.160.0`, `codex-cli 0.160.1`, `codex-cli 0.161.0` | same, without `execution_profiles` | `@openai/codex@0.161.0` |
+| Claude | any (authenticated) | any | no version gate | `@anthropic-ai/claude-code@2.1.289` |
+| OpenCode | `1.3.15`+ within major version 1 | `1.18.34` | same, without `configuration_inheritance_options`, `execution_profiles` | `opencode-ai@1.18.34` |
 
 ### Provider capabilities
 
@@ -94,6 +94,7 @@ How to read it:
 - Outside the listed profile versions the probe publishes no profiles. Codex and OpenCode then run only their default behavior.
 - Authorize work from the snapshot your runner sends, not from this page or from a field existing in the protocol. An omitted `execution_capabilities` object means unknown support. Model descriptors advertise image input separately.
 - This page shows what the code declares. It does not certify an installed provider version. Live evidence is in the [verification record](#verification-record).
+- "Runner installs" is the one tested version `hcp-runner providers install` and app-triggered setup install. See [installing coding agents](provider-setup.md).
 - Regenerate the matrix with `npm run docs:providers`. `npm run docs:providers -- --check` fails when it is stale; the runner test suite runs the same check.
 
 ## Release status
